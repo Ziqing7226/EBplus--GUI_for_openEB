@@ -20,6 +20,11 @@ option(BUILD_TESTING "Build test suites" OFF)
 cmake_minimum_required(VERSION 3.5)
 
 project(metavision VERSION 5.2.0)
+
+# GCC 15+ no longer implicitly includes <cstdint>; add it globally to fix uint8_t/uint16_t etc.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "15")
+    add_compile_options("-include;cstdint")
+endif()
 set(PROJECT_VERSION_SUFFIX "")
 
 if(PROJECT_VERSION_SUFFIX STREQUAL "")
