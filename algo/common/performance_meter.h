@@ -1,16 +1,21 @@
 // algo/common/performance_meter.h — performance profiler (FPS / latency / rate).
 //
-// Inspired by jAER PerformanceMeter. Measures rendering/processing throughput:
+// Inspired by jAER PerformanceMeter / EventProcessingPerformanceMeter. Measures
+// rendering/processing throughput:
 //   - FPS (frames per second): IIR-smoothed over frame completions
 //   - Latency (us): time from event batch arrival to frame display
-//   - Event rate (eps/Meps): forwarded from EventRateEstimator or measured here
+//   - Event rate (eps/Meps): forwarded from EventRateEstimator (windowed)
 //   - Drop rate: fraction of batches dropped due to overload
-// Designed for low overhead: call tick_frame() once per rendered frame.
+//   - Per-filter cost: ns/event, eps, average ± stderr over repeated start/stop
+//     samples (matching jAER EventProcessingPerformanceMeter.start/stop).
+// Designed for low overhead: call tick_frame() once per rendered frame and
+// start()/stop() around the section being profiled.
 
 #ifndef GUI_ALGO_COMMON_PERFORMANCE_METER_H
 #define GUI_ALGO_COMMON_PERFORMANCE_METER_H
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 
@@ -23,8 +28,9 @@ class PerformanceMeter {
 public:
     using Clock = std::chrono::steady_clock;
 
+    /// @param smoothing IIR factor in (0, 1] for FPS / latency smoothing.
     explicit PerformanceMeter(float smoothing = 0.1f)
-        : smoothing_(smoothing), rate_estimator_(smoothing) {}
+        : smoothing_(smoothing) {}
 
     /// @brief Marks the arrival of an event batch (start of pipeline latency).
     void tick_events(std::size_t n, Metavision::timestamp t_us) {
@@ -63,6 +69,56 @@ public:
         total_dropped_ += n;
     }
 
+    /// @brief Starts a per-section timing measurement over @p n_events events.
+    /// Matches jAER EventProcessingPerformanceMeter.start(int nEvents).
+    void start(std::uint64_t n_events) {
+        start_n_events_ = n_events;
+        start_time_ns_ = now_ns();
+    }
+
+    /// @brief Stops the per-section timing measurement and accumulates the
+    /// ns/event sample for averaging. Matches jAER
+    /// EventProcessingPerformanceMeter.stop().
+    void stop() {
+        const std::int64_t duration_ns = now_ns() - start_time_ns_;
+        duration_ns_ = duration_ns;
+        const double this_nspe = (start_n_events_ == 0)
+            ? 0.0
+            : static_cast<double>(duration_ns) / static_cast<double>(start_n_events_);
+        nspe_sum_ += this_nspe;
+        nspe_sq_ += this_nspe * this_nspe;
+        ++n_samples_;
+    }
+
+    /// @brief ns/event for the most recent start/stop sample.
+    double ns_per_event() const {
+        if (start_n_events_ == 0 || duration_ns_ == 0) return 0.0;
+        return static_cast<double>(duration_ns_) / static_cast<double>(start_n_events_);
+    }
+
+    /// @brief events/second for the most recent start/stop sample.
+    double eps() const {
+        if (duration_ns_ <= 0) return 0.0;
+        return static_cast<double>(start_n_events_) /
+               (static_cast<double>(duration_ns_) * 1.0e-9);
+    }
+
+    /// @brief Average ns/event over all accumulated start/stop samples.
+    double avg_ns_per_event() const {
+        if (n_samples_ == 0) return 0.0;
+        return nspe_sum_ / static_cast<double>(n_samples_);
+    }
+
+    /// @brief Standard error of the mean ns/event over all accumulated samples.
+    double stderr_ns_per_event() const {
+        if (n_samples_ < 2) return 0.0;
+        const double n = static_cast<double>(n_samples_);
+        const double var = (nspe_sq_ - nspe_sum_ * nspe_sum_ / n) / (n - 1.0);
+        return var <= 0.0 ? 0.0 : std::sqrt(var);
+    }
+
+    std::uint64_t n_samples() const { return n_samples_; }
+
     double fps() const { return fps_; }
     double latency_us() const { return latency_us_; }
     double event_rate_eps() const { return rate_estimator_.rate_eps(); }
@@ -87,9 +143,21 @@ public:
         last_event_tick_.reset();
         last_frame_tick_.reset();
         rate_estimator_.reset();
+        // Per-section statistics.
+        start_n_events_ = 0;
+        start_time_ns_ = 0;
+        duration_ns_ = 0;
+        nspe_sum_ = 0.0;
+        nspe_sq_ = 0.0;
+        n_samples_ = 0;
     }
 
 private:
+    static std::int64_t now_ns() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   Clock::now().time_since_epoch()).count();
+    }
+
     float smoothing_;
     EventRateEstimator rate_estimator_;
     double fps_{0.0};
@@ -99,6 +167,13 @@ private:
     std::uint64_t total_dropped_{0};
     std::optional<Clock::time_point> last_event_tick_;
     std::optional<Clock::time_point> last_frame_tick_;
+    // Per-section timing (jAER EventProcessingPerformanceMeter semantics).
+    std::uint64_t start_n_events_{0};
+    std::int64_t start_time_ns_{0};
+    std::int64_t duration_ns_{0};
+    double nspe_sum_{0.0};
+    double nspe_sq_{0.0};
+    std::uint64_t n_samples_{0};
 };
 
 } // namespace gui_algo

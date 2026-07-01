@@ -8,7 +8,7 @@
 // 分组模式：
 //   A) In-place filter:  noise_filter, hot_pixel_filter, optical_gyro, perspective_undistort
 //   B) Overlay detector: object_tracker, corner_detector, blob_detector, sparse_optical_flow
-//   C) Result-vector:    hough_line, hough_circle, hinge_line, line_segment, orientation_cluster, cluster_lif
+//   C) Result-vector:    hough_line, hough_circle, line_segment, orientation_cluster, cluster_lif
 //   D) Frame producer:   time_surface, event_to_video, flow_statistics, isi_analyzer
 //   E) Analyzer:         freq_detector, active_marker, particle_counter, auto_bias
 //   F) Event-vector:     trigger_synced, ultra_slow_motion
@@ -45,7 +45,6 @@
 #include "algo/cv/line_segment_detector.h"
 #include "algo/cv/hough_line_tracker.h"
 #include "algo/cv/hough_circle_tracker.h"
-#include "algo/cv/hinge_line_tracker.h"
 #include "algo/cv/orientation_cluster.h"
 #include "algo/cv/cluster_lif.h"
 #include "algo/cv/background_mask_filter.h"
@@ -403,8 +402,11 @@ class HoughLineBackend final : public AlgoBackend {
 public:
     HoughLineBackend(int w, int h) : algo_(w, h) {}
     void set_param(const std::string& k, const std::string& v) override {
-        if (k == "threshold") algo_.set_hough_threshold(to_i(v));
-        else if (k == "min_length") algo_.set_min_line_length_px(to_i(v));
+        if (k == "threshold") algo_.set_threshold(to_i(v));
+        else if (k == "num_theta_bins") algo_.set_num_theta_bins(to_i(v));
+        else if (k == "num_rho_bins") algo_.set_num_rho_bins(to_i(v));
+        else if (k == "accumulator_decay_us")
+            algo_.set_accumulator_decay_us(static_cast<Metavision::timestamp>(to_i(v)));
     }
     std::string get_param(const std::string& k) const override { return {}; }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -437,7 +439,9 @@ public:
     void set_param(const std::string& k, const std::string& v) override {
         if (k == "min_radius") algo_.set_min_radius_px(to_i(v));
         else if (k == "max_radius") algo_.set_max_radius_px(to_i(v));
-        else if (k == "threshold") algo_.set_hough_threshold(to_i(v));
+        else if (k == "threshold") algo_.set_threshold(to_i(v));
+        else if (k == "accumulator_decay_us")
+            algo_.set_accumulator_decay_us(static_cast<Metavision::timestamp>(to_i(v)));
     }
     std::string get_param(const std::string& k) const override { return {}; }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -454,37 +458,6 @@ public:
             r.circles.push_back(oc);
         }
         r.status = "hough_circle: " + std::to_string(last_.size()) + " circles";
-        return r;
-    }
-    void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
-};
-
-/// HingeLineTracker backend — detected hinges as overlay lines.
-class HingeLineBackend final : public AlgoBackend {
-    gui_algo::HingeLineTracker algo_;
-    std::vector<Metavision::EventCD> passthrough_;
-    std::vector<gui_algo::Hinge> last_;
-public:
-    HingeLineBackend(int w, int h) : algo_(w, h) {}
-    void set_param(const std::string& k, const std::string& v) override {
-        if (k == "angle_tolerance_deg") algo_.set_angle_tolerance_deg(static_cast<float>(to_d(v)));
-    }
-    std::string get_param(const std::string& k) const override { return {}; }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        gui_algo::EventPacket pkt(as_events(passthrough_.data()), passthrough_.size());
-        last_ = algo_.process(pkt);
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = passthrough_;
-        for (const auto& h : last_) {
-            OverlayPoint p;
-            p.x = static_cast<int>(h.position.x);
-            p.y = static_cast<int>(h.position.y);
-            r.points.push_back(p);
-        }
-        r.status = "hinge: " + std::to_string(last_.size()) + " hinges";
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
@@ -1124,7 +1097,6 @@ std::unique_ptr<AlgoBackend> create_algo_backend(const std::string& name,
     if (name == "line_segment")          return std::make_unique<LineSegmentBackend>(width, height);
     if (name == "hough_line")            return std::make_unique<HoughLineBackend>(width, height);
     if (name == "hough_circle")          return std::make_unique<HoughCircleBackend>(width, height);
-    if (name == "hinge_line")            return std::make_unique<HingeLineBackend>(width, height);
     if (name == "orientation_cluster")   return std::make_unique<OrientationClusterBackend>(width, height);
     if (name == "cluster_lif")           return std::make_unique<ClusterLifBackend>(width, height);
     if (name == "background_mask")       return std::make_unique<BackgroundMaskBackend>(width, height);

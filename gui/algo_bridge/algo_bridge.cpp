@@ -446,20 +446,18 @@ void AlgoBridge::register_self_cv() {
     // §4.3.14 Hough Line Tracker
     add({"hough_line", "Hough Line Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("threshold", "Threshold", "50", "10", "500"),
-          pint("min_length", "Min length (px)", "20", "5", "200")}});
+         {pint("threshold", "Threshold", "50", "2", "500"),
+          pint("num_theta_bins", "Theta bins", "90", "8", "360"),
+          pint("num_rho_bins", "Rho bins (0=auto)", "0", "0", "4000"),
+          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000")}});
 
     // §4.3.15 Hough Circle Tracker
     add({"hough_circle", "Hough Circle Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
          {pint("min_radius", "Min radius (px)", "5", "1", "100"),
           pint("max_radius", "Max radius (px)", "50", "5", "500"),
-          pint("threshold", "Threshold", "30", "5", "500")}});
-
-    // §4.3.16 Hinge Line Tracker
-    add({"hinge_line", "Hinge Line Tracker", "cv", "self",
-         AlgoDisplayMode::Overlay,
-         {pfloat("angle_tolerance_deg", "Angle tolerance (deg)", "5", "1", "45")}});
+          pint("threshold", "Threshold", "30", "2", "500"),
+          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000")}});
 
     // §4.3.17 Orientation Cluster
     add({"orientation_cluster", "Orientation Cluster", "cv", "self",

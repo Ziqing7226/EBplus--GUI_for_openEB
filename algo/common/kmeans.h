@@ -51,7 +51,10 @@ public:
             if (std::abs(prev_inertia - inertia) < 1e-9 * prev_inertia) break;
             prev_inertia = inertia;
         }
-        return prev_inertia;
+        // Recompute inertia against the final centroids_ so the returned value
+        // is consistent with the centroids callers observe (the loop body moves
+        // centroids one step past the inertia used for the convergence test).
+        return assign(points);
     }
 
     /// @brief Returns the cluster index (0..k-1) nearest to @p p.

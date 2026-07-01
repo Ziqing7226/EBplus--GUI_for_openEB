@@ -78,6 +78,11 @@ public:
 
     /// @brief Precomputes the HxW undistort LUT via cv::initUndistortRectifyMap.
     /// Fills undistort_map_x_ / undistort_map_y_ for O(1) runtime remap.
+    /// @note These maps are the INVERSE mapping (per undistorted output pixel,
+    ///       the distorted input coordinate to sample), suitable for cv::remap
+    ///       on accumulated event frames. They are NOT suitable for per-event
+    ///       distorted→undistorted address remapping; use
+    ///       build_event_undistort_lut() / undistort_point() for that.
     /// @param image_size Output image size for the LUT.
     void precompute_undistort_lut(cv::Size image_size);
 
@@ -85,6 +90,23 @@ public:
     const cv::Mat& undistort_map_x() const { return undistort_map_x_; }
     /// @brief Accessor for the precomputed y-map (empty until run/precompute).
     const cv::Mat& undistort_map_y() const { return undistort_map_y_; }
+
+    /// @brief Builds the forward (distorted→undistorted) per-event address LUT
+    ///        via cv::undistortPoints, mirroring SingleCameraCalibration.java
+    ///        L700-718. Indexed row-major as event_undistort_lut_[y*width+x].
+    ///        Empty until run()/precompute_undistort_lut() succeeds.
+    void build_event_undistort_lut(cv::Size image_size);
+
+    /// @brief Accessor for the forward per-event undistort LUT.
+    const std::vector<cv::Point2f>& event_undistort_lut() const {
+        return event_undistort_lut_;
+    }
+    cv::Size event_undistort_lut_size() const { return event_lut_size_; }
+
+    /// @brief Remaps a single distorted pixel address to the undistorted plane
+    ///        using the forward LUT built by build_event_undistort_lut().
+    /// @return true on success (LUT built and (x,y) in range); false otherwise.
+    bool undistort_point(int x, int y, float& ux, float& uy) const;
 
 private:
     CalibrationPattern pattern_{CalibrationPattern::Chessboard};
@@ -97,8 +119,10 @@ private:
 
     cv::Mat K_;                ///< Cached camera matrix (from last successful run)
     cv::Mat dist_coeffs_;      ///< Cached distortion coefficients (from last run)
-    cv::Mat undistort_map_x_;  ///< Precomputed undistort LUT (x), design §4.5.1
-    cv::Mat undistort_map_y_;  ///< Precomputed undistort LUT (y), design §4.5.1
+    cv::Mat undistort_map_x_;  ///< Inverse undistort LUT (x) for cv::remap, design §4.5.1
+    cv::Mat undistort_map_y_;  ///< Inverse undistort LUT (y) for cv::remap, design §4.5.1
+    std::vector<cv::Point2f> event_undistort_lut_; ///< Forward distorted→undistorted per-event LUT.
+    cv::Size event_lut_size_{0, 0};                ///< Size of the forward LUT.
 
     std::vector<cv::Point3f> make_object_grid() const;
 };

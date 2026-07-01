@@ -1,14 +1,16 @@
 // algo/common/filter/highpass.h — first-order IIR high-pass filter.
 //
-// Inspired by jAER HighPassFilter. Discrete one-pole high-pass (differentiator
-// + leak):
-//   y[n] = alpha * (y[n-1] + x[n] - x[n-1])
-// where alpha = RC / (RC + dt), RC = 1 / (2π fc). Used to detrend event-rate
-// signals and detect transients. Header-only.
+// Inspired by jAER HighPassFilter, which implements the high-pass as
+// x - LP(x) with LP using forward Euler (fac = dt/tau clamped to [0, 1]).
+// The equivalent direct form is
+//   y[n] = (1 - fac) * (y[n-1] + x[n] - x[n-1])
+// with fac = clamp(dt / tau, 0, 1), tau = RC = 1 / (2π fc). Used to detrend
+// event-rate signals and detect transients. Header-only.
 
 #ifndef GUI_ALGO_COMMON_FILTER_HIGHPASS_H
 #define GUI_ALGO_COMMON_FILTER_HIGHPASS_H
 
+#include <algorithm>
 #include <cmath>
 
 #ifndef M_PI
@@ -30,7 +32,8 @@ public:
     /// @brief Filters a new sample and returns the high-pass output.
     double process(double x) {
         if (!init_) { prev_x_ = x; y_ = 0.0; init_ = true; return y_; }
-        const double alpha = rc_ / (rc_ + dt_);
+        // HP = x - LP(x); direct-form coefficient is 1 - fac (fac = dt/tau).
+        const double alpha = 1.0 - std::clamp(dt_ / rc_, 0.0, 1.0);
         y_ = alpha * (y_ + x - prev_x_);
         prev_x_ = x;
         return y_;

@@ -327,7 +327,6 @@ void MainWindow::build_menus() {
             {tr("Line Segment (ELiSeD)"), "line_segment"},
             {tr("Hough Line"), "hough_line"},
             {tr("Hough Circle"), "hough_circle"},
-            {tr("Hinge Line"), "hinge_line"},
             {tr("Orientation Cluster"), "orientation_cluster"},
             {tr("Cluster LIF"), "cluster_lif"},
             {tr("Background Mask"), "background_mask"},

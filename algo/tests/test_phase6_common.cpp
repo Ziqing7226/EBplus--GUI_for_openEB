@@ -425,80 +425,84 @@ TEST(DvsFramerTest, AddEventsRange) {
 // 5. freme.h
 // =========================================================================
 
-TEST(FremeTest, FirstEventNoISI) {
-    Freme<float> f(10, 10, 8);
-    f.add_event(Event(0, 0, 1, 1000));
-    // First event at a pixel has no ISI → no bin populated.
-    const auto& spec = f.spectrum(0, 0);
-    EXPECT_EQ(std::accumulate(spec.begin(), spec.end(), 0.0f), 0.0f);
+// Freme<O> is a generic 2D state-map container ported from jAER's Freme<O>.
+// Each pixel (x, y) maps to a single state of type O.
+
+TEST(FremeTest, ConstructionAndSize) {
+    Freme<float> f(10, 8);
+    EXPECT_EQ(f.width(), 10);
+    EXPECT_EQ(f.height(), 8);
+    EXPECT_EQ(f.size(), 80);
 }
 
-TEST(FremeTest, ISIUpdatesSpectrum) {
-    Freme<float> f(10, 10, 8, 1000.0);
-    // dt = 1000us → 1000 Hz. Nyquist = 500 Hz. bin = 1000/500 * 8 = 16 → OOB!
-    // Use a lower frequency: dt = 2000us → 500 Hz → bin = 8 → OOB (max bin = 7).
-    // dt = 4000us → 250 Hz → bin = 4.
-    f.add_event(Event(0, 0, 1, 0));
-    f.add_event(Event(0, 0, 1, 4000));
-    const auto& spec = f.spectrum(0, 0);
-    EXPECT_EQ(spec[4], 1.0f);
+TEST(FremeTest, DefaultInitializedToZero) {
+    Freme<float> f(10, 10);
+    // Value-initialized float elements are 0.0f.
+    for (int y = 0; y < 10; ++y)
+        for (int x = 0; x < 10; ++x)
+            EXPECT_EQ(f.get(x, y), 0.0f);
 }
 
-TEST(FremeTest, FrequencyBinMapping) {
-    Freme<float> f(10, 10, 8, 1000.0);
-    EXPECT_EQ(f.frequency_to_bin(0.0), 0);
-    EXPECT_EQ(f.frequency_to_bin(250.0), 4);
-    EXPECT_EQ(f.frequency_to_bin(499.0), 7);
-    EXPECT_EQ(f.frequency_to_bin(500.0), -1);  // above Nyquist
-    EXPECT_EQ(f.frequency_to_bin(-1.0), -1);
+TEST(FremeTest, SetAndGet) {
+    Freme<float> f(10, 10);
+    f.set(3, 4, 7.5f);
+    EXPECT_EQ(f.get(3, 4), 7.5f);
+    // Other pixels untouched.
+    EXPECT_EQ(f.get(0, 0), 0.0f);
 }
 
-TEST(FremeTest, BinToFrequency) {
-    Freme<float> f(10, 10, 8, 1000.0);
-    EXPECT_NEAR(f.bin_to_frequency(0), 0.0, 1e-9);
-    EXPECT_NEAR(f.bin_to_frequency(4), 250.0, 1e-9);
-    EXPECT_NEAR(f.bin_to_frequency(8), 500.0, 1e-9);
+TEST(FremeTest, GetReturnsReference) {
+    Freme<float> f(10, 10);
+    f.get(2, 5) = 9.0f;  // mutate through the returned reference
+    EXPECT_EQ(f.get(2, 5), 9.0f);
 }
 
-TEST(FremeTest, Decay) {
-    Freme<float> f(10, 10, 8);
-    f.add_event(Event(0, 0, 1, 0));
-    f.add_event(Event(0, 0, 1, 4000));
-    f.decay(0.5f);
-    const auto& spec = f.spectrum(0, 0);
-    // After decay the populated bin should be halved.
-    for (int b = 0; b < 8; ++b) {
-        if (b == 4) continue;
-        EXPECT_EQ(spec[b], 0.0f);
-    }
+TEST(FremeTest, Fill) {
+    Freme<int> f(6, 6);
+    f.fill(42);
+    for (int y = 0; y < 6; ++y)
+        for (int x = 0; x < 6; ++x)
+            EXPECT_EQ(f.get(x, y), 42);
 }
 
-TEST(FremeTest, Clear) {
-    Freme<float> f(10, 10, 8, 1000.0);
-    f.add_event(Event(0, 0, 1, 0));
-    f.add_event(Event(0, 0, 1, 4000));
-    f.clear();
-    const auto& spec = f.spectrum(0, 0);
-    EXPECT_EQ(std::accumulate(spec.begin(), spec.end(), 0.0f), 0.0f);
-    // After clear, first event again has no ISI.
-    f.add_event(Event(0, 0, 1, 8000));
-    EXPECT_EQ(std::accumulate(f.spectrum(0, 0).begin(),
-                               f.spectrum(0, 0).end(), 0.0f), 0.0f);
+TEST(FremeTest, GetIndex) {
+    Freme<float> f(10, 10);
+    EXPECT_EQ(f.getIndex(0, 0), 0);
+    EXPECT_EQ(f.getIndex(3, 4), 43);  // 4 * 10 + 3
+    EXPECT_EQ(f.getIndex(9, 9), 99);
 }
 
-TEST(FremeTest, ZeroOrNegativeDtIgnored) {
-    Freme<float> f(10, 10, 8, 1000.0);
-    f.add_event(Event(0, 0, 1, 1000));
-    // Same timestamp → dt = 0 → ignored.
-    f.add_event(Event(0, 0, 1, 1000));
-    const auto& spec = f.spectrum(0, 0);
-    EXPECT_EQ(std::accumulate(spec.begin(), spec.end(), 0.0f), 0.0f);
+TEST(FremeTest, Iteration) {
+    Freme<float> f(4, 5);  // 20 pixels
+    f.fill(1.0f);
+    float sum = 0.0f;
+    for (float v : f) sum += v;
+    EXPECT_NEAR(sum, 20.0f, 1e-9);
 }
 
-TEST(FremeTest, OutOfBoundsIgnored) {
-    Freme<float> f(10, 10, 8);
-    f.add_event(Event(100, 100, 1, 0));
-    // Should not crash.
+TEST(FremeTest, ConstAccess) {
+    Freme<int> f(3, 3);
+    f.set(1, 1, 123);
+    const Freme<int>& cf = f;
+    EXPECT_EQ(cf.get(1, 1), 123);
+    int sum = 0;
+    for (int v : cf) sum += v;
+    EXPECT_EQ(sum, 123);
+}
+
+TEST(FremeTest, DifferentStateType) {
+    // The state type may itself be a container, e.g. std::vector<int>.
+    Freme<std::vector<int>> f(2, 2);
+    f.get(0, 0).push_back(10);
+    f.get(0, 0).push_back(20);
+    EXPECT_EQ(f.get(0, 0).size(), 2u);
+    EXPECT_EQ(f.get(1, 1).size(), 0u);  // default-constructed empty vector
+}
+
+TEST(FremeTest, EmptyContainer) {
+    Freme<float> f(0, 0);
+    EXPECT_EQ(f.size(), 0);
+    EXPECT_EQ(f.begin(), f.end());
 }
 
 // =========================================================================
@@ -506,50 +510,48 @@ TEST(FremeTest, OutOfBoundsIgnored) {
 // =========================================================================
 
 TEST(EventRateEstimatorTest, FirstBatchNoRate) {
-    EventRateEstimator est;
+    EventRateEstimator est;  // default window 10000us
     est.add_events(100, 1000);
-    EXPECT_EQ(est.rate_eps(), 0.0);  // uninitialized
+    EXPECT_EQ(est.rate_eps(), 0.0);  // uninitialized, window not yet elapsed
 }
 
 TEST(EventRateEstimatorTest, RateComputation) {
-    EventRateEstimator est(1.0f);  // no smoothing
+    EventRateEstimator est;  // default window 10000us
     est.add_events(100, 0);        // seed
     est.add_events(100, 10000);    // 100 events in 10ms → 10000 eps
     EXPECT_NEAR(est.rate_eps(), 10000.0, 1.0);
 }
 
 TEST(EventRateEstimatorTest, MevsConversion) {
-    EventRateEstimator est(1.0f);
+    EventRateEstimator est;
     est.add_events(100, 0);
     est.add_events(100, 10000);
     EXPECT_NEAR(est.rate_meps(), 0.01, 1e-6);
 }
 
-TEST(EventRateEstimatorTest, IIRSmoothing) {
-    EventRateEstimator est(0.5f);
-    est.add_events(100, 0);
-    // Batch 1: 100 events / 10ms = 10000 eps
-    est.add_events(100, 10000);
+TEST(EventRateEstimatorTest, WindowedCounting) {
+    // jAER EventRateEstimator: no IIR; rate is recomputed only when the
+    // elapsed time reaches window_us. filteredRate == instantaneousRate.
+    EventRateEstimator est;  // window 10000us
+    est.add_events(100, 0);    // seed
+    est.add_events(50, 5000);  // dt=5000 < 10000 → no update yet
+    EXPECT_EQ(est.rate_eps(), 0.0);
+    est.add_events(50, 10000); // dt=10000 >= 10000 → 100 events / 10ms
     EXPECT_NEAR(est.rate_eps(), 10000.0, 1.0);
-    // Batch 2: 100 events / 10ms = 10000 eps → smoothed stays 10000
-    est.add_events(100, 20000);
-    EXPECT_NEAR(est.rate_eps(), 10000.0, 1.0);
-    // Batch 3: 200 events / 10ms = 20000 eps
-    // smoothed = 0.5 * 20000 + 0.5 * 10000 = 15000
-    est.add_events(200, 30000);
-    EXPECT_NEAR(est.rate_eps(), 15000.0, 1.0);
+    EXPECT_NEAR(est.instantaneous_rate(), 10000.0, 1.0);
 }
 
 TEST(EventRateEstimatorTest, Reset) {
-    EventRateEstimator est(1.0f);
+    EventRateEstimator est;
     est.add_events(100, 0);
     est.add_events(100, 10000);
     est.reset();
     EXPECT_EQ(est.rate_eps(), 0.0);
+    EXPECT_EQ(est.instantaneous_rate(), 0.0);
 }
 
 TEST(EventRateEstimatorTest, ZeroEventsIgnored) {
-    EventRateEstimator est(1.0f);
+    EventRateEstimator est;
     est.add_events(100, 0);
     est.add_events(0, 10000);  // zero events → ignored
     EXPECT_EQ(est.rate_eps(), 0.0);
@@ -616,6 +618,27 @@ TEST(PerformanceMeterTest, FPSPositiveAfterTwoFrames) {
     pm.tick_frame();
     EXPECT_GT(pm.fps(), 0.0);
     EXPECT_LT(pm.fps(), 1000.0);  // sane upper bound
+}
+
+TEST(PerformanceMeterTest, StartStopPerFilterMetrics) {
+    // jAER EventProcessingPerformanceMeter: start(n)/stop() records ns/event.
+    PerformanceMeter pm;
+    pm.start(1000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    pm.stop();
+    EXPECT_GT(pm.ns_per_event(), 0.0);
+    EXPECT_GT(pm.eps(), 0.0);
+    EXPECT_EQ(pm.n_samples(), 1u);
+    // Accumulate a second sample for avg/stderr.
+    pm.start(2000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    pm.stop();
+    EXPECT_EQ(pm.n_samples(), 2u);
+    EXPECT_GT(pm.avg_ns_per_event(), 0.0);
+    EXPECT_GE(pm.stderr_ns_per_event(), 0.0);
+    pm.reset();
+    EXPECT_EQ(pm.n_samples(), 0u);
+    EXPECT_EQ(pm.avg_ns_per_event(), 0.0);
 }
 
 // =========================================================================
@@ -1052,14 +1075,12 @@ TEST(LifIntegratorTest, FiresExactlyAtThreshold) {
     EXPECT_NEAR(lif.potential(0, 0), 0.0, 1e-9);
 }
 
-TEST(LifIntegratorTest, OffEventDecrements) {
-    // Use same timestamp to avoid leak interference.
+TEST(LifIntegratorTest, OffEventAlsoIncrements) {
+    // Per jAER BlurringTunnelFilter, all events add +1.0 regardless of polarity.
     LifIntegrator lif(10, 10, 1000000, 10.0);
     lif.add_event(0, 0, 1, 0);   // pot = 1
-    lif.add_event(0, 0, 0, 0);   // pot = 0
-    EXPECT_NEAR(lif.potential(0, 0), 0.0, 1e-9);
-    lif.add_event(0, 0, 0, 0);   // pot = -1
-    EXPECT_NEAR(lif.potential(0, 0), -1.0, 1e-9);
+    lif.add_event(0, 0, 0, 0);   // pot = 2 (OFF also adds +1)
+    EXPECT_NEAR(lif.potential(0, 0), 2.0, 1e-9);
 }
 
 TEST(LifIntegratorTest, LeakDecays) {
@@ -1231,43 +1252,45 @@ TEST(BandpassFilterTest, SetCutoffs) {
 // =========================================================================
 
 TEST(AngularLowpassFilterTest, FirstSampleReturned) {
-    AngularLowpassFilter af(0.5);
-    double out = af.process(1.0);
+    AngularLowpassFilter af;  // default period=2π, tau=0.1
+    double out = af.process(1.0, 0.0);
     EXPECT_NEAR(out, 1.0, 1e-9);
 }
 
 TEST(AngularLowpassFilterTest, WrapAround) {
-    AngularLowpassFilter af(0.5);
-    af.process(0.1);       // near 0
-    double out = af.process(6.2);  // near 2π ≈ 6.283
-    // The smoothed angle should be close to the average of 0.1 and ~0 (6.2 ≈ -0.083)
-    // Result should be near 0 (or 2π), not near π.
+    AngularLowpassFilter af(2.0 * M_PI, 1.0);  // tau=1.0s
+    af.process(0.1, 0.0);        // near 0
+    double out = af.process(6.2, 0.1);  // near 2π ≈ 6.283 (i.e. ≈ -0.083)
+    // The smoothed angle should stay near 0 (not drift toward π).
     EXPECT_LT(std::abs(out), 1.0);  // should be near 0, not near π
 }
 
-TEST(AngularLowpassFilterTest, CoherenceHighForConsistent) {
-    AngularLowpassFilter af(0.5);
-    for (int i = 0; i < 10; ++i) af.process(1.0);
-    // All same angle → coherence near 1.
-    EXPECT_GT(af.coherence(), 0.9);
+TEST(AngularLowpassFilterTest, ConvergesToConsistentAngle) {
+    AngularLowpassFilter af(2.0 * M_PI, 0.05);  // small tau → fast convergence
+    for (int i = 0; i < 20; ++i) af.process(1.0, i * 0.01);
+    // All same angle → filtered value approaches the input.
+    EXPECT_NEAR(af.value(), 1.0, 0.1);
 }
 
-TEST(AngularLowpassFilterTest, CoherenceLowForDispersed) {
-    AngularLowpassFilter af(0.5);
-    af.process(0.0);
-    af.process(M_PI);  // opposite angles → coherence near 0
-    EXPECT_LT(af.coherence(), 0.3);
+TEST(AngularLowpassFilterTest, ShortestPathAcrossWrap) {
+    // Filter from near 2π should converge toward ~0 via the short path.
+    AngularLowpassFilter af(2.0 * M_PI, 0.01);  // fac≈1 (dt >> tau)
+    af.process(6.2, 0.0);     // init near 2π
+    double out = af.process(0.1, 1.0);  // jump to 0.1
+    // Shortest path from 6.2 (≈ -0.083) to 0.1 is small; result ≈ 0.1.
+    EXPECT_NEAR(out, 0.1, 0.1);
 }
 
-TEST(AngularLowpassFilterTest, AlphaOneNoSmoothing) {
-    AngularLowpassFilter af(1.0);
-    af.process(1.0);
-    EXPECT_NEAR(af.process(2.0), 2.0, 1e-9);
+TEST(AngularLowpassFilterTest, FacOneNoSmoothing) {
+    // tau << dt → fac = clamp(dt/tau, 0, 1) = 1 → output = input.
+    AngularLowpassFilter af(2.0 * M_PI, 0.001);
+    af.process(1.0, 0.0);
+    EXPECT_NEAR(af.process(2.0, 0.1), 2.0, 1e-9);
 }
 
 TEST(AngularLowpassFilterTest, Reset) {
-    AngularLowpassFilter af(0.5);
-    af.process(1.0);
+    AngularLowpassFilter af;
+    af.process(1.0, 0.0);
     af.reset();
     EXPECT_FALSE(af.initialized());
     EXPECT_EQ(af.value(), 0.0);
@@ -1278,8 +1301,10 @@ TEST(AngularLowpassFilterTest, Reset) {
 // =========================================================================
 
 TEST(MedianLowpassFilterTest, SingleSample) {
+    // jAER MedianLowpassFilter zero-fills the window at startup, so the first
+    // sample yields a median of 0 (window = {0,0,0,0,5} → upper-middle = 0).
     MedianLowpassFilter ml(5);
-    EXPECT_EQ(ml.process(5.0), 5.0);
+    EXPECT_EQ(ml.process(5.0), 0.0);
 }
 
 TEST(MedianLowpassFilterTest, RemovesImpulse) {
@@ -1306,15 +1331,16 @@ TEST(MedianLowpassFilterTest, PreservesEdge) {
     EXPECT_EQ(out, 100.0);
 }
 
-TEST(MedianLowpassFilterTest, EvenWindowAveragesMiddle) {
+TEST(MedianLowpassFilterTest, EvenWindowUpperMiddle) {
+    // jAER uses samples[length/2] (upper-middle for even windows), and the
+    // window is zero-filled at startup.
     MedianLowpassFilter ml(4);
-    // Window size 4 → even → median = avg of 2 middle values.
-    ml.process(1.0);  // {1}
-    ml.process(2.0);  // {1,2} → median = 1.5
-    EXPECT_NEAR(ml.value(), 1.5, 1e-9);
-    ml.process(3.0);  // {1,2,3} → median = 2
-    ml.process(4.0);  // {1,2,3,4} → median = (2+3)/2 = 2.5
-    EXPECT_NEAR(ml.value(), 2.5, 1e-9);
+    ml.process(1.0);  // {0,0,0,1} → upper-middle = 0
+    ml.process(2.0);  // {0,0,1,2} → upper-middle = 1
+    EXPECT_NEAR(ml.value(), 1.0, 1e-9);
+    ml.process(3.0);  // {0,1,2,3} → upper-middle = 2
+    ml.process(4.0);  // {1,2,3,4} → upper-middle = 3
+    EXPECT_NEAR(ml.value(), 3.0, 1e-9);
 }
 
 TEST(MedianLowpassFilterTest, Reset) {

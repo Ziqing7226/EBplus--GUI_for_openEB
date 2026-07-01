@@ -17,7 +17,6 @@
 #include "algo/cv/line_segment_detector.h"
 #include "algo/cv/hough_line_tracker.h"
 #include "algo/cv/hough_circle_tracker.h"
-#include "algo/cv/hinge_line_tracker.h"
 #include "algo/cv/orientation_cluster.h"
 #include "algo/cv/cluster_lif.h"
 #include "algo/cv/background_mask_filter.h"
@@ -47,7 +46,6 @@ using gui_algo::MutableEventPacket;
 using gui_algo::LineSegmentDetector;
 using gui_algo::HoughLineTracker;
 using gui_algo::HoughCircleTracker;
-using gui_algo::HingeLineTracker;
 using gui_algo::OrientationCluster;
 using gui_algo::ClusterLIF;
 using gui_algo::BackgroundMaskFilter;
@@ -106,6 +104,40 @@ TEST(LineSegmentDetectorTest, ProcessEmpty) {
     auto result = d.process(pkt);
     EXPECT_TRUE(result.empty());
 }
+TEST(LineSegmentDetectorTest, ElisedParams) {
+    LineSegmentDetector d(32, 32);
+    d.set_max_age_us(50000);
+    EXPECT_EQ(d.max_age_us(), 50000);
+    d.set_num_orientations(8);
+    EXPECT_EQ(d.num_orientations(), 8);
+}
+// ELiSeD port: a horizontal line of ON events at y=16 with temporal contrast
+// supplied by neighbouring rows (y=15 older, y=17 newer) must produce a
+// roughly horizontal segment whose length meets the minimum threshold.
+TEST(LineSegmentDetectorTest, DetectsHorizontalLine) {
+    LineSegmentDetector d(48, 48);
+    d.set_min_line_length_px(10);
+    std::vector<Event> ev;
+    // Pre-fill rows 15 (older) and 17 (newer) for timestamp-contrast.
+    for (int x = 4; x <= 43; ++x) {
+        ev.emplace_back(static_cast<uint16_t>(x), 15, 1, 1000);
+        ev.emplace_back(static_cast<uint16_t>(x), 17, 1, 5000);
+    }
+    // Line row, emitted last so neighbours are already populated.
+    for (int x = 4; x <= 43; ++x) {
+        ev.emplace_back(static_cast<uint16_t>(x), 16, 1, 3000);
+    }
+    auto pkt = make_packet(ev);
+    auto result = d.process(pkt);
+    ASSERT_GE(result.size(), 1u);
+    // Segment should be roughly horizontal (angle within [0,180) and near 0).
+    EXPECT_GE(result[0].angle, 0.0f);
+    EXPECT_LT(result[0].angle, 180.0f);
+    const float dx = result[0].end.x - result[0].start.x;
+    const float dy = result[0].end.y - result[0].start.y;
+    EXPECT_GT(dx * dx, dy * dy);  // horizontal extent dominates
+    EXPECT_GE(result[0].track_id, 0);
+}
 
 // --- 4.3.14 HoughLineTracker ---
 TEST(HoughLineTrackerTest, Construction) {
@@ -115,10 +147,12 @@ TEST(HoughLineTrackerTest, Construction) {
 }
 TEST(HoughLineTrackerTest, Params) {
     HoughLineTracker t(32, 32);
-    t.set_hough_threshold(100);
-    EXPECT_EQ(t.hough_threshold(), 100);
-    t.set_min_line_length_px(40);
-    EXPECT_EQ(t.min_line_length_px(), 40);
+    t.set_threshold(100);
+    EXPECT_EQ(t.threshold(), 100);
+    t.set_num_theta_bins(45);
+    EXPECT_EQ(t.num_theta_bins(), 45);
+    t.set_accumulator_decay_us(50000);
+    EXPECT_EQ(t.accumulator_decay_us(), 50000);
 }
 TEST(HoughLineTrackerTest, ProcessEmpty) {
     HoughLineTracker t(32, 32);
@@ -140,25 +174,13 @@ TEST(HoughCircleTrackerTest, Params) {
     EXPECT_EQ(t.min_radius_px(), 10);
     t.set_max_radius_px(100);
     EXPECT_EQ(t.max_radius_px(), 100);
-    t.set_hough_threshold(50);
-    EXPECT_EQ(t.hough_threshold(), 50);
+    t.set_threshold(50);
+    EXPECT_EQ(t.threshold(), 50);
+    t.set_accumulator_decay_us(50000);
+    EXPECT_EQ(t.accumulator_decay_us(), 50000);
 }
 TEST(HoughCircleTrackerTest, ProcessEmpty) {
     HoughCircleTracker t(32, 32);
-    std::vector<Event> empty;
-    auto pkt = make_packet(empty);
-    auto result = t.process(pkt);
-    EXPECT_TRUE(result.empty());
-}
-
-// --- 4.3.16 HingeLineTracker ---
-TEST(HingeLineTrackerTest, Construction) {
-    HingeLineTracker t(64, 48);
-    (void)t;
-    SUCCEED();
-}
-TEST(HingeLineTrackerTest, ProcessEmpty) {
-    HingeLineTracker t(32, 32);
     std::vector<Event> empty;
     auto pkt = make_packet(empty);
     auto result = t.process(pkt);

@@ -1,9 +1,9 @@
 // algo/common/filter/bandpass.h — first-order IIR band-pass filter.
 //
-// Inspired by jAER LowPassFilter / HighPassFilter combination. A band-pass is
-// realised by cascading a high-pass (low cutoff) and a low-pass (high cutoff):
-// the high-pass removes DC / slow drift, the low-pass removes high-frequency
-// noise, leaving the band [low_hz, high_hz]. Supports N-order cascading for
+// Inspired by jAER BandpassFilter, which cascades low-pass then high-pass:
+//   out = hp(lp(x))
+// The low-pass removes high-frequency noise, the high-pass removes DC / slow
+// drift, leaving the band [low_hz, high_hz]. Supports N-order cascading for
 // steeper roll-off. Header-only.
 
 #ifndef GUI_ALGO_COMMON_FILTER_BANDPASS_H
@@ -37,10 +37,11 @@ public:
     }
 
     /// @brief Filters a new sample and returns the band-pass output.
+    /// jAER order: low-pass first, then high-pass (hp(lp(x))).
     double process(double x) {
         double y = x;
-        for (auto& hp : hp_) y = hp.process(y);
         for (auto& lp : lp_) y = lp.process(y);
+        for (auto& hp : hp_) y = hp.process(y);
         last_ = y;
         return y;
     }

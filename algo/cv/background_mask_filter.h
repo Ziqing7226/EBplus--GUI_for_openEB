@@ -42,6 +42,18 @@ public:
     /// @brief Updates per-pixel activity and returns the current foreground mask.
     ///        255 = foreground (moving), 0 = background (static).
     const cv::Mat& process(const EventPacket& packet) {
+        // Determine the current packet end time (max event timestamp). For an
+        // empty packet fall back to the last seen timestamp so the staleness
+        // decay below remains a no-op rather than operating on stale data.
+        Metavision::timestamp t_now = last_packet_t_;
+        if (!packet.empty()) {
+            t_now = packet[0].t;
+            for (const Event& e : packet) {
+                if (e.t > t_now) t_now = e.t;
+            }
+            if (t_now > last_packet_t_) last_packet_t_ = t_now;
+        }
+
         for (const Event& e : packet) {
             if (e.x >= width_ || e.y >= height_) continue;
             const std::size_t idx =
@@ -56,6 +68,21 @@ public:
                 activity_[idx] = 1.0;
             }
         }
+
+        // Decay every pixel's activity to the current packet end time so that
+        // pixels which have not received a recent event do not retain stale
+        // (overstated) activity when the mask is evaluated.
+        if (t_now >= 0) {
+            for (std::size_t i = 0; i < activity_.size(); ++i) {
+                const Metavision::timestamp lt = last_t_[i];
+                if (lt >= 0 && t_now > lt) {
+                    const double dt = static_cast<double>(t_now - lt);
+                    activity_[i] *= std::exp(-dt / static_cast<double>(tau_us_));
+                    last_t_[i] = t_now;
+                }
+            }
+        }
+
         const double tau_s = learning_window_s_;
         for (std::size_t i = 0; i < activity_.size(); ++i) {
             const double rate = activity_[i] / tau_s; // events/second
@@ -87,6 +114,7 @@ public:
         std::fill(activity_.begin(), activity_.end(), 0.0);
         std::fill(last_t_.begin(), last_t_.end(),
                   static_cast<Metavision::timestamp>(-1));
+        last_packet_t_ = -1;
         mask_.setTo(0);
     }
 
@@ -98,6 +126,7 @@ private:
     double threshold_hz_;
     std::vector<double> activity_;
     std::vector<Metavision::timestamp> last_t_;
+    Metavision::timestamp last_packet_t_{-1}; ///< High-water mark of packet end times.
     cv::Mat mask_;
 };
 

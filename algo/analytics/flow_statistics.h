@@ -54,35 +54,33 @@ public:
     /// @brief Adds a batch of estimated vs ground-truth flow samples.
     void add_samples(const FlowSample* samples, std::size_t n) {
         if (samples == nullptr || n == 0) return;
+        // jAER MotionFlowStatistics guards: skip the sample entirely when the
+        // ground-truth magnitude is (near) zero; for the angular error also
+        // skip when the estimated magnitude is zero.
+        constexpr double kEps = 1e-6;
         for (std::size_t i = 0; i < n; ++i) {
             const FlowSample& s = samples[i];
+            const double u_est = s.u_est, v_est = s.v_est;
+            const double u_gt = s.u_gt, v_gt = s.v_gt;
+            const double mag_gt = std::sqrt(u_gt * u_gt + v_gt * v_gt);
+            const double mag_est = std::sqrt(u_est * u_est + v_est * v_est);
+            if (mag_gt < kEps) continue;
             // Endpoint error.
-            const float dx = s.u_est - s.u_gt;
-            const float dy = s.v_est - s.v_gt;
+            const double dx = u_est - u_gt;
+            const double dy = v_est - v_gt;
             const double epe = std::sqrt(dx * dx + dy * dy);
             epe_.push(epe);
-            // Percentage error (relative magnitude error, %).
-            const double mag_gt =
-                std::sqrt(static_cast<double>(s.u_gt) * s.u_gt +
-                          static_cast<double>(s.v_gt) * s.v_gt);
-            const double mag_est =
-                std::sqrt(static_cast<double>(s.u_est) * s.u_est +
-                          static_cast<double>(s.v_est) * s.v_est);
-            const double pe = mag_gt > 1e-6
-                                  ? std::abs(mag_est - mag_gt) / mag_gt * 100.0
-                                  : 0.0;
-            pe_.push(pe);
-            // Angular error between (u,v,1) vectors.
-            const double a_dot = static_cast<double>(s.u_est) * s.u_gt +
-                                 static_cast<double>(s.v_est) * s.v_gt + 1.0;
-            const double a_n = std::sqrt(static_cast<double>(s.u_est) * s.u_est +
-                                         static_cast<double>(s.v_est) * s.v_est + 1.0);
-            const double b_n = std::sqrt(static_cast<double>(s.u_gt) * s.u_gt +
-                                         static_cast<double>(s.v_gt) * s.v_gt + 1.0);
-            double cos_a = (a_n > 1e-9 && b_n > 1e-9) ? a_dot / (a_n * b_n) : 1.0;
-            if (cos_a > 1.0) cos_a = 1.0;
-            if (cos_a < -1.0) cos_a = -1.0;
-            ae_.push(std::acos(cos_a) * 180.0 / detail::kPi);
+            // Percentage error: relative endpoint error EPE/|v_gt|*100 (jAER
+            // EndpointErrorRel), not the relative magnitude error.
+            pe_.push(epe * 100.0 / mag_gt);
+            // Angular error: 2D vector angle between est and gt (jAER
+            // AngularError). Skip when est magnitude is zero.
+            if (mag_est >= kEps) {
+                double cos_a = (u_est * u_gt + v_est * v_gt) / (mag_est * mag_gt);
+                if (cos_a > 1.0) cos_a = 1.0;
+                if (cos_a < -1.0) cos_a = -1.0;
+                ae_.push(std::acos(cos_a) * 180.0 / detail::kPi);
+            }
         }
     }
 

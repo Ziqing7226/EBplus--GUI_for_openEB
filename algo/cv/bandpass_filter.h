@@ -60,6 +60,13 @@ public:
         if (dt <= 0) return value_;
         const double instant =
             static_cast<double>(n_events) / (static_cast<double>(dt) * 1.0e-6);
+        // Mirror jAER's per-update recomputation of the filter coefficient
+        // from the actual inter-sample dt: push the real sample spacing into
+        // every stage before processing, instead of relying on the fixed
+        // constructor-time sample_dt.
+        const double dt_s = static_cast<double>(dt) * 1.0e-6;
+        for (auto& hp : hp_) hp.set_sample_dt(dt_s);
+        for (auto& lp : lp_) lp.set_sample_dt(dt_s);
         value_ = process(instant);
         return value_;
     }

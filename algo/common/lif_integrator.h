@@ -1,11 +1,12 @@
 // algo/common/lif_integrator.h — Leaky Integrate-and-Fire neuron integrator.
 //
-// Inspired by jAER LIFNeuron / IFSignedNeuronArray. Models a 2D grid of
-// leaky integrate-and-fire neurons driven by events: each event increments (ON)
-// or decrements (OFF) the membrane potential of the corresponding pixel, which
-// then leaks exponentially toward the reset value. When a pixel's potential
-// crosses the firing threshold, it emits a spike (cluster) and resets. Used by
-// ClusterLIF (4.3.18) and related clustering algorithms. Header-only.
+// Inspired by jAER BlurringTunnelFilter / LIFNeuron. Models a 2D grid of
+// leaky integrate-and-fire neurons driven by events: each event adds +1.0 to
+// the membrane potential of the corresponding pixel (regardless of polarity,
+// per jAER BlurringTunnelFilter), which then leaks exponentially toward 0.
+// When a pixel's potential crosses the firing threshold, it emits a spike
+// (cluster) and resets. Used by ClusterLIF (4.3.18) and related clustering
+// algorithms. Header-only.
 
 #ifndef GUI_ALGO_COMMON_LIF_INTEGRATOR_H
 #define GUI_ALGO_COMMON_LIF_INTEGRATOR_H
@@ -44,16 +45,17 @@ public:
                    Metavision::timestamp t) {
         if (x >= width_ || y >= height_) return false;
         const std::size_t idx = static_cast<std::size_t>(y) * width_ + x;
-        // Apply leak since the last update at this pixel.
+        // Apply leak since the last update at this pixel (decays toward 0).
         const auto prev = last_ts_[idx];
         last_ts_[idx] = t;
         if (prev >= 0 && t > prev) {
             const double dt = static_cast<double>(t - prev);
-            const double decay = std::exp(-dt / static_cast<double>(tau_us_));
-            potential_[idx] = reset_value_ + (potential_[idx] - reset_value_) * decay;
+            potential_[idx] *= std::exp(-dt / static_cast<double>(tau_us_));
         }
-        // Integrate: ON excites (+1), OFF inhibits (-1).
-        potential_[idx] += (p ? 1.0 : -1.0);
+        // Integrate: every event adds +1.0 regardless of polarity (per jAER
+        // BlurringTunnelFilter, which feeds all neighbors uniformly).
+        (void)p;
+        potential_[idx] += 1.0;
         if (potential_[idx] >= threshold_) {
             potential_[idx] = reset_value_;
             return true;
@@ -68,7 +70,7 @@ public:
         const double decay = std::exp(-static_cast<double>(dt_us) /
                                       static_cast<double>(tau_us_));
         for (auto& v : potential_) {
-            v = reset_value_ + (v - reset_value_) * decay;
+            v *= decay;
         }
     }
 

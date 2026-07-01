@@ -3,9 +3,16 @@
 // Self-developed (design §4.3.9), inspired by the jAER rbodo optical-flow suite
 // and ClusterBasedOpticalFlow. Four modes:
 //   LocalPlanes  — local (x,y,t) plane fit (Benoit 2015); velocity = grad(T)/|grad(T)|².
-//   LucasKanade  — time-surface gradient LK: solve S v = [sum Ix, sum Iy].
-//   BlockMatch   — ABMOF-style block matching between consecutive accumulation
-//                  frames on a downsampled grid.
+//   LucasKanade  — ✅ 移植自 jAER LucasKanadeFlow (Benosman 2012).
+//                  Per-event flow from an event-count histogram: central
+//                  first-order spatial derivatives of the histogram, event
+//                  density as the temporal derivative, a structure tensor
+//                  over the neighborhood, and eigenvalue-based reliability
+//                  gating (reject / 1D normal-flow / full 2D LK solve).
+//   BlockMatch   — multi-scale coarse-to-fine pyramid with diamond
+//                  (LDSP/SDSP) search; ABMOF/PatchMatchFlow-style block
+//                  matching between consecutive accumulation frames on a
+//                  downsampled grid.
 //   ClusterOF    — centroid-cluster trajectory velocity (reuses §4.3.11 params).
 // Output: vector<FlowVector> { x, y, vx, vy, confidence } (vx/vy in px/s).
 // Header-only.
@@ -17,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -61,12 +69,26 @@ public:
     // LucasKanade ----------------------------------------------------------
     void set_block_size(int v) { block_size_ = clamp_i(v, 4, 64); }
     void set_step(int v) { step_ = clamp_i(v, 1, 32); }
+    void set_lk_thr(double v) { lk_thr_ = v < 0.0 ? 0.0 : v; }
     // BlockMatch -----------------------------------------------------------
     void set_downsample_factor(int v) { downsample_factor_ = clamp_i(v, 1, 8); }
     void set_block_match_time_window_us(int v) {
         bm_time_window_us_ = clamp_i(v, 1000, 200000);
     }
     void set_search_radius_px(int v) { search_radius_px_ = clamp_i(v, 1, 16); }
+    void set_num_scales(int v) { num_scales_ = clamp_i(v, 1, 5); }
+    void set_max_slice_value(int v) { max_slice_value_ = clamp_i(v, 1, 255); }
+    void set_valid_pix_occupancy(double v) {
+        valid_pix_occupancy_ = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+    }
+    void set_weight_distance(double v) {
+        weight_distance_ = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+    }
+    void set_max_sad_distance(double v) {
+        max_sad_distance_ = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+    }
+    void set_use_diamond_search(bool v) { use_diamond_search_ = v; }
+    void set_grad_thr(double v) { grad_thr_ = v < 0.0 ? 0.0 : v; }
     // ClusterOF ------------------------------------------------------------
     void set_min_track_len(int v) { min_track_len_ = clamp_i(v, 3, 100); }
     void set_cluster_size_px(int v) { cluster_size_px_ = clamp_i(v, 3, 50); }
@@ -77,9 +99,17 @@ public:
     int min_events_per_cluster() const { return min_events_per_cluster_; }
     int block_size() const { return block_size_; }
     int step() const { return step_; }
+    double lk_thr() const { return lk_thr_; }
     int downsample_factor() const { return downsample_factor_; }
     int block_match_time_window_us() const { return bm_time_window_us_; }
     int search_radius_px() const { return search_radius_px_; }
+    int num_scales() const { return num_scales_; }
+    int max_slice_value() const { return max_slice_value_; }
+    double valid_pix_occupancy() const { return valid_pix_occupancy_; }
+    double weight_distance() const { return weight_distance_; }
+    double max_sad_distance() const { return max_sad_distance_; }
+    bool use_diamond_search() const { return use_diamond_search_; }
+    double grad_thr() const { return grad_thr_; }
     int min_track_len() const { return min_track_len_; }
     int width() const { return width_; }
     int height() const { return height_; }
@@ -105,7 +135,9 @@ public:
         cur_.release();
         prev_.release();
         last_match_t_ = 0;
+        last_emit_t_ = 0;
         of_clusters_.clear();
+        for (auto& dq : lk_ts_) dq.clear();
     }
 
 private:
@@ -149,11 +181,15 @@ private:
                 sae_[idx_of(e.x, e.y)] = e.t;
                 continue;
             }
-            const double denom = a * a + b * b;
-            if (denom_small(denom)) {
+            // jAER LocalPlanesFlow.velFromPar: skip when both spatial
+            // gradients are below threshold (flat fit → unreliable velocity).
+            // Component-wise check (not a²+b²) so a single strong gradient
+            // direction still yields a valid 1D velocity along that axis.
+            if (std::fabs(a) < grad_thr_ && std::fabs(b) < grad_thr_) {
                 sae_[idx_of(e.x, e.y)] = e.t;
                 continue;
             }
+            const double denom = a * a + b * b;
             const double vx = (a / denom) * 1e6;   // px/s
             const double vy = (b / denom) * 1e6;
             const double conf = plane_confidence(xs, ys, ts, a, b, c, win);
@@ -167,8 +203,6 @@ private:
             sae_[idx_of(e.x, e.y)] = e.t;
         }
     }
-
-    static bool denom_small(double d) { return std::fabs(d) < 1e-12; }
 
     static double det3(const double m[3][3]) {
         return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
@@ -223,63 +257,129 @@ private:
         return conf < 0.0 ? 0.0 : (conf > 1.0 ? 1.0 : conf);
     }
 
-    // --- LucasKanade: time-surface gradient LK ---------------------------
+    // --- LucasKanade: ✅ 移植自 jAER LucasKanadeFlow (Benosman 2012) ------
+    // Per-event flow from an event-count histogram (per-pixel per-polarity
+    // timestamp deques). Central first-order spatial derivatives of the
+    // histogram, event density as the temporal derivative, structure tensor
+    // over the neighborhood, eigenvalue-based reliability gating.
+    void ensure_lk_ts() {
+        const std::size_t n = static_cast<std::size_t>(width_) * height_ * 2;
+        if (lk_ts_.size() != n) {
+            lk_ts_.assign(n, {});
+        }
+    }
+    std::size_t lk_idx(int x, int y, int p) const {
+        return (static_cast<std::size_t>(y) * width_ + x) * 2 + static_cast<std::size_t>(p);
+    }
+    void prune_lk_deque(std::vector<Metavision::timestamp>& dq,
+                        Metavision::timestamp cutoff) {
+        auto it = std::lower_bound(dq.begin(), dq.end(), cutoff);
+        if (it != dq.begin()) dq.erase(dq.begin(), it);
+    }
+
     void run_lucas_kanade(const Event* events, std::size_t count,
                           std::vector<FlowVector>& out) {
+        ensure_lk_ts();
         const Metavision::timestamp win = time_window_us_;
-        const int bs = block_size_;
-        const int half = bs / 2;
-        // Update SAE first, then sample on a grid.
+        const int sr = search_radius_px_;   // neighborhood radius (jAER searchDistance)
+        const int d = 1;                     // border margin for central first-order
+        const double scale = 1.0e6 / static_cast<double>(win);  // px/window -> px/s
         for (std::size_t i = 0; i < count; ++i) {
             const Event& e = events[i];
-            if (e.x < width_ && e.y < height_) sae_[idx_of(e.x, e.y)] = e.t;
-        }
-        const Metavision::timestamp last_t = count > 0 ? events[count - 1].t : 0;
-        for (int gy = half; gy < height_ - half; gy += step_) {
-            for (int gx = half; gx < width_ - half; gx += step_) {
-                lk_at(gx, gy, half, last_t, win, out);
+            if (e.x >= width_ || e.y >= height_) continue;
+            const int p = e.p & 1;
+            // Add event timestamp to the histogram.
+            lk_ts_[lk_idx(e.x, e.y, p)].push_back(e.t);
+            // Need margin of sr + d from border for central first-order derivatives.
+            if (e.x < sr + d || e.x >= width_ - sr - d ||
+                e.y < sr + d || e.y >= height_ - sr - d) {
+                continue;
             }
+            // Prune old timestamps in the extended neighborhood (sr + d).
+            for (int jj = -sr - d; jj <= sr + d; ++jj) {
+                for (int ii = -sr - d; ii <= sr + d; ++ii) {
+                    auto& dq = lk_ts_[lk_idx(e.x + ii, e.y + jj, p)];
+                    const Metavision::timestamp cutoff =
+                        (e.t > win) ? (e.t - win) : 0;
+                    prune_lk_deque(dq, cutoff);
+                }
+            }
+            // Accumulate structure tensor over the (2*sr+1) x (2*sr+1) neighborhood.
+            // Center pixel index in the flattened neighborhood (matches jAER currPix).
+            const int w2 = 2 * sr + 1;
+            const int curr = sr * w2 + sr;
+            double sx2 = 0.0, sy2 = 0.0, sxy = 0.0, sxt = 0.0, syt = 0.0;
+            double center_ix = 0.0, center_iy = 0.0, center_it = 0.0;
+            int ii_flat = 0;
+            for (int jjj = -sr; jjj <= sr; ++jjj) {
+                for (int iii = -sr; iii <= sr; ++iii) {
+                    const int nx = e.x + iii;
+                    const int ny = e.y + jjj;
+                    const double cnt =
+                        static_cast<double>(lk_ts_[lk_idx(nx, ny, p)].size());
+                    // Central first-order spatial derivatives (jAER CentralFiniteDifferenceFirstOrder).
+                    const double cnt_xp =
+                        static_cast<double>(lk_ts_[lk_idx(nx + 1, ny, p)].size());
+                    const double cnt_xm =
+                        static_cast<double>(lk_ts_[lk_idx(nx - 1, ny, p)].size());
+                    const double cnt_yp =
+                        static_cast<double>(lk_ts_[lk_idx(nx, ny + 1, p)].size());
+                    const double cnt_ym =
+                        static_cast<double>(lk_ts_[lk_idx(nx, ny - 1, p)].size());
+                    const double ix = (cnt_xp - cnt_xm) * 0.5;
+                    const double iy = (cnt_yp - cnt_ym) * 0.5;
+                    const double it = cnt * scale;
+                    sx2 += ix * ix;
+                    sy2 += iy * iy;
+                    sxy += ix * iy;
+                    sxt += ix * it;
+                    syt += iy * it;
+                    if (ii_flat == curr) {
+                        center_ix = ix;
+                        center_iy = iy;
+                        center_it = it;
+                    }
+                    ++ii_flat;
+                }
+            }
+            // Eigenvalues of structure tensor [[sx2, sxy], [sxy, sy2]].
+            const double p_eig = sx2 + sy2;
+            const double q_eig = sx2 * sy2 - sxy * sxy;
+            const double disc = p_eig * p_eig - 4.0 * q_eig;
+            if (disc < 0.0 || !std::isfinite(disc)) continue;
+            const double tmp = std::sqrt(disc);
+            const double lam1 = (p_eig + tmp) * 0.5;
+            const double lam2 = (p_eig - tmp) * 0.5;
+            double vx = 0.0, vy = 0.0;
+            if (lam1 < lk_thr_ || !std::isfinite(lam1)) {
+                // Reject: gradient too small.
+                continue;
+            } else if (lam2 < lk_thr_) {
+                // 1D normal flow (aperture problem): v = -It * gradI / |gradI|^2.
+                const double norm2 = center_ix * center_ix + center_iy * center_iy;
+                if (norm2 < 1e-12) continue;
+                vx = -center_it * center_ix / norm2;
+                vy = -center_it * center_iy / norm2;
+            } else {
+                // Full 2D LK solve: v = S^{-1} * [sxt, syt].
+                if (std::fabs(q_eig) < 1e-12) continue;
+                vx = (sxy * syt - sy2 * sxt) / q_eig;
+                vy = (sxy * sxt - sx2 * syt) / q_eig;
+            }
+            const double conf = lam1 > 0.0 ? lam2 / lam1 : 0.0;
+            out.push_back(FlowVector(static_cast<float>(e.x),
+                                     static_cast<float>(e.y),
+                                     static_cast<float>(vx),
+                                     static_cast<float>(vy),
+                                     static_cast<float>(conf)));
         }
     }
 
-    void lk_at(int gx, int gy, int half, Metavision::timestamp t,
-               Metavision::timestamp win, std::vector<FlowVector>& out) {
-        double sxx = 0.0, syy = 0.0, sxy = 0.0, sx = 0.0, sy = 0.0;
-        int n = 0;
-        for (int dy = -half; dy <= half; ++dy) {
-            for (int dx = -half; dx <= half; ++dx) {
-                const int x = gx + dx, y = gy + dy;
-                const Metavision::timestamp tcc = sae_[idx_of(x, y)];
-                if (tcc == 0 || t - tcc < 0 || t - tcc > win) continue;
-                const Metavision::timestamp txp = (x + 1 < width_) ? sae_[idx_of(x + 1, y)] : 0;
-                const Metavision::timestamp txm = (x - 1 >= 0)    ? sae_[idx_of(x - 1, y)] : 0;
-                const Metavision::timestamp typ = (y + 1 < height_) ? sae_[idx_of(x, y + 1)] : 0;
-                const Metavision::timestamp tym = (y - 1 >= 0)    ? sae_[idx_of(x, y - 1)] : 0;
-                if (txp == 0 || txm == 0 || typ == 0 || tym == 0) continue;
-                const double Ix = static_cast<double>(txp - txm) * 0.5;
-                const double Iy = static_cast<double>(typ - tym) * 0.5;
-                sxx += Ix * Ix; syy += Iy * Iy; sxy += Ix * Iy;
-                sx += Ix; sy += Iy;
-                ++n;
-            }
-        }
-        if (n < 4) return;
-        // Solve [[sxx,sxy],[sxy,syy]] [vx,vy] = [sx,sy]; constraint Ix*vx+Iy*vy=1.
-        const double det = sxx * syy - sxy * sxy;
-        if (std::fabs(det) < 1e-9) return;
-        const double vx = (syy * sx - sxy * sy) / det * 1e6;   // px/s
-        const double vy = (sxx * sy - sxy * sx) / det * 1e6;
-        const double tr = sxx + syy;
-        const double disc = std::sqrt(std::max(0.0, tr * tr - 4.0 * det));
-        const double eig_min = 0.5 * (tr - disc);
-        const double eig_max = 0.5 * (tr + disc);
-        const double conf = eig_max > 0.0 ? eig_min / eig_max : 0.0;
-        out.push_back(FlowVector(static_cast<float>(gx), static_cast<float>(gy),
-                                 static_cast<float>(vx), static_cast<float>(vy),
-                                 static_cast<float>(conf)));
-    }
-
-    // --- BlockMatch: ABMOF-style block matching on downsampled frames ----
+    // --- BlockMatch: multi-scale coarse-to-fine with diamond search -----
+    // Ported from jAER PatchMatchFlow: numScales-level pyramid, LDSP/SDSP
+    // diamond search, normalized SAD with dispersion blend and valid-pixel
+    // occupancy gate. Sign convention: result points to the past slice, so
+    // motion (velocity) is the negated search offset (C6).
     void run_block_match(const Event* events, std::size_t count,
                          std::vector<FlowVector>& out) {
         ensure_bm_mats();
@@ -289,7 +389,12 @@ private:
             const int dx = e.x / ds;
             const int dy = e.y / ds;
             if (dx >= 0 && dx < bm_w_ && dy >= 0 && dy < bm_h_) {
-                cur_.at<float>(dy, dx) += 1.0F;
+                // Saturate at max_slice_value_ (jAER byte-slice semantics) so
+                // SAD normalization lands in [0, 1].
+                float v = cur_.at<float>(dy, dx) + 1.0F;
+                if (v > static_cast<float>(max_slice_value_))
+                    v = static_cast<float>(max_slice_value_);
+                cur_.at<float>(dy, dx) = v;
                 if (e.t > last_match_t_) last_match_t_ = e.t;
             }
         }
@@ -300,35 +405,71 @@ private:
             last_emit_t_ = last_match_t_;
             return;
         }
-        const int sr_ds = std::max(1, search_radius_px_ / ds);
-        const int mb = 8;       // match block (ds-px)
-        const int mstep = 4;    // match stride (ds-px)
+        // Real inter-frame dt (Minor fixed-dt fix).
+        const double dt_us = static_cast<double>(last_match_t_ - last_emit_t_);
+        if (dt_us <= 0.0) {
+            prev_ = cur_.clone();
+            cur_.setTo(0.0F);
+            last_emit_t_ = last_match_t_;
+            return;
+        }
+        const double dt_s = dt_us * 1e-6;
+        // Build pyramid; cap levels by image size so the block fits.
+        const int mb = 8;
+        const int mstep = 4;
+        int avail_levels = 1;
+        int cur_w = bm_w_, cur_h = bm_h_;
+        while (avail_levels < num_scales_) {
+            const int new_w = cur_w / 2;
+            const int new_h = cur_h / 2;
+            if (new_w <= mb || new_h <= mb) break;
+            cur_w = new_w; cur_h = new_h;
+            ++avail_levels;
+        }
+        std::vector<cv::Mat> pyr_cur = build_bm_pyramid(cur_, avail_levels);
+        std::vector<cv::Mat> pyr_prev = build_bm_pyramid(prev_, avail_levels);
+        const int sr0 = std::max(1, search_radius_px_ / ds);
         for (int by = mb / 2; by < bm_h_ - mb / 2; by += mstep) {
             for (int bx = mb / 2; bx < bm_w_ - mb / 2; bx += mstep) {
-                float best_dx = 0.0F, best_dy = 0.0F;
-                double best_sad = -1.0;
-                for (int sdy = -sr_ds; sdy <= sr_ds; ++sdy) {
-                    for (int sdx = -sr_ds; sdx <= sr_ds; ++sdx) {
-                        const double sad = block_sad(bx, by, sdx, sdy, mb);
-                        if (best_sad < 0.0 || sad < best_sad) {
-                            best_sad = sad;
-                            best_dx = static_cast<float>(sdx);
-                            best_dy = static_cast<float>(sdy);
-                        }
-                    }
+                int motion_x = 0, motion_y = 0;  // level-0 (bm frame) coords
+                double best_sad = 0.0;
+                bool valid = true;
+                for (int s = avail_levels - 1; s >= 0; --s) {
+                    const cv::Mat& cm = pyr_cur[static_cast<std::size_t>(s)];
+                    const cv::Mat& pm = pyr_prev[static_cast<std::size_t>(s)];
+                    const int bx_s = bx >> s;
+                    const int by_s = by >> s;
+                    const int init_x = motion_x >> s;
+                    const int init_y = motion_y >> s;
+                    const int sr_s = std::max(1, sr0 >> s);
+                    int dx = 0, dy = 0;
+                    // Search center = -init (search offset points to the past
+                    // slice, motion is the opposite).
+                    const double sad = use_diamond_search_
+                        ? diamond_search(cm, pm, bx_s, by_s,
+                                         -init_x, -init_y, sr_s, mb, dx, dy)
+                        : exhaustive_search(cm, pm, bx_s, by_s,
+                                            -init_x, -init_y, sr_s, mb, dx, dy);
+                    if (sad >= max_sad_distance_) { valid = false; break; }
+                    // motion at this scale = init - dx (init is coarser motion,
+                    // -dx is the refinement). Convert back to level-0 coords.
+                    motion_x = (init_x - dx) << s;
+                    motion_y = (init_y - dy) << s;
+                    best_sad = sad;
                 }
-                const double vx = static_cast<double>(best_dx) * ds /
-                                  (static_cast<double>(bm_time_window_us_) * 1e-6);
-                const double vy = static_cast<double>(best_dy) * ds /
-                                  (static_cast<double>(bm_time_window_us_) * 1e-6);
-                const double area = static_cast<double>(mb * mb);
-                const double conf = best_sad >= 0.0
-                    ? 1.0 - best_sad / (area + 1.0) : 0.0;
+                if (!valid) continue;
+                // C6: velocity = -search_offset * ds / dt. motion_x already
+                // holds the negated search offset (motion past→current).
+                const double vx = static_cast<double>(motion_x) * ds / dt_s;
+                const double vy = static_cast<double>(motion_y) * ds / dt_s;
+                double conf = 1.0 - best_sad;
+                if (conf < 0.0) conf = 0.0;
+                if (conf > 1.0) conf = 1.0;
                 out.push_back(FlowVector(static_cast<float>(bx * ds),
                                          static_cast<float>(by * ds),
                                          static_cast<float>(vx),
                                          static_cast<float>(vy),
-                                         static_cast<float>(conf < 0.0 ? 0.0 : conf)));
+                                         static_cast<float>(conf)));
             }
         }
         prev_ = cur_.clone();
@@ -336,23 +477,130 @@ private:
         last_emit_t_ = last_match_t_;
     }
 
-    double block_sad(int bx, int by, int sdx, int sdy, int mb) const {
+    // Normalized SAD between block at (bx,by) in cur and (bx+off_x,by+off_y)
+    // in prev. Returns a value in [0,1] (M16), or a large sentinel for OOB
+    // candidates (Minor OOB fix) or insufficient valid pixels (M16).
+    double bm_eval_sad(const cv::Mat& cur, const cv::Mat& prev,
+                       int bx, int by, int off_x, int off_y, int mb) const {
         const int half = mb / 2;
-        double sad = 0.0;
+        const int block_area = (2 * half + 1) * (2 * half + 1);
+        const int min_valid =
+            static_cast<int>(valid_pix_occupancy_ * static_cast<double>(block_area));
+        double sum_dist = 0.0;
+        int valid_cur = 0, valid_prev = 0;
         for (int dy = -half; dy <= half; ++dy) {
             for (int dx = -half; dx <= half; ++dx) {
-                const int cx = bx + dx, cy = by + dy;
-                const int px = cx + sdx, py = cy + sdy;
-                if (px < 0 || px >= bm_w_ || py < 0 || py >= bm_h_) {
-                    sad += static_cast<double>(cur_.at<float>(cy, cx));
-                    continue;
-                }
-                const double d = static_cast<double>(cur_.at<float>(cy, cx)) -
-                                 static_cast<double>(prev_.at<float>(py, px));
-                sad += std::fabs(d);
+                const int cxp = bx + dx, cyp = by + dy;
+                const int pxp = cxp + off_x, pyp = cyp + off_y;
+                if (cxp < 0 || cxp >= cur.cols || cyp < 0 || cyp >= cur.rows)
+                    return std::numeric_limits<double>::max();
+                if (pxp < 0 || pxp >= prev.cols || pyp < 0 || pyp >= prev.rows)
+                    return std::numeric_limits<double>::max();
+                const double cv = static_cast<double>(cur.at<float>(cyp, cxp));
+                const double pv = static_cast<double>(prev.at<float>(pyp, pxp));
+                sum_dist += std::fabs(cv - pv);
+                if (cv > 0.0) ++valid_cur;
+                if (pv > 0.0) ++valid_prev;
             }
         }
-        return sad;
+        if (valid_cur < min_valid || valid_prev < min_valid)
+            return std::numeric_limits<double>::max();
+        const double sad_normalizer =
+            1.0 / (static_cast<double>(block_area) * static_cast<double>(max_slice_value_));
+        const double final_distance = sad_normalizer * (
+            sum_dist * weight_distance_ +
+            std::fabs(static_cast<double>(valid_cur - valid_prev)) * (1.0 - weight_distance_));
+        return final_distance;
+    }
+
+    // LDSP (8 points at distance 2 + center) then SDSP (4 points at distance
+    // 1 + center). Returns best refinement (best_dx, best_dy) relative to the
+    // search center and the corresponding normalized SAD. (M15)
+    double diamond_search(const cv::Mat& cur, const cv::Mat& prev,
+                          int bx, int by, int center_x, int center_y,
+                          int sr, int mb, int& best_dx, int& best_dy) const {
+        static const int LDSP[9][2] = {{0,-2},{-1,-1},{1,-1},{-2,0},{0,0},
+                                        {2,0},{-1,1},{1,1},{0,2}};
+        static const int SDSP[5][2] = {{0,-1},{-1,0},{0,0},{1,0},{0,1}};
+        int cur_dx = 0, cur_dy = 0;
+        double cur_sad = bm_eval_sad(cur, prev, bx, by, center_x, center_y, mb);
+        bool improved = true;
+        int iters = 0;
+        while (improved && iters < 16) {
+            improved = false;
+            ++iters;
+            for (const auto& off : LDSP) {
+                const int ndx = cur_dx + off[0];
+                const int ndy = cur_dy + off[1];
+                if (ndx < -sr || ndx > sr || ndy < -sr || ndy > sr) continue;
+                const double sad = bm_eval_sad(cur, prev, bx, by,
+                                                center_x + ndx, center_y + ndy, mb);
+                if (sad < cur_sad) {
+                    cur_sad = sad; cur_dx = ndx; cur_dy = ndy;
+                    improved = true;
+                }
+            }
+        }
+        for (const auto& off : SDSP) {
+            const int ndx = cur_dx + off[0];
+            const int ndy = cur_dy + off[1];
+            if (ndx < -sr || ndx > sr || ndy < -sr || ndy > sr) continue;
+            const double sad = bm_eval_sad(cur, prev, bx, by,
+                                            center_x + ndx, center_y + ndy, mb);
+            if (sad < cur_sad) {
+                cur_sad = sad; cur_dx = ndx; cur_dy = ndy;
+            }
+        }
+        best_dx = cur_dx;
+        best_dy = cur_dy;
+        return cur_sad;
+    }
+
+    // Exhaustive search fallback (M15). Returns best refinement and SAD.
+    double exhaustive_search(const cv::Mat& cur, const cv::Mat& prev,
+                             int bx, int by, int center_x, int center_y,
+                             int sr, int mb, int& best_dx, int& best_dy) const {
+        double best_sad = bm_eval_sad(cur, prev, bx, by, center_x, center_y, mb);
+        int bx_best = 0, by_best = 0;
+        for (int sdy = -sr; sdy <= sr; ++sdy) {
+            for (int sdx = -sr; sdx <= sr; ++sdx) {
+                if (sdx == 0 && sdy == 0) continue;
+                const double sad = bm_eval_sad(cur, prev, bx, by,
+                                                center_x + sdx, center_y + sdy, mb);
+                if (sad < best_sad) {
+                    best_sad = sad; bx_best = sdx; by_best = sdy;
+                }
+            }
+        }
+        best_dx = bx_best;
+        best_dy = by_best;
+        return best_sad;
+    }
+
+    std::vector<cv::Mat> build_bm_pyramid(const cv::Mat& base, int levels) const {
+        std::vector<cv::Mat> pyr;
+        pyr.push_back(base);
+        for (int i = 1; i < levels; ++i) {
+            pyr.push_back(downsample_2x(pyr.back()));
+        }
+        return pyr;
+    }
+
+    cv::Mat downsample_2x(const cv::Mat& src) const {
+        const int w = src.cols / 2;
+        const int h = src.rows / 2;
+        if (w < 1 || h < 1) return src.clone();
+        cv::Mat dst(h, w, src.type(), 0.0F);
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const float v = src.at<float>(y * 2, x * 2)
+                              + src.at<float>(y * 2, x * 2 + 1)
+                              + src.at<float>(y * 2 + 1, x * 2)
+                              + src.at<float>(y * 2 + 1, x * 2 + 1);
+                dst.at<float>(y, x) = v * 0.25F;
+            }
+        }
+        return dst;
     }
 
     void ensure_bm_mats() {
@@ -449,11 +697,19 @@ private:
     int min_events_per_cluster_{10};
     int block_size_{16};
     int step_{8};
+    double lk_thr_{1.0};   // jAER LucasKanadeFlow eigenvalue threshold
 
     // BlockMatch params ---------------------------------------------------
     int downsample_factor_{2};
     int bm_time_window_us_{20000};
     int search_radius_px_{4};
+    int num_scales_{3};
+    int max_slice_value_{15};
+    double valid_pix_occupancy_{0.01};
+    double weight_distance_{0.95};
+    double max_sad_distance_{0.5};
+    bool use_diamond_search_{true};
+    double grad_thr_{1e-6};
     int bm_w_{0};
     int bm_h_{0};
     cv::Mat cur_;
@@ -469,6 +725,10 @@ private:
 
     // Shared time surface (Surface of Active Events) ----------------------
     std::vector<Metavision::timestamp> sae_;
+
+    // LucasKanade: per-pixel per-polarity timestamp deques (event-count
+    // histogram). Lazily allocated by ensure_lk_ts() when LK mode runs.
+    std::vector<std::vector<Metavision::timestamp>> lk_ts_;
 };
 
 } // namespace gui_algo

@@ -1,13 +1,15 @@
 // algo/common/filter/lowpass.h — first-order IIR low-pass filter.
 //
-// Inspired by jAER LowPassFilter. Discrete one-pole low-pass:
-//   y[n] = alpha * x[n] + (1 - alpha) * y[n-1]
-// where alpha = dt / (RC + dt), RC = 1 / (2π fc). Used to smooth event-rate
-// signals, latency probes, and tracker velocities. Header-only.
+// Inspired by jAER LowPassFilter. Discrete one-pole low-pass (forward Euler,
+// matching jAER): fac = dt / tau clamped to [0, 1], then
+//   y[n] = y[n-1] + fac * (x[n] - y[n-1]) = fac * x[n] + (1 - fac) * y[n-1]
+// where tau = RC = 1 / (2π fc). Used to smooth event-rate signals, latency
+// probes, and tracker velocities. Header-only.
 
 #ifndef GUI_ALGO_COMMON_FILTER_LOWPASS_H
 #define GUI_ALGO_COMMON_FILTER_LOWPASS_H
 
+#include <algorithm>
 #include <cmath>
 
 #ifndef M_PI
@@ -52,8 +54,8 @@ public:
 
 private:
     double compute_alpha() const {
-        const double denom = rc_ + dt_;
-        return denom > 0.0 ? dt_ / denom : 1.0;
+        // jAER forward Euler: fac = dt / tau clamped to [0, 1] (rc_ == tau).
+        return std::clamp(dt_ / rc_, 0.0, 1.0);
     }
 
     double dt_;

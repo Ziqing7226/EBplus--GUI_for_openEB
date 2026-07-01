@@ -1,35 +1,29 @@
-// algo/cv/hough_circle_tracker.h — Hough circle tracking + particle filter mode.
+// algo/cv/hough_circle_tracker.h — event-driven incremental Hough circle tracking.
 //
-// Implements design §4.3.15 (jAER HoughCircleTracker). Accumulates events into
-// a count frame and runs cv::HoughCircles to detect circles. Also supports a
-// ParticleFilter mode that tracks a single circular target with a Monte Carlo
-// particle filter (algo/common/particle_filter.h), corresponding to the
-// circle_tracker.h variant. Header-only.
+// ✅ 移植自 jAER HoughCircleTracker (net.sf.jaer.eventprocessing.tracking.
+// HoughCircleTracker)。事件驱动增量霍夫圆变换：维护 3D 累加器 (a, b, r)，其中
+// (a,b) 为圆心、r 为半径；逐事件对每个候选半径 r，在以事件 (x,y) 为中心、半径为 r
+// 的圆上对所有候选圆心 (a, b) 投票（a = x + r·cos(θ), b = y + r·sin(θ)）；累加器按
+// 时间常数 accumulatorDecayUs 指数衰减（事件过期）；在累加器中寻找局部极大值作为
+// 检测圆，并按最近邻关联持久航迹。对应设计 §4.3.15。Header-only.
 
 #ifndef GUI_ALGO_CV_HOUGH_CIRCLE_TRACKER_H
 #define GUI_ALGO_CV_HOUGH_CIRCLE_TRACKER_H
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
 #include <opencv2/core.hpp>
-#include <opencv2/imgproc.hpp>
 
 #include <metavision/sdk/base/utils/timestamp.h>
 
 #include "algo/common/event.h"
 #include "algo/common/event_packet.h"
-#include "algo/common/particle_filter.h"
 
 namespace gui_algo {
-
-/// @brief Circle detection mode.
-enum class HoughCircleMode {
-    Hough,          ///< cv::HoughCircles on accumulated frames.
-    ParticleFilter  ///< Monte Carlo particle-filter tracking.
-};
 
 /// @brief Detected circle with persistent tracking id.
 struct HoughCircle {
@@ -38,125 +32,207 @@ struct HoughCircle {
     int track_id{-1};   ///< Persistent track id, -1 if untracked.
 };
 
-/// @brief Hough circle tracker using cv::HoughCircles or a particle filter.
+/// @brief Event-driven incremental Hough circle tracker, ported from jAER.
+///
+/// Maintains a 3D accumulator (a, b, r) over circle centers and radii. Each
+/// event votes for all centers that could produce it at every candidate radius.
+/// The accumulator decays exponentially over time so old events expire.
 class HoughCircleTracker {
 public:
     HoughCircleTracker(int width, int height,
-                       float accumulation_ms = 10.0f,
                        int min_radius_px = 5,
                        int max_radius_px = 50,
-                       int hough_threshold = 30,
-                       HoughCircleMode mode = HoughCircleMode::Hough)
+                       int threshold = 30,
+                       Metavision::timestamp accumulator_decay_us = 100000)
         : width_(width), height_(height),
-          accumulation_us_(static_cast<Metavision::timestamp>(
-              accumulation_ms * 1000.0f)),
           min_radius_px_(min_radius_px),
           max_radius_px_(max_radius_px),
-          hough_threshold_(hough_threshold),
-          mode_(mode),
-          accum_(cv::Mat::zeros(height, width, CV_8UC1)),
-          pf_(200, 3.0, 5.0, 0.033, 42) {}
+          threshold_(threshold),
+          accumulator_decay_us_(accumulator_decay_us) {
+        if (min_radius_px_ < 1) min_radius_px_ = 1;
+        if (max_radius_px_ < min_radius_px_) max_radius_px_ = min_radius_px_;
+        rebuild();
+    }
 
     /// @brief Processes an event packet and returns detected circles.
     std::vector<HoughCircle> process(const EventPacket& packet) {
         std::vector<HoughCircle> result;
         if (packet.empty()) return result;
-        if (mode_ == HoughCircleMode::ParticleFilter) {
-            return process_particle(packet);
+        const Metavision::timestamp cur_t = packet[packet.size() - 1].t;
+        if (last_t_ >= 0 && accumulator_decay_us_ > 0) {
+            const Metavision::timestamp dt = cur_t - last_t_;
+            if (dt > 0) apply_decay(dt);
         }
+        last_t_ = cur_t;
         for (const Event& e : packet) {
             if (e.x >= width_ || e.y >= height_) continue;
-            if (window_start_ < 0) window_start_ = e.t;
-            auto& v = accum_.at<std::uint8_t>(static_cast<int>(e.y),
-                                              static_cast<int>(e.x));
-            if (v < 255) ++v;
-            last_t_ = e.t;
+            accumulate(e.x, e.y);
         }
-        if (window_start_ >= 0 && last_t_ - window_start_ >= accumulation_us_) {
-            std::vector<cv::Vec3f> circles;
-            const double min_dist =
-                std::max(1.0, static_cast<double>(min_radius_px_));
-            cv::HoughCircles(accum_, circles, cv::HOUGH_GRADIENT, 1.0, min_dist,
-                             100.0, static_cast<double>(hough_threshold_),
-                             min_radius_px_, max_radius_px_);
-            for (const auto& c : circles) {
-                HoughCircle hc;
-                hc.center = cv::Point2f(c[0], c[1]);
-                hc.radius = c[2];
-                hc.track_id = associate(hc);
-                result.push_back(hc);
-            }
-            accum_.setTo(0);
-            window_start_ = last_t_;
-        }
+        find_peaks(result);
         return result;
     }
 
     // Parameter accessors ---------------------------------------------------
-    float accumulation_ms() const {
-        return static_cast<float>(accumulation_us_) / 1000.0f;
-    }
     int min_radius_px() const { return min_radius_px_; }
     int max_radius_px() const { return max_radius_px_; }
-    int hough_threshold() const { return hough_threshold_; }
-    HoughCircleMode mode() const { return mode_; }
-    void set_accumulation_ms(float v) {
-        accumulation_us_ = static_cast<Metavision::timestamp>(v * 1000.0f);
+    int threshold() const { return threshold_; }
+    /// @brief Compatibility alias for threshold().
+    int hough_threshold() const { return threshold_; }
+    Metavision::timestamp accumulator_decay_us() const {
+        return accumulator_decay_us_;
     }
-    void set_min_radius_px(int v) { min_radius_px_ = v; }
-    void set_max_radius_px(int v) { max_radius_px_ = v; }
-    void set_hough_threshold(int v) { hough_threshold_ = v; }
-    void set_mode(HoughCircleMode m) { mode_ = m; }
+    void set_min_radius_px(int v) {
+        if (v < 1) v = 1;
+        if (v == min_radius_px_) return;
+        min_radius_px_ = v;
+        if (max_radius_px_ < min_radius_px_) max_radius_px_ = min_radius_px_;
+        rebuild();
+    }
+    void set_max_radius_px(int v) {
+        if (v < min_radius_px_) v = min_radius_px_;
+        if (v == max_radius_px_) return;
+        max_radius_px_ = v;
+        rebuild();
+    }
+    void set_threshold(int v) { threshold_ = v; }
+    /// @brief Compatibility alias for set_threshold().
+    void set_hough_threshold(int v) { threshold_ = v; }
+    void set_accumulator_decay_us(Metavision::timestamp v) {
+        accumulator_decay_us_ = v;
+    }
 
     void reset() {
-        accum_.setTo(0);
-        window_start_ = -1;
+        std::fill(accum_.begin(), accum_.end(), 0.0f);
         last_t_ = -1;
-        pf_inited_ = false;
         tracks_.clear();
         next_track_id_ = 0;
     }
 
 private:
+    struct Offset { int dx; int dy; };
     struct Track {
         int id{-1};
         cv::Point2f last_center;
     };
 
-    /// @brief Particle-filter mode: tracks the centroid of recent activity.
-    std::vector<HoughCircle> process_particle(const EventPacket& packet) {
-        std::vector<HoughCircle> result;
-        double sx = 0.0, sy = 0.0;
-        std::size_t c = 0;
-        for (const Event& e : packet) {
-            if (e.x >= width_ || e.y >= height_) continue;
-            sx += e.x;
-            sy += e.y;
-            ++c;
+    void rebuild() {
+        num_radii_ = max_radius_px_ - min_radius_px_ + 1;
+        if (num_radii_ < 1) num_radii_ = 1;
+        accum_.assign(static_cast<std::size_t>(width_) *
+                          static_cast<std::size_t>(height_) *
+                          static_cast<std::size_t>(num_radii_),
+                      0.0f);
+        // Precompute the deduplicated circle outline offsets for each radius:
+        // for an event at (x,y), the candidate centers are (x+dx, y+dy).
+        offsets_.assign(static_cast<std::size_t>(num_radii_), {});
+        constexpr int kAngleSamples = 72;
+        for (int k = 0; k < num_radii_; ++k) {
+            const float r = static_cast<float>(min_radius_px_ + k);
+            std::vector<Offset> tmp;
+            tmp.reserve(kAngleSamples);
+            for (int i = 0; i < kAngleSamples; ++i) {
+                const float a = 2.0f * kPiF * static_cast<float>(i) /
+                                static_cast<float>(kAngleSamples);
+                const Offset o{
+                    static_cast<int>(std::lround(r * std::cos(a))),
+                    static_cast<int>(std::lround(r * std::sin(a)))};
+                tmp.push_back(o);
+            }
+            std::sort(tmp.begin(), tmp.end(), [](const Offset& p, const Offset& q) {
+                return (p.dx != q.dx) ? (p.dx < q.dx) : (p.dy < q.dy);
+            });
+            tmp.erase(std::unique(tmp.begin(), tmp.end(),
+                                  [](const Offset& p, const Offset& q) {
+                                      return p.dx == q.dx && p.dy == q.dy;
+                                  }),
+                      tmp.end());
+            offsets_[static_cast<std::size_t>(k)] = std::move(tmp);
         }
-        if (c == 0) return result;
-        const double mx = sx / static_cast<double>(c);
-        const double my = sy / static_cast<double>(c);
-        if (!pf_inited_) {
-            pf_.init(mx, my);
-            pf_inited_ = true;
-        } else {
-            pf_.predict();
-            pf_.update(mx, my);
-            pf_.resample();
+        last_t_ = -1;
+        tracks_.clear();
+        next_track_id_ = 0;
+    }
+
+    inline std::size_t idx(int a, int b, int k) const {
+        return (static_cast<std::size_t>(k) * static_cast<std::size_t>(height_) +
+                static_cast<std::size_t>(b)) *
+                   static_cast<std::size_t>(width_) +
+               static_cast<std::size_t>(a);
+    }
+
+    /// @brief Incremental Hough vote: for every candidate radius, splat the
+    /// circle of candidate centers around the event.
+    void accumulate(int x, int y) {
+        for (int k = 0; k < num_radii_; ++k) {
+            for (const Offset& o : offsets_[static_cast<std::size_t>(k)]) {
+                const int a = x + o.dx;
+                const int b = y + o.dy;
+                if (a < 0 || a >= width_ || b < 0 || b >= height_) continue;
+                accum_[idx(a, b, k)] += 1.0f;
+            }
         }
-        const Point2D est = pf_.estimate();
-        HoughCircle hc;
-        hc.center = cv::Point2f(static_cast<float>(est.x),
-                                static_cast<float>(est.y));
-        hc.radius = static_cast<float>(min_radius_px_);
-        hc.track_id = associate(hc);
-        result.push_back(hc);
-        return result;
+    }
+
+    void apply_decay(Metavision::timestamp dt) {
+        const double factor = std::exp(-static_cast<double>(dt) /
+                                       static_cast<double>(accumulator_decay_us_));
+        const float f = static_cast<float>(factor);
+        for (float& v : accum_) v *= f;
+    }
+
+    /// @brief Finds local maxima above threshold, applies non-maximum
+    /// suppression across radii and associates persistent tracks.
+    void find_peaks(std::vector<HoughCircle>& out) {
+        struct Cand { int a; int b; int k; float val; };
+        std::vector<Cand> cands;
+        for (int k = 0; k < num_radii_; ++k) {
+            for (int b = 0; b < height_; ++b) {
+                for (int a = 0; a < width_; ++a) {
+                    const float v = accum_[idx(a, b, k)];
+                    if (v < static_cast<float>(threshold_)) continue;
+                    if (!is_local_max(a, b, k)) continue;
+                    cands.push_back(Cand{a, b, k, v});
+                }
+            }
+        }
+        std::sort(cands.begin(), cands.end(),
+                  [](const Cand& x, const Cand& y) { return x.val > y.val; });
+        const float nms = static_cast<float>(min_radius_px_);
+        const float nms2 = nms * nms;
+        for (const Cand& c : cands) {
+            bool ok = true;
+            for (const HoughCircle& h : out) {
+                const float dx = h.center.x - static_cast<float>(c.a);
+                const float dy = h.center.y - static_cast<float>(c.b);
+                if (dx * dx + dy * dy < nms2) { ok = false; break; }
+            }
+            if (!ok) continue;
+            HoughCircle hc;
+            hc.center = cv::Point2f(static_cast<float>(c.a),
+                                    static_cast<float>(c.b));
+            hc.radius = static_cast<float>(min_radius_px_ + c.k);
+            hc.track_id = associate(hc);
+            out.push_back(hc);
+            if (out.size() >= kMaxDetections) break;
+        }
+    }
+
+    bool is_local_max(int a, int b, int k) const {
+        const float v = accum_[idx(a, b, k)];
+        for (int db = -1; db <= 1; ++db) {
+            for (int da = -1; da <= 1; ++da) {
+                if (da == 0 && db == 0) continue;
+                const int na = a + da;
+                const int nb = b + db;
+                if (na < 0 || na >= width_ || nb < 0 || nb >= height_) continue;
+                if (accum_[idx(na, nb, k)] > v) return false;
+            }
+        }
+        return true;
     }
 
     int associate(const HoughCircle& hc) {
-        const float tol = static_cast<float>(max_radius_px_);
+        const float tol = static_cast<float>(max_radius_px_) * 2.0f;
         const float tol2 = tol * tol;
         int best_id = -1;
         float best_d2 = tol2;
@@ -177,18 +253,19 @@ private:
         return best_id;
     }
 
+    static constexpr std::size_t kMaxDetections = 16;
+    static constexpr float kPiF = 3.14159265358979323846f;
+
     int width_;
     int height_;
-    Metavision::timestamp accumulation_us_;
     int min_radius_px_;
     int max_radius_px_;
-    int hough_threshold_;
-    HoughCircleMode mode_;
-    cv::Mat accum_;
-    Metavision::timestamp window_start_{-1};
+    int threshold_;
+    Metavision::timestamp accumulator_decay_us_;
+    int num_radii_{1};
+    std::vector<float> accum_;
+    std::vector<std::vector<Offset>> offsets_;
     Metavision::timestamp last_t_{-1};
-    ParticleFilter pf_;
-    bool pf_inited_{false};
     std::vector<Track> tracks_;
     int next_track_id_{0};
 };

@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <vector>
 
 #include <metavision/sdk/base/events/event_cd.h>
@@ -330,6 +331,36 @@ TEST(SparseOpticalFlowTest, ProcessWithEvents) {
     f.process(pkt, out);
     // May or may not produce flow vectors depending on clustering.
     SUCCEED();
+}
+
+// LucasKanade port verification: a 1px-wide vertical stripe translating right
+// 1px/timestep builds an asymmetric event-count histogram. The central
+// first-order spatial derivative (ix) and event-density temporal derivative
+// (it) are both non-zero from the second timestep onward, so the structure
+// tensor eigenvalue lam1 exceeds lk_thr and the solver emits flow vectors
+// (either the 1D normal-flow fallback or the full 2D LK solve).
+TEST(SparseOpticalFlowTest, LucasKanadeProducesFlow) {
+    SparseOpticalFlow f(48, 48, SparseOpticalFlow::Mode::LucasKanade);
+    f.set_search_radius_px(2);
+    f.set_lk_thr(0.01);
+    f.set_time_window_us(50000);
+    std::vector<Event> ev;
+    for (int t = 0; t < 10; ++t) {
+        const int x = 16 + t;
+        for (int y = 16; y <= 24; ++y) {
+            ev.emplace_back(static_cast<uint16_t>(x), static_cast<uint16_t>(y),
+                            1, static_cast<Metavision::timestamp>(t * 2000));
+        }
+    }
+    auto pkt = make_packet(ev);
+    std::vector<gui_algo::FlowVector> out;
+    f.process(pkt, out);
+    EXPECT_GT(out.size(), 0u);
+    // Every emitted vector must carry a finite velocity estimate.
+    for (const auto& fv : out) {
+        EXPECT_TRUE(std::isfinite(fv.vx));
+        EXPECT_TRUE(std::isfinite(fv.vy));
+    }
 }
 
 // =========================================================================

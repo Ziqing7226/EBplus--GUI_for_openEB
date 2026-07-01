@@ -102,9 +102,8 @@ GUI-for-openEB/
 │   │   ├── cluster_interface.h            # 🆕 聚类抽象基类（参考 ClusterInterface）
 │   │   ├── cluster_path_point.h           # 🆕 聚类轨迹点（位置/速度/时间戳）
 │   │   ├── line_segment_detector.h        # 🆕 ELiSeD 线段检测（参考 ELiSeD）
-│   │   ├── hough_line_tracker.h           # 🆕 霍夫直线跟踪（参考 HoughLineTracker）
-│   │   ├── hough_circle_tracker.h         # 🆕 霍夫圆跟踪（参考 HoughCircleTracker）
-│   │   ├── hinge_line_tracker.h           # 🆕 铰链线跟踪（双线段铰链）
+│   │   ├── hough_line_tracker.h           # 🆕 霍夫直线跟踪（✅ 移植自 jAER HoughLineTracker）
+│   │   ├── hough_circle_tracker.h         # 🆕 霍夫圆跟踪（✅ 移植自 jAER HoughCircleTracker）
 │   │   ├── orientation_cluster.h          # 🆕 方向共识过滤（朝向一致聚类）
 │   │   ├── cluster_lif.h                 # 🆕 LIF 神经元网格聚类（参考 ClusterBubbles）
 │   │   ├── background_mask_filter.h        # 🆕 背景掩码学习（运动/静止分离）
@@ -145,7 +144,7 @@ GUI-for-openEB/
     └── design.md
 ```
 
-> 图例：🆕 = 基于 jAER 研究借鉴/新增的模块；无标注 = 原有模块。jAER 算法对照表见 1.6 节，每个模块的详细方案见第四章。
+> 图例：🆕 = 基于 jAER 研究借鉴/新增的模块；🔄 = algo_bridge 直接调用 openEB 已有能力（见 §4.3）；无标注 = 原有模块。jAER 算法对照表见 1.6 节，每个模块的详细方案见第四章。
 
 ### 1.4 适用范围
 
@@ -310,7 +309,7 @@ GUI-for-openEB/
 | `MultiEventAgePolarityDenoiser` | 每像素维护 N 个历史事件，长上下文评分 | ⚠️ 可选（内存高） | — |
 | `LinearCorrelationDenoiser` | 方向直方图 + 线性年龄 + 负熵组合 | ⚠️ 高级模式 | — |
 | `DensityFilter` | 5×5 邻域事件密度统计 | ⚠️ 与 STCF 重叠 | — |
-| `HarmonicFilter` | 全局谐波振荡器抑制 50/60 Hz 灯光闪烁 | ✅ 移植（照明场景） | `algo/cv/noise_filter.h` (Harmonic 模式) |
+| `HarmonicFilter` | 全局谐波振荡器抑制 50/60 Hz 灯光闪烁 | ✅ 移植 | `algo/cv/noise_filter.h` (Harmonic 模式) |
 | `RepetitiousFilter` | 滤除周期性重复事件（屏幕闪烁等） | ✅ 可选移植 | `algo/cv/noise_filter.h` (Repetitious 模式) |
 | `SpatialBandpassFilter` | 空间带通（中心/外围时间戳图抑制），小目标增强 | ✅ 可选移植 | `algo/cv/noise_filter.h` (SpatialBP 模式) |
 | `SubSamplingBandpassFilter` | 子采样带通（更高效） | ✅ 可选移植 | 同上 |
@@ -335,8 +334,8 @@ GUI-for-openEB/
 | `MedianTracker` ★ | 单目标中位数跟踪（鲁棒于离群事件） | ✅ 移植 | `algo/cv/object_tracker.h` (Median 模式) |
 | `ParticleTracker` | 粒子滤波多目标跟踪 | ⚠️ 实现老旧，仅参考 | — |
 | `KalmanFilter` | 每聚类绑定 4 维 KF（x,y,vx,vy）+ HashMap 管理 | ✅ 移植架构 | `algo/cv/object_tracker.h` (Kalman 模式) |
-| `HoughCircleTracker` | 增量霍夫圆变换（瞳孔/球类） | ✅ 移植 | `algo/cv/hough_circle_tracker.h` |
-| `HoughLineTracker` ★ | 增量霍夫直线跟踪（巡线/车道线） | ✅ 移植 | `algo/cv/hough_line_tracker.h` |
+| `HoughCircleTracker` | 增量霍夫圆变换（瞳孔/球类） | ✅ 移植自 jAER（3D 累加器 a,b,r + 指数时间衰减 + 局部极大值 + NMS + 最近邻关联） | `algo/cv/hough_circle_tracker.h` |
+| `HoughLineTracker` ★ | 增量霍夫直线跟踪（巡线/车道线） | ✅ 移植自 jAER（2D 累加器 ρ,θ + 指数时间衰减 + 局部极大值 + NMS + 最近邻关联） | `algo/cv/hough_line_tracker.h` |
 | `LineDetector` | 直线检测器接口 (rho, theta) | ✅ 借鉴 | 同上 |
 | `OpticalGyro` | 基于 RCT 的全局平移/旋转估计（EIS） | ✅ 移植 | `algo/cv/optical_gyro.h` |
 | `ClusterBasedOpticalFlow` ★ | 基于 RCT 速度场的网格化光流（带通滤波） | ✅ 移植 | `algo/cv/sparse_optical_flow.h` (ClusterOF 模式) |
@@ -368,7 +367,7 @@ GUI-for-openEB/
 | jAER 项目/类 | 算法原理 | 借鉴决策 | 对应本项目模块 |
 |--------------|----------|----------|----------------|
 | `rbodo/opticalflow/LocalPlanesFlow` ★ | 局部平面拟合光流（Benosman 2013，4 种估计器） | ✅ 移植为稀疏光流主力 | `algo/cv/sparse_optical_flow.h` (LocalPlanes 模式) |
-| `rbodo/opticalflow/LucasKanadeFlow` | Lucas-Kanade 事件光流（Benosman 2012，4 种差分估计器） | ✅ 移植为备选 | `algo/cv/sparse_optical_flow.h` (LK 模式) |
+| `rbodo/opticalflow/LucasKanadeFlow` | Lucas-Kanade 事件光流（Benosman 2012，4 种差分估计器） | ✅ 移植 | `algo/cv/sparse_optical_flow.h` (LK 模式) |
 | `rbodo/opticalflow/MotionFlowStatistics` | 光流评估（AE/EPE/密度/全局运动） | ✅ 移植 | `algo/analytics/flow_statistics.h` |
 | `rbodo/opticalflow/DirectionSelectiveFlow` | 基于方向事件的光流 | ⚠️ 与 1.6.3 重叠 | — |
 | `minliu/PatchMatchFlow` ★ | ABMOF 块匹配光流（BMVC2018，多尺度 SAD + 钻石搜索） | ✅ 移植为备选 | `algo/cv/sparse_optical_flow.h` (BlockMatch 模式) |
@@ -376,21 +375,20 @@ GUI-for-openEB/
 | `minliu/OpenCVFlow` | OpenCV Farneback 稠密光流（事件累积帧间） | ⚠️ 未移植（非 GUI 核心功能） | — |
 | `labyrinthkalman/KalmanFilter` ★ | 通用 2D 点目标常加速度 KF（6 维状态） | ✅ 移植为通用 KF | `algo/common/kalman_filter.h` |
 | `labyrinthkalman/LabyrinthBallKalmanFilter` | 球跟踪专用 KF（基于前者） | ✅ 借鉴 | 同上 |
-| `labyrinthkalman/KalmanEventFilter` | 多假设 KF 池 + Mahalanobis gating | ✅ 移植架构 | `algo/cv/object_tracker.h` (MultiHypothesis 模式) |
+| `labyrinthkalman/KalmanEventFilter` | 多假设 KF 池 + Mahalanobis gating | ✅ 移植 | `algo/cv/object_tracker.h` (MultiHypothesis 模式) |
 | `labyrinth/LabyrinthBallTracker` | RCT + 速度中值 + 静态球定位 | ⚠️ 借鉴思路 | — |
 | `labyrinth/LabyrinthDavisTrackFilter` | APS 帧掩码过滤 DVS 事件（DVS+APS 融合去背景） | ✅ 移植 | `algo/cv/background_mask_filter.h` |
 | `elised/ELiSeD` ★ | Sobel 时间戳梯度 + 角度聚类的线段检测（EBCCSP2016） | ✅ 移植 | `algo/cv/line_segment_detector.h` |
 | `elised/LineSupport` | 线段支持区（图像矩增量更新） | ✅ 一并移植 | 同上 |
 | `raindrops/RaindropCounter` ★ | 团块跟踪 + 物理量换算 + 统计（颗粒/雨滴计数） | ✅ 移植为通用计数器 | `algo/analytics/particle_counter.h` |
 | `rccar/PerspecTransform` | 透视 + 镜头畸变校正（LUT 预计算） | ✅ 移植 | `algo/cv/perspective_undistort.h` |
-| `rccar/HingeLineTracker` | 铰链+注意力近垂直线跟踪 | ✅ 移植 | `algo/cv/hinge_line_tracker.h` |
 | `rccar/OrientationCluster` | 邻域方向共识过滤 | ✅ 移植 | `algo/cv/orientation_cluster.h` |
 | `virtualslotcar/Histogram2DFilter` ★ | 2D 事件直方图背景建模 + 掩码学习 | ✅ 移植 | `algo/cv/background_mask_filter.h` |
 | `virtualslotcar/PeriodicSpline` | 周期三次样条（闭合轨迹建模） | ✅ 移植 | `algo/common/periodic_spline.h` |
 | `virtualslotcar/NearbyTrackEventFilter` | 基于轨迹模型的近邻事件过滤 | ⚠️ 与赛道耦合 | — |
 | `ahuber/filter/BandpassEventFilter` | 事件驱动 IIR 带通滤波 | ✅ 可选移植 | `algo/cv/bandpass_filter.h` |
 | `ahuber/filter/BandpassIIREventFilter` | 多阶 IIR 带通 | ✅ 可选移植 | 同上 |
-| `einsteintunnel/BlurringTunnelFilter` | LIF 神经元网格聚类（替代 RCT 的范式） | ✅ 可选移植 | `algo/cv/cluster_lif.h` |
+| `einsteintunnel/BlurringTunnelFilter` | LIF 神经元网格聚类（替代 RCT 的范式） | ✅ 移植 | `algo/cv/cluster_lif.h` |
 | `eyetracker/EyeTracker` | 圆环模型瞳孔跟踪 | ⚠️ 未移植（瞳孔专用） | — |
 | `eyetracker/EllipseTracker` | 椭圆霍夫跟踪 | ⚠️ 同上 | — |
 | `laser3d/HistogramData` | 通用环形历史直方图 | ✅ 移植 | `algo/common/histogram_ring_buffer.h` |
@@ -831,7 +829,7 @@ public:
 | 子目录 | 自研模块数 | 内容 |
 |--------|-----------|------|
 | **algo/common/** | 20 | 事件 POD/包、环形/LIFO 缓冲、帧生成器与事件分帧器、FREME 模板、数据加载器（HDF5/RAW）、IIR 滤波器集、Kalman/KMeans/粒子滤波、周期样条、环形直方图、LIF 积分器、性能剖析、时间限制器、事件率估计 |
-| **algo/cv/** | 23 | 🆕 全部自研：噪声过滤（8 模式）、热像素过滤、4 朝向边缘检测、8 方向运动估计、光流估计（4 模式）、团块检测、目标跟踪（4 模式）、角点检测（3 模式）、ELiSeD 线段、霍夫直线/圆跟踪、铰链线、方向共识、LIF 神经元聚类、背景掩码、透视去畸变、触发同步、带通滤波、电子稳定 EIS、超高速回放、XYT 3D 事件点云、Time Surface 窗口、可视化叠加（详见 4.3） |
+| **algo/cv/** | 22 | 🆕 全部自研：噪声过滤（8 模式）、热像素过滤、4 朝向边缘检测、8 方向运动估计、光流估计（4 模式）、团块检测、目标跟踪（4 模式）、角点检测（3 模式）、ELiSeD 线段、霍夫直线/圆跟踪、方向共识、LIF 神经元聚类、背景掩码、透视去畸变、触发同步、带通滤波、电子稳定 EIS、超高速回放、XYT 3D 事件点云、Time Surface 窗口、可视化叠加（详见 4.3） |
 | **algo/analytics/** | 7 | 🆕 主动标记跟踪（滑动窗口聚类）、事件→灰度重建（2 种非 DL + DL 可选）、光流评估、ISI 直方图、颗粒计数器、闪烁频率检测、自适应 Bias |
 | **algo/calibration/** | 1 | 🆕 单相机内参标定（含事件去畸变 LUT） |
 | **algo/tests/** | 2 | 🆕 降噪评测框架（注入泊松+漏噪声，统计 TP/FP/TN/FN）、信号/噪声标注事件 |
@@ -1053,21 +1051,15 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 #### 4.3.14 🆕 霍夫直线跟踪 (HoughLineTracker) — 叠加型
 
-借鉴 jAER `HoughLineTracker`（见 1.6.2），事件流累积帧 → 霍夫变换 → 直线检测与跟踪。
+✅ 移植自 jAER `HoughLineTracker`（见 1.6.2）。事件驱动增量霍夫直线变换：维护 2D 累加器 (ρ, θ)，逐事件对每个 θ 累加 ρ = x·cos(θ) + y·sin(θ)；累加器按时间常数 `accumulator_decay_us` 指数衰减（事件过期）；寻找局部极大值并经 NMS 抑制后输出直线段（按 θ 斜率将 (ρ,θ) 转为图像满跨线段），按 (θ,ρ) 邻近度最近邻关联持久航迹。
 
-**参数与合法范围**：`accumulation_ms`：float，`[1, 100]`，默认 `10`；`hough_threshold`：int，`[10, 500]`，默认 `50`；`min_line_length_px`：int，`[10, 1000]`，默认 `30`；`max_line_gap_px`：int，`[1, 50]`，默认 `5`
+**参数与合法范围**：`threshold`：int，`[2, 500]`，默认 `50`；`num_theta_bins`：int，`[8, 360]`，默认 `90`；`num_rho_bins`：int，`[0, 4000]`，默认 `0`（0 = 按图像对角线自动 1px 分辨率）；`accumulator_decay_us`：int，`[1000, 5000000]`，默认 `100000`
 
 #### 4.3.15 🆕 霍夫圆跟踪 (HoughCircleTracker) — 叠加型
 
-借鉴 jAER `HoughCircleTracker`（见 1.6.2），事件流累积帧 → 霍夫圆变换 → 圆检测与跟踪。亦支持粒子滤波圆环跟踪模式。
+✅ 移植自 jAER `HoughCircleTracker`（见 1.6.2）。事件驱动增量霍夫圆变换：维护 3D 累加器 (a, b, r)，逐事件对每个候选半径 r，在以事件 (x,y) 为中心、半径为 r 的圆上对所有候选圆心 (a, b) 投票（a = x + r·cos(θ), b = y + r·sin(θ)）；累加器按时间常数 `accumulator_decay_us` 指数衰减（事件过期）；在累加器中寻找局部极大值，经跨半径 NMS 抑制后输出圆，并按最近邻关联持久航迹。
 
-**参数与合法范围**：`accumulation_ms`：float，`[1, 100]`，默认 `10`；`min_radius_px`：int，`[3, 500]`，默认 `5`；`max_radius_px`：int，`[10, 1000]`，默认 `50`；`hough_threshold`：int，`[10, 500]`，默认 `30`；`mode`：枚举（Hough / ParticleFilter），默认 `Hough`
-
-#### 4.3.16 🆕 铰链线跟踪 (HingeLineTracker) — 叠加型
-
-借鉴 jAER `hinge` 项目（见 1.6.5），检测两条相交线段的铰链点（关节/折痕），输出铰链点位置与角度。
-
-**参数与合法范围**：复用 4.3.14 参数；`angle_tolerance_deg`：float，`[1, 45]`，默认 `5`
+**参数与合法范围**：`min_radius_px`：int，`[1, 500]`，默认 `5`；`max_radius_px`：int，`[1, 1000]`，默认 `50`；`threshold`：int，`[2, 500]`，默认 `30`；`accumulator_decay_us`：int，`[1000, 5000000]`，默认 `100000`
 
 #### 4.3.17 🆕 方向共识过滤 (OrientationCluster) — 叠加型
 
@@ -1385,7 +1377,7 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 | **Camera** | Connect/Disconnect, Device List, Platform Info, Monitor (Temperature/Power), Sync Multi-Camera, HAL Showcase |
 | **Preprocess** | ROI Filter, Polarity Filter, Polarity Invert, Flip X/Y, Rotate (0°/90°/180°/270°), Transpose, Rescale, Adaptive Rate Split |
 | **Frame Mode** | Integration, Diff, Histogram, Time Decay, Contrast Map, Periodic, On-Demand |
-| **Algorithm** | Noise Filter, Hot Pixel Filter, Orientation Filter, Direction Selective Filter, Optical Flow (Sparse), Blob Detect, Object Tracker, Corner Detect, Line Segment (ELiSeD), Hough Line, Hough Circle, Hinge Line, Orientation Cluster, LIF Cluster, Background Mask, Perspective Undistort, Trigger Synced, Bandpass Filter, EIS (Optical Gyro), Ultra Slow Motion, XYT 3D, Time Surface, Active Marker, Event→Video, Flow Statistics, ISI Analyzer, Particle Counter, Auto Bias, Freq Detector, Overlay |
+| **Algorithm** | Noise Filter, Hot Pixel Filter, Orientation Filter, Direction Selective Filter, Optical Flow (Sparse), Blob Detect, Object Tracker, Corner Detect, Line Segment (ELiSeD), Hough Line, Hough Circle, Orientation Cluster, LIF Cluster, Background Mask, Perspective Undistort, Trigger Synced, Bandpass Filter, EIS (Optical Gyro), Ultra Slow Motion, XYT 3D, Time Surface, Active Marker, Event→Video, Flow Statistics, ISI Analyzer, Particle Counter, Auto Bias, Freq Detector, Overlay |
 | **Calibration** | Intrinsic Wizard |
 | **Tools** | Frame Composer, Data Synchronizer, Timing Profiler |
 | **Help** | About, Documentation, Software Info |
@@ -1607,12 +1599,11 @@ RAW/HDF5 文件
 - [x] 4.3.11 事件级目标跟踪（4 模式：RCT/Median/Kalman/MultiHypothesis）
 - [x] 4.3.12 角点检测（3 模式：EndStopped/TypeCoincidence/Harris）
 
-### Phase 8：高级几何与检测 (algo/cv/ 11 个，对应 4.3.13–4.3.23)
-借鉴 jAER `ELiSeD`、`HoughLineTracker`、`HoughCircleTracker`、`hinge`、`OpticalFlowGyroTracker` 等：
+### Phase 8：高级几何与检测 (algo/cv/ 10 个，对应 4.3.13–4.3.23)
+借鉴 jAER `ELiSeD`、`HoughLineTracker`、`HoughCircleTracker`、`OpticalFlowGyroTracker` 等：
 - [x] 4.3.13 ELiSeD 线段检测
 - [x] 4.3.14 霍夫直线跟踪
 - [x] 4.3.15 霍夫圆跟踪
-- [x] 4.3.16 铰链线跟踪
 - [x] 4.3.17 方向共识过滤
 - [x] 4.3.18 LIF 神经元网格聚类
 - [x] 4.3.19 背景掩码学习

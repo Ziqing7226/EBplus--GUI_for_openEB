@@ -41,9 +41,10 @@ public:
           max_isi_us_(static_cast<Metavision::timestamp>(
               clamp_isi(max_isi_ms) * 1000.0f)),
           per_pixel_(per_pixel),
-          // ISI histogram in [0, max_isi_ms] ms, stored in us.
+          // ISI histogram in native µs over [0, max_isi_us_] (clamped), so the
+          // _us accessors below are correct without unit conversion.
           hist_(kRingWindow, static_cast<std::size_t>(clamp_bins(bin_count)),
-                0.0, static_cast<double>(max_isi_ms)),
+                0.0, static_cast<double>(max_isi_us_)),
           last_ts_pixel_(static_cast<std::size_t>(width) * height, -1) {}
 
     /// @brief Feeds a batch of events and updates the ISI histogram.
@@ -148,8 +149,9 @@ private:
     }
 
     void push_isi(Metavision::timestamp isi_us) {
-        // Convert to ms for the histogram (bins cover [0, max_isi_ms]).
-        hist_.push(static_cast<double>(isi_us) / 1000.0);
+        // Push raw µs; the histogram range is [0, max_isi_us_] µs so the _us
+        // accessors (mean/median/p90/std_dev) are returned in native µs.
+        hist_.push(static_cast<double>(isi_us));
     }
 
     static constexpr std::size_t kRingWindow = 8192;

@@ -41,14 +41,19 @@ public:
         x_ += vx_ * dt_;
         y_ += vy_ * dt_;
         // Covariance prediction: P' = F P F^T + Q, where F is the
-        // constant-velocity transition matrix. Includes the cross-term
-        // 2*dt*P_xvx that was missing in the original implementation.
-        p_xx_ += 2.0 * dt_ * p_xvx_ + dt_ * dt_ * p_vxvx_ + q_;
-        p_yy_ += 2.0 * dt_ * p_yvy_ + dt_ * dt_ * p_vyvy_ + q_;
-        p_xvx_ += dt_ * p_vxvx_;
-        p_yvy_ += dt_ * p_vyvy_;
-        p_vxvx_ += q_;
-        p_vyvy_ += q_;
+        // constant-velocity transition matrix. The F P F^T propagation includes
+        // the cross-term 2*dt*P_xvx. The process noise Q follows jAER's
+        // constant-acceleration model per axis:
+        //   Q = sigma2 * [[dt^4/4, dt^3/2], [dt^3/2, dt^2]],  sigma2 = q_.
+        const double dt2 = dt_ * dt_;
+        const double dt3 = dt2 * dt_;
+        const double dt4 = dt2 * dt2;
+        p_xx_ += 2.0 * dt_ * p_xvx_ + dt2 * p_vxvx_ + q_ * dt4 / 4.0;
+        p_yy_ += 2.0 * dt_ * p_yvy_ + dt2 * p_vyvy_ + q_ * dt4 / 4.0;
+        p_xvx_ += dt_ * p_vxvx_ + q_ * dt3 / 2.0;
+        p_yvy_ += dt_ * p_vyvy_ + q_ * dt3 / 2.0;
+        p_vxvx_ += q_ * dt2;
+        p_vyvy_ += q_ * dt2;
     }
 
     /// @brief Update step with a position measurement (mx, my).
@@ -88,6 +93,15 @@ public:
     double vx() const { return vx_; }
     double vy() const { return vy_; }
     bool initialized() const { return initialized_; }
+
+    // Read-only covariance/noise accessors used for Mahalanobis gating in
+    // multi-hypothesis tracking (object_tracker MultiHypothesis mode). The
+    // position covariance is diagonal (no x-y cross term), so a 2D
+    // Mahalanobis distance factorises as (dx^2/Sx + dy^2/Sy) with
+    // Sx = p_xx + r, Sy = p_yy + r. These getters do not alter filter state.
+    double p_xx() const { return p_xx_; }
+    double p_yy() const { return p_yy_; }
+    double measurement_noise_var() const { return r_; }
 
     void set_dt(double dt) { dt_ = dt; }
 
