@@ -85,24 +85,43 @@ public:
     void render(std::vector<XYTPoint>& out) const {
         out.clear();
         if (buffer_.empty()) return;
-        // Normalize tn by the ACTUAL time range of events in the buffer,
-        // not the theoretical time_window_ms. jAER dynamically sets its
-        // time window to match the frame duration, so events always fill
-        // the window. With our fixed window, events may only span a tiny
-        // fraction of window_us (e.g., 1ms of a 50ms window), which would
-        // make all tn ≈ 1.0 (all "newest", all blue, flat plane).
-        // Using the actual buffer range ensures tn spans [0, 1] regardless
-        // of event density.
+        // Normalize tn by the CONFIGURED time window (time_window_ms_), not
+        // the buffer's actual event-time range. This gives a STABLE Z axis
+        // that always represents the full configured window:
+        //
+        //   t_lo = latest_t_ - window_us   (oldest visible time)
+        //   t_hi = latest_t_               (newest time)
+        //   tn   = (e.t - t_lo) / window_us ∈ [0, 1]
+        //
+        // Rationale (design §4.3.25): When historical events don't exist
+        // (e.g., at playback start, or during a low-density period), the
+        // older portion of the Z axis is simply an EMPTY SET — no points —
+        // rather than a compressed view of the sparse recent events. The
+        // Z axis span never changes; only the point density within it does.
+        //
+        // This matches jAER's SpaceTimeRollingEventDisplayMethod, which uses
+        // a fixed time window and lets the point cloud fill it naturally.
+        // Events always appear at their true temporal position; when the
+        // buffer hasn't accumulated enough history, points cluster near the
+        // front (newest) and the back is empty — which is correct, not a bug.
+        //
+        // The previous approach (normalizing by the buffer's actual range)
+        // artificially spread a tiny time range across the full Z axis,
+        // making 5us of events look like 50ms — misleading and unstable.
+        const Metavision::timestamp window_us =
+            static_cast<Metavision::timestamp>(time_window_ms_ * 1000.0f);
         const Metavision::timestamp t_hi = latest_t_;
-        const Metavision::timestamp t_lo = buffer_.front().t;
-        const Metavision::timestamp t_range = t_hi - t_lo;
+        const Metavision::timestamp t_lo = t_hi - window_us;
         out.reserve(buffer_.size());
         for (const Event& e : buffer_) {
             XYTPoint p;
             p.x = static_cast<float>(e.x);
             p.y = static_cast<float>(e.y);
-            const float tn = t_range > 0
-                ? static_cast<float>(e.t - t_lo) / static_cast<float>(t_range)
+            // tn: 0 = oldest (t_lo), 1 = newest (t_hi). After prune() all
+            // buffered events satisfy e.t >= t_lo, so tn >= 0. Clamp for
+            // floating-point safety.
+            const float tn = window_us > 0
+                ? static_cast<float>(e.t - t_lo) / static_cast<float>(window_us)
                 : 1.0f;
             p.t = tn < 0.0f ? 0.0f : (tn > 1.0f ? 1.0f : tn);
             colorize(e, tn, p);

@@ -975,6 +975,54 @@ scaled_t = real_t / playback_rate
 
 File 菜单新增 "Open Recent" 子菜单，通过 QSettings 持久化最近 10 个文件路径。打开文件时自动添加到列表顶部（去重），点击菜单项直接打开。文件不存在时提示并移除过期条目。
 
+**存储位置**：QSettings 默认使用平台特定路径，不在代码仓库内：
+- Linux: `~/.config/GUI-for-openEB/GUI for openEB.conf`
+- macOS: `~/Library/Preferences/com.GUI-for-openEB.GUI for openEB.plist`
+- Windows: `HKEY_CURRENT_USER\Software\GUI-for-openEB\GUI for openEB`
+
+组织名和应用名在 `main.cpp` 中通过 `setOrganizationName("GUI-for-openEB")` 和 `setApplicationName("GUI for openEB")` 设置。这些文件不会被 git 跟踪。
+
+#### 8.8.5 XYT Z 轴归一化：配置窗口而非实际范围
+
+**问题**：慢速回放开头几帧时，T 轴只有最前面（newest）那一帧有事件，随时间累积才恢复正常。
+
+**根因**：`XYTVisualizer::render()` 之前按 buffer 内事件的**实际时间范围**归一化 tn。当 buffer 仅含极短时间跨度的事件（如回放刚开始时仅 100us），实际范围接近 0，所有事件的 tn 被压缩到 1.0（全部 newest，蓝色平面），或被人为拉伸到 [0,1]（误导性的时间分布）。
+
+**解决方案**：按**配置的 `time_window_ms_`** 归一化 tn，而非 buffer 实际范围：
+
+```
+t_lo = latest_t_ - window_us   (最旧可见时间)
+t_hi = latest_t_               (最新时间)
+tn   = (e.t - t_lo) / window_us ∈ [0, 1]
+```
+
+Z 轴始终代表完整配置窗口。当历史事件不存在时（回放刚开始、低密度时段），旧端为**空集**（无点），而非压缩的稀疏事件。事件始终出现在其真实时间位置。这与 jAER `SpaceTimeRollingEventDisplayMethod` 一致。
+
+> **设计原则**：历史事件不存在时可以认为存在但是是一个空集合。Z 轴跨度恒定，仅点密度变化。
+
+#### 8.8.6 算法实例重置：文件打开/重连时清除过期状态
+
+**问题**：event→video 方法 2（InteractingMaps）在回放时闪烁/灰屏。许多接口和用法未适配 playback。
+
+**根因**：`AlgoInstance::reset()` **从未在打开新文件或重连相机时被调用**。有状态算法（EventToVideo 的 `log_intensity_`/`current_t_`/`last_frame_t_`、InteractingMaps 的 `I_map_` 等）携带上一会话的过期状态，导致：
+- **错误衰减计算**：`dt_us = current_t_ - last_frame_t_` 基于旧文件的 `current_t_`
+- **冻结输出**：新文件事件 t=0 < 旧 current_t_ → `e.t > current_t_` 为 false → `current_t_` 不更新 → 算法冻结
+- **NaN 传播**：上一会话发散的 I_map_ 继续传播
+- **灰屏**：过期 log_intensity_ 被错误衰减至 0
+
+**解决方案**：在 `CameraController::connected` 信号处理器中（`install_algo_callback()` 之前），重置所有算法实例并清除 XYT 显示：
+
+```cpp
+for (auto& inst : algo_bridge_.list_live()) {
+    inst->reset();  // → AlgoBackend::reset() → algo_.reset()
+}
+if (xyt_display_) {
+    xyt_display_->clear();  // 清除上一会话的事件缓冲
+}
+```
+
+`EventToVideo::reset()` 重置 `current_t_=0`、`last_frame_t_=0`、`log_intensity_`、E2VID 管线、intensity rescaler。所有 31 个自研算法后端均实现了 `reset()`。
+
 ---
 
 *本文档与 [design.md](file:///home/justin/GUI-for-openEB/doc/design.md) 配合使用，design.md 定义"做什么"，本文档定义"怎么做得更好"。*

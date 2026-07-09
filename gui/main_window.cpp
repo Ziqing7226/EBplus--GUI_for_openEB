@@ -619,6 +619,28 @@ void MainWindow::wire_signals() {
         if (xyt_display_) {
             xyt_display_->set_sensor_geometry(info.width, info.height);
         }
+        // Reset ALL algorithm instances to clear temporal state from a
+        // previous session (previous file or live camera). Without this,
+        // stateful algorithms (EventToVideo's log_intensity_/current_t_/
+        // last_frame_t_, InteractingMaps' I_map_, etc.) carry over stale
+        // values, causing:
+        //   - Wrong decay calculations (dt_us based on old current_t_)
+        //   - Stale reconstructions / gray screens
+        //   - NaN propagation from diverged state
+        // This also covers the case where a new raw file starts at t=0 but
+        // current_t_ is still at the previous file's end time → no new
+        // events would update current_t_ (e.t > current_t_ is false) → the
+        // algorithm freezes on stale output. See doc/gui_optimization.md §8.
+        for (auto& inst : algo_bridge_.list_live()) {
+            inst->reset();
+        }
+        // Clear the XYT 3D display buffer so stale events from the previous
+        // session don't linger in the point cloud. Combined with the
+        // time_window-based Z normalization (xyt_visualizer.h render()),
+        // the new session starts with an empty cloud that fills naturally.
+        if (xyt_display_) {
+            xyt_display_->clear();
+        }
         install_algo_callback();
         camera_.start();
         // Sync UI to FramePipeline's current (persisted) values so the
