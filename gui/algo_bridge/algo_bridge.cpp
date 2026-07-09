@@ -696,8 +696,10 @@ void AlgoBridge::register_self_analytics() {
          AlgoDisplayMode::Standalone,
          {penum("mode", "Mode", "2", {"0=BardowVariational", "1=InteractingMaps", "2=E2VID"}),
           pint("output_fps", "Output fps", "30", "1", "120"),
+          // --- Shared non-DL params (mode 0,1) ---
+          pfloat("window_ms", "Window (ms)", "50", "10", "500", "0,1"),
+          pfloat("decay_tau_ms", "Decay tau (ms)", "0", "0", "5000", "0,1"),
           // --- BardowVariational (mode 0) ---
-          pfloat("window_ms", "Window (ms)", "15", "10", "500", "0"),
           pfloat("delta_t_ms", "Delta t (ms)", "15", "1", "50", "0"),
           pfloat("theta", "Theta", "0.22", "0.05", "0.5", "0"),
           pint("num_iterations", "TV iterations", "100", "10", "500", "0,1"),
@@ -706,8 +708,7 @@ void AlgoBridge::register_self_analytics() {
           pfloat("lambda3", "Lambda3 (TV weight)", "0.02", "0.0", "1.0", "0,1"),
           pfloat("lambda4", "Lambda4", "0.2", "0.0", "2.0", "0"),
           pfloat("lambda5", "Lambda5", "0.1", "0.0", "1.0", "0"),
-          pfloat("lambda6", "Lambda6", "1.0", "0.0", "2.0", "0"),
-          pfloat("decay_tau_ms", "Decay tau (ms)", "500", "0", "5000", "0,1"),
+          pfloat("lambda6", "Lambda6 (prior)", "0.1", "0.0", "2.0", "0"),
           // --- InteractingMaps (mode 1) ---
           // relaxation_step / im_iterations / fov_deg retained in backend for
           // the (currently disabled) six-map relaxation; not exposed in GUI

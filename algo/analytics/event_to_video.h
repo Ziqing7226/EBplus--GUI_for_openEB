@@ -53,9 +53,12 @@ public:
           e2vid_(width, height) {}
 
     /// @brief Accumulates events.
-    /// For BardowVariational / InteractingMaps: updates the per-pixel log
-    /// brightness (each event contributes +/- theta). This serves as the
-    /// event data term f (Bardow) or the temporal derivative map V (Cook).
+    /// For BardowVariational / InteractingMaps: buffers timestamped events
+    /// into a ring buffer. At each get_frame() call, events within the
+    /// sliding time window [t - window_ms, t] are summed (each contributing
+    /// +/- theta) to form the data term f (Bardow) / V (Cook). Events older
+    /// than the window are discarded — no exponential decay, matching the
+    /// sliding-window formulation in both reference papers.
     /// For E2VID: buffers events for the next voxel grid + inference call.
     void process(const Event* events, std::size_t n) {
         if (events == nullptr || n == 0) return;
@@ -66,33 +69,26 @@ public:
                                        events, events + n);
             if (events[n - 1].t > current_t_) current_t_ = events[n - 1].t;
         } else {
-            // Non-E2VID: accumulate log-intensity at effective resolution.
+            // Non-E2VID: buffer events at effective resolution for the
+            // sliding-window data-term rebuild in get_frame().
             const int W = eff_w(), H = eff_h();
-            if (static_cast<int>(log_intensity_.size()) != W * H) {
-                log_intensity_.assign(static_cast<std::size_t>(W) * H, 0.0);
-            }
-            if (downsample_) {
-                // 1/4 downsample: keep only even-coordinate events, halve
-                // coordinates (128x128 ROI -> 64x64 reconstruction).
-                for (std::size_t i = 0; i < n; ++i) {
-                    const Event& e = events[i];
-                    if ((e.x & 1u) == 0 && (e.y & 1u) == 0) {
-                        const int hx = e.x >> 1, hy = e.y >> 1;
-                        if (hx < W && hy < H) {
-                            log_intensity_[static_cast<std::size_t>(hy) * W + hx]
-                                += (e.is_on() ? theta_ : -theta_);
-                        }
-                    }
-                    if (e.t > current_t_) current_t_ = e.t;
+            for (std::size_t i = 0; i < n; ++i) {
+                const Event& e = events[i];
+                if (e.t > current_t_) current_t_ = e.t;
+                int ex = e.x, ey = e.y;
+                if (downsample_) {
+                    // 1/4 downsample: keep only even-coordinate events,
+                    // halve coordinates (128x128 ROI -> 64x64).
+                    if ((e.x & 1u) != 0 || (e.y & 1u) != 0) continue;
+                    ex = e.x >> 1;
+                    ey = e.y >> 1;
                 }
-            } else {
-                for (std::size_t i = 0; i < n; ++i) {
-                    const Event& e = events[i];
-                    if (e.x >= W || e.y >= H) continue;
-                    log_intensity_[static_cast<std::size_t>(e.y) * W + e.x]
-                        += (e.is_on() ? theta_ : -theta_);
-                    if (e.t > current_t_) current_t_ = e.t;
-                }
+                if (ex < 0 || ex >= W || ey < 0 || ey >= H) continue;
+                event_window_.push_back(WindowedEvent{
+                    static_cast<std::uint16_t>(ex),
+                    static_cast<std::uint16_t>(ey),
+                    static_cast<std::int8_t>(e.is_on() ? 1 : -1),
+                    e.t});
             }
         }
     }
@@ -101,11 +97,15 @@ public:
     cv::Mat get_frame() {
         cv::Mat frame(height_, width_, CV_8UC1, cv::Scalar(0));
         if (width_ <= 0 || height_ <= 0) return frame;
-        // Apply temporal decay so stale log-intensity values fade and the
-        // reconstruction tracks recent events. Without this, log_intensity_
-        // accumulates indefinitely (each event contributes +/-theta with no
-        // forgetting factor) and the normalized to_gray() output freezes on
-        // the residual pattern established by the first batch of events.
+        // Rebuild log_intensity_ from the sliding time window: sum all
+        // events within [current_t - window_ms, current_t]. Events older
+        // than the window are pruned from the ring buffer. This matches
+        // the sliding-window formulation in both Bardow (2016) and Cook
+        // (2011) — no exponential decay, old events are fully discarded.
+        rebuild_log_intensity();
+        // Optional exponential decay (default off — the sliding window
+        // already provides temporal locality). Users can enable it for
+        // extra smoothing via the decay_tau_ms parameter.
         if (current_t_ > last_frame_t_ && decay_tau_ms_ > 0.0f) {
             const double dt_us =
                 static_cast<double>(current_t_ - last_frame_t_);
@@ -285,9 +285,43 @@ private:
     /// @brief Effective reconstruction height (halved when downsample is on).
     int eff_h() const { return downsample_ ? (height_ > 0 ? (height_ + 1) / 2 : 0) : height_; }
 
+    /// @brief Rebuilds log_intensity_ from events in the sliding window
+    /// [current_t - window_ms, current_t]. Events older than the window
+    /// are pruned from event_window_. Each event contributes +/- theta.
+    void rebuild_log_intensity() {
+        const int W = eff_w(), H = eff_h();
+        const std::size_t N = static_cast<std::size_t>(W) * H;
+        if (log_intensity_.size() != N) {
+            log_intensity_.assign(N, 0.0);
+        } else {
+            std::fill(log_intensity_.begin(), log_intensity_.end(), 0.0);
+        }
+        if (event_window_.empty()) return;
+        const Metavision::timestamp window_us =
+            static_cast<Metavision::timestamp>(window_ms_ * 1000.0f);
+        const Metavision::timestamp t_min = current_t_ - window_us;
+        // Find first event within the window (events are time-ordered).
+        std::size_t first_valid = event_window_.size();
+        for (std::size_t i = 0; i < event_window_.size(); ++i) {
+            if (event_window_[i].t >= t_min) { first_valid = i; break; }
+        }
+        // Sum events within the window into log_intensity_.
+        for (std::size_t i = first_valid; i < event_window_.size(); ++i) {
+            const WindowedEvent& e = event_window_[i];
+            log_intensity_[static_cast<std::size_t>(e.y) * W + e.x]
+                += (e.p > 0 ? theta_ : -theta_);
+        }
+        // Prune old events to bound memory.
+        if (first_valid > 0) {
+            event_window_.erase(event_window_.begin(),
+                                event_window_.begin() + first_valid);
+        }
+    }
+
     /// @brief Resets non-E2VID reconstruction state.
     void reset_state() {
         std::fill(log_intensity_.begin(), log_intensity_.end(), 0.0);
+        event_window_.clear();
         L_.clear(); L_prev_.clear(); L_prior_.clear(); L_tp_.clear();
         ux_.clear(); uy_.clear(); ux_prev_.clear(); uy_prev_.clear();
         px_L_.clear(); py_L_.clear();
@@ -678,7 +712,7 @@ private:
     int output_fps_;
 
     // BardowVariational parameters.
-    float window_ms_{15.0f};
+    float window_ms_{50.0f};       ///< Sliding window duration (ms).
     float delta_t_ms_{15.0f};
     float theta_{0.22f};
     float lambda1_{0.02f};
@@ -686,7 +720,11 @@ private:
     float lambda3_{0.02f};
     float lambda4_{0.2f};
     float lambda5_{0.1f};
-    float lambda6_{1.0f};
+    float lambda6_{0.1f};          ///< Prior retention (reduced from paper's
+                                   ///< 1.0 because our single-step framework
+                                   ///< blends the entire previous frame,
+                                   ///< unlike the paper which only constrains
+                                   ///< the oldest time-step in the window).
     int num_iterations_{100};
 
     // InteractingMaps parameters.
@@ -698,12 +736,21 @@ private:
     bool downsample_{false};
 
     // Base reconstruction state (used by non-E2VID modes).
+    /// Compact event record for the sliding-window ring buffer (effective
+    /// resolution coordinates, after downsampling).
+    struct WindowedEvent {
+        std::uint16_t x, y;
+        std::int8_t p;            ///< +1 (on) or -1 (off)
+        Metavision::timestamp t;  ///< Timestamp in us
+    };
+    std::vector<WindowedEvent> event_window_;  ///< Time-ordered event buffer.
     std::vector<double> log_intensity_;
     Metavision::timestamp current_t_{0};
     Metavision::timestamp last_frame_t_{0};   ///< Last get_frame() timestamp
-    /// Exponential decay time constant for log_intensity_ (ms). Prevents
-    /// unbounded accumulation which would freeze the normalized output.
-    float decay_tau_ms_{500.0f};
+    /// Optional exponential decay for log_intensity_ (ms). Default 0
+    /// (disabled) — the sliding window already provides temporal locality.
+    /// Users can enable it for extra temporal smoothing.
+    float decay_tau_ms_{0.0f};
 
     // --- BardowVariational optimization state ---
     std::vector<double> L_;         ///< Current log-intensity estimate.

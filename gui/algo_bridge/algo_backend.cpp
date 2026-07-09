@@ -1300,13 +1300,13 @@ class EventToVideoBackend final : public AlgoBackend {
     gui_algo::EventToVideo::Mode mode_{gui_algo::EventToVideo::Mode::E2VID};
     int output_fps_{30};
     // BardowVariational params.
-    float window_ms_{15.0F};
+    float window_ms_{50.0F};
     float delta_t_ms_{15.0F};
     float theta_{0.22F};
     int num_iterations_{100};
     float lambda1_{0.02F}, lambda2_{0.05F}, lambda3_{0.02F};
-    float lambda4_{0.2F}, lambda5_{0.1F}, lambda6_{1.0F};
-    float decay_tau_ms_{500.0F};
+    float lambda4_{0.2F}, lambda5_{0.1F}, lambda6_{0.1F};
+    float decay_tau_ms_{0.0F};
     // InteractingMaps params.
     float relaxation_step_{0.1F};
     int im_iterations_{50};
