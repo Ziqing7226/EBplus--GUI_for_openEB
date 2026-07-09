@@ -7,7 +7,9 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QSignalBlocker>
 #include <QSlider>
+#include <QSpinBox>
 
 namespace gui {
 
@@ -22,15 +24,31 @@ DisplayPanel::DisplayPanel(QWidget* parent) : QWidget(parent) {
     accum_layout->setContentsMargins(0, 0, 0, 0);
     accum_slider_ = new QSlider(Qt::Horizontal, accum_row);
     accum_slider_->setRange(10, 10000); // 1.0 - 1000.0 ms in 0.1 ms steps
-    accum_slider_->setValue(333);       // 33.3 ms
+    accum_slider_->setValue(330);       // 33.0 ms
     accum_spin_ = new QDoubleSpinBox(accum_row);
     accum_spin_->setRange(1.0, 1000.0);
     accum_spin_->setSingleStep(0.1);
     accum_spin_->setSuffix(" ms");
-    accum_spin_->setValue(33.3);
+    accum_spin_->setValue(33.0);
     accum_layout->addWidget(accum_slider_, 1);
     accum_layout->addWidget(accum_spin_, 0);
     form->addRow(tr("Accumulation"), accum_row);
+
+    // Frame rate: 1 .. fps_limit (default 30 fps, limit 60).
+    fps_spin_ = new QSpinBox(this);
+    fps_spin_->setRange(1, 60);
+    fps_spin_->setValue(30);
+    fps_spin_->setSuffix(tr(" fps"));
+    fps_spin_->setToolTip(tr("Display frame rate. Clamped to the FPS limit."));
+    form->addRow(tr("Frame rate"), fps_spin_);
+
+    // FPS limit: 1 .. 1000 (default 60). Changing this updates the fps range.
+    fps_limit_spin_ = new QSpinBox(this);
+    fps_limit_spin_->setRange(1, 1000);
+    fps_limit_spin_->setValue(60);
+    fps_limit_spin_->setSuffix(tr(" fps"));
+    fps_limit_spin_->setToolTip(tr("Upper bound on display frame rate."));
+    form->addRow(tr("FPS limit"), fps_limit_spin_);
 
     palette_combo_ = new QComboBox(this);
     palette_combo_->addItem(tr("Dark"), 0);
@@ -58,6 +76,22 @@ DisplayPanel::DisplayPanel(QWidget* parent) : QWidget(parent) {
             });
     connect(accum_spin_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [this](double v) { emit accumulation_time_changed_us(static_cast<int>(v * 1000)); });
+
+    // FPS spinbox -> signal.
+    connect(fps_spin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int v) { emit fps_changed(v); });
+
+    // FPS-limit spinbox -> signal + update fps range.
+    connect(fps_limit_spin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int limit) {
+                // Clamp the fps range to the new limit. If the current fps
+                // exceeds the limit, QSpinBox::setMaximum will clamp the
+                // value and emit valueChanged, which flows through to
+                // fps_changed and ultimately to FramePipeline::set_fps.
+                fps_spin_->setMaximum(limit);
+                emit fps_limit_changed(limit);
+            });
+
     connect(palette_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &DisplayPanel::color_palette_changed);
 }
@@ -74,6 +108,14 @@ int DisplayPanel::frame_mode_index() const {
     return mode_combo_->currentIndex();
 }
 
+int DisplayPanel::fps() const {
+    return fps_spin_->value();
+}
+
+int DisplayPanel::fps_limit() const {
+    return fps_limit_spin_->value();
+}
+
 void DisplayPanel::set_frame_mode(int index) {
     if (index >= 0 && index < mode_combo_->count()) {
         mode_combo_->setCurrentIndex(index);
@@ -85,6 +127,18 @@ void DisplayPanel::set_accumulation_time_ms(double ms) {
     QSignalBlocker bp(accum_spin_);
     accum_spin_->setValue(ms);
     accum_slider_->setValue(static_cast<int>(ms * 10));
+}
+
+void DisplayPanel::set_fps(int fps) {
+    QSignalBlocker b(fps_spin_);
+    fps_spin_->setValue(fps);
+}
+
+void DisplayPanel::set_fps_limit(int limit) {
+    QSignalBlocker bl(fps_limit_spin_);
+    QSignalBlocker bf(fps_spin_);
+    fps_limit_spin_->setValue(limit);
+    fps_spin_->setMaximum(limit);
 }
 
 } // namespace gui

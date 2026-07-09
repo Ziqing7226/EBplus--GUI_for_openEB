@@ -3,13 +3,16 @@
 #include "playback_controls.h"
 
 #include <QCheckBox>
-#include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QSpinBox>
 #include <QTimer>
+
+#include <cmath>
 
 #include "playback_controller.h"
 
@@ -24,11 +27,36 @@ PlaybackControls::PlaybackControls(QWidget* parent) : QWidget(parent) {
     slider_   = new QSlider(Qt::Horizontal, this);
     lbl_cur_  = new QLabel("0.000 s", this);
     lbl_dur_  = new QLabel("0.000 s", this);
-    cmb_speed_ = new QComboBox(this);
     chk_loop_ = new QCheckBox(tr("Loop"), this);
 
-    cmb_speed_->addItems({"0.25x", "0.5x", "1x", "2x", "4x", tr("Max")});
-    cmb_speed_->setCurrentIndex(2);
+    // Linked playback-rate controls (design §3.3.2):
+    //   multiplier = frame_rate * time_window_us / 1e6
+    // Editing one field locks another and recomputes the third, mirroring the
+    // PlaybackController's locking semantics:
+    //   - edit time_window → frame_rate locked, multiplier recomputed
+    //   - edit frame_rate  → time_window locked, multiplier recomputed
+    //   - edit multiplier  → frame_rate locked, time_window recomputed
+    spd_tw_ = new QSpinBox(this);
+    spd_tw_->setRange(1, 1000000);      // 1 μs .. 1 s, integer only
+    spd_tw_->setSingleStep(1000);
+    spd_tw_->setValue(33000);
+    spd_tw_->setSuffix(QStringLiteral(" us"));
+    spd_tw_->setToolTip(tr("Event accumulation window per frame (microseconds, integer)."));
+
+    spd_fps_ = new QSpinBox(this);
+    spd_fps_->setRange(1, 60);          // upper bound = fps_limit (synced at runtime)
+    spd_fps_->setValue(30);
+    spd_fps_->setSuffix(tr(" fps"));
+    spd_fps_->setToolTip(tr("Display frame rate. Clamped to the FPS limit."));
+
+    spd_mult_ = new QDoubleSpinBox(this);
+    spd_mult_->setRange(0.000001, 100.0);
+    spd_mult_->setDecimals(6);
+    spd_mult_->setSingleStep(0.1);
+    spd_mult_->setValue(1.0);
+    spd_mult_->setPrefix(QStringLiteral("x"));
+    spd_mult_->setToolTip(tr("Playback multiplier = fps * time-window / 1e6. "
+                             ">1 = fast-forward (max), <=1 = real-time / slow-motion."));
 
     slider_->setMinimum(0);
     slider_->setMaximum(1000);
@@ -38,7 +66,13 @@ PlaybackControls::PlaybackControls(QWidget* parent) : QWidget(parent) {
     lay->addWidget(lbl_cur_, 0);
     lay->addWidget(slider_, 1);
     lay->addWidget(lbl_dur_, 0);
-    lay->addWidget(cmb_speed_);
+    lay->addSpacing(8);
+    lay->addWidget(new QLabel(tr("Window"), this));
+    lay->addWidget(spd_tw_);
+    lay->addWidget(new QLabel(tr("Rate"), this));
+    lay->addWidget(spd_fps_);
+    lay->addWidget(spd_mult_);
+    lay->addSpacing(8);
     lay->addWidget(chk_loop_);
 
     activate(false);
@@ -48,29 +82,29 @@ PlaybackControls::PlaybackControls(QWidget* parent) : QWidget(parent) {
     });
     connect(btn_step_, &QPushButton::clicked, this, [this]() {
         if (!controller_) return;
-        // Pause first so we step from a known position, then seek forward by
-        // one frame interval (~33 ms at 30 fps). Finally, briefly start the
-        // camera so the SDK decodes events at the new position and the frame
-        // pipeline emits a fresh frame; pause again shortly after so the user
-        // sees exactly one step's worth of motion. Without the start/pause,
-        // seeking while paused produces no new frame (the decoder is idle and
-        // CDFrameGenerator has no events to accumulate).
         controller_->pause();
-        const Metavision::timestamp next = controller_->position_us() + 33000;
-        if (controller_->seek(next)) {
-            controller_->play();
-            QTimer::singleShot(120, this, [this]() { controller_->pause(); });
-        }
+        // Advance by one accumulation window and render immediately.
+        // seek_file() renders the frame synchronously, so no play-then-pause
+        // hack is needed (unlike the CDFrameGenerator-based approach).
+        const Metavision::timestamp step_us = controller_->time_window_us();
+        const Metavision::timestamp next = controller_->position_us() + step_us;
+        controller_->seek(next);
     });
-    // Tie seeking_ to the press/release lifecycle so the 100 ms probe timer
-    // cannot yank the slider knob out from under the cursor mid-drag.
     connect(slider_, &QSlider::sliderPressed,  this, [this]() { seeking_ = true;  });
     connect(slider_, &QSlider::sliderReleased, this, [this]() { seeking_ = false; });
     connect(slider_, &QSlider::sliderMoved,    this, &PlaybackControls::on_slider_moved);
-    connect(cmb_speed_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int idx) {
-        if (!controller_) return;
-        double speeds[] = {0.25, 0.5, 1.0, 2.0, 4.0, 0.0};
-        controller_->set_speed(speeds[idx]);
+    // Each field delegates to the controller, which is the single source of
+    // truth. The controller delegates to FramePipeline, whose signals sync
+    // both this panel and the DisplayPanel.
+    connect(spd_tw_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+        if (controller_) controller_->set_time_window_us(
+            static_cast<Metavision::timestamp>(v));
+    });
+    connect(spd_fps_, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+        if (controller_) controller_->set_frame_rate(static_cast<std::uint16_t>(v));
+    });
+    connect(spd_mult_, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double v) {
+        if (controller_) controller_->set_multiplier(v);
     });
     connect(chk_loop_, &QCheckBox::toggled, this, [this](bool on) {
         if (controller_) controller_->set_loop(on);
@@ -78,10 +112,6 @@ PlaybackControls::PlaybackControls(QWidget* parent) : QWidget(parent) {
 }
 
 void PlaybackControls::set_controller(PlaybackController* controller) {
-    // Disconnect the previous controller's signals to avoid duplicate
-    // handlers when set_controller is called more than once. Early-return
-    // when unchanged so a repeat call does not create duplicate connections
-    // (Qt's default AutoConnection allows duplicates).
     if (controller_ == controller) return;
     if (controller_) {
         disconnect(controller_, nullptr, this, nullptr);
@@ -94,8 +124,8 @@ void PlaybackControls::set_controller(PlaybackController* controller) {
                 this, &PlaybackControls::on_position_changed);
         connect(controller_, &PlaybackController::opened,
                 this, &PlaybackControls::on_opened);
-        connect(controller_, &PlaybackController::speed_changed,
-                this, &PlaybackControls::on_speed_changed);
+        connect(controller_, &PlaybackController::multiplier_changed,
+                this, &PlaybackControls::on_multiplier_changed);
         connect(controller_, &PlaybackController::loop_changed,
                 this, &PlaybackControls::on_loop_changed);
     }
@@ -116,10 +146,6 @@ void PlaybackControls::on_opened(Metavision::timestamp dur) {
 }
 
 void PlaybackControls::on_position_changed(Metavision::timestamp pos, Metavision::timestamp dur) {
-    // Always update the time label — even mid-drag the user wants to see the
-    // timestamp they are scrubbing to (seek() emits position_changed with the
-    // target time). Only the slider knob is left alone while dragging so the
-    // 100 ms probe timer cannot yank it out from under the cursor.
     lbl_cur_->setText(format_time(pos));
     if (seeking_) return;
     if (dur > 0) {
@@ -131,28 +157,39 @@ void PlaybackControls::on_position_changed(Metavision::timestamp pos, Metavision
 
 void PlaybackControls::on_slider_moved(int v) {
     if (!controller_) return;
-    // seeking_ is now managed by sliderPressed/sliderReleased so the probe
-    // timer cannot fight the drag; no need to toggle it here.
     const Metavision::timestamp dur = controller_->duration_us();
     if (dur > 0) {
         controller_->seek(v * dur / slider_->maximum());
     }
 }
 
-void PlaybackControls::on_speed_changed(double s) {
-    // Sync the combo to the actually-applied speed. set_speed() may roll back
-    // to the previous speed on failure (e.g. reopen failed), and the speed can
-    // also change programmatically (e.g. on file open). Without this the combo
-    // would display a speed that doesn't match reality.
-    int target = 2; // default 1x
-    if (s == 0.0)       target = 5; // Max
-    else if (s == 0.25) target = 0;
-    else if (s == 0.5)  target = 1;
-    else if (s == 1.0)  target = 2;
-    else if (s == 2.0)  target = 3;
-    else if (s == 4.0)  target = 4;
-    QSignalBlocker b(cmb_speed_);
-    cmb_speed_->setCurrentIndex(target);
+void PlaybackControls::on_time_window_changed(Metavision::timestamp us) {
+    // Sync the window field to the FramePipeline's actual accumulation value.
+    // Blocked so valueChanged doesn't recurse into set_time_window_us.
+    QSignalBlocker b(spd_tw_);
+    spd_tw_->setValue(static_cast<int>(us));
+}
+
+void PlaybackControls::on_frame_rate_changed(unsigned fps) {
+    QSignalBlocker b(spd_fps_);
+    spd_fps_->setValue(static_cast<int>(fps));
+}
+
+void PlaybackControls::on_fps_limit_changed(unsigned limit) {
+    // Update the fps spinbox range. If the current value exceeds the new
+    // limit, QSpinBox::setMaximum will clamp it and emit valueChanged,
+    // which flows through to the controller and FramePipeline.
+    spd_fps_->setMaximum(static_cast<int>(limit));
+}
+
+void PlaybackControls::on_multiplier_changed(double m) {
+    // Display the actually-applied multiplier, rounded to 6 decimals to
+    // match the spinbox precision. The controller's multiplier() may differ
+    // slightly from the user-typed value because accumulation_time_us is
+    // rounded to an integer (μs).
+    const double rounded = std::floor(m * 1e6 + 0.5) / 1e6;
+    QSignalBlocker b(spd_mult_);
+    spd_mult_->setValue(rounded);
 }
 
 void PlaybackControls::on_loop_changed(bool on) {

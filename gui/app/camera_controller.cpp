@@ -65,16 +65,14 @@ bool CameraController::connect_serial(const std::string& serial) {
 }
 
 bool CameraController::connect_file(const std::string& path) {
-    return connect_file_speed(path, 1.0);
-}
-
-bool CameraController::connect_file_speed(const std::string& path, double speed) {
     teardown();
     try {
+        // Always use real_time_playback=false: read all events as fast as
+        // possible and buffer them in the FileFrameGenerator. Playback rate
+        // is controlled by the FileFrameGenerator's QTimer, not by the SDK's
+        // delivery rate.
         Metavision::FileConfigHints hints;
-        // speed == 0 → as-fast-as-possible (real_time_playback disabled);
-        // otherwise real-time playback.
-        hints.real_time_playback(speed > 0.0);
+        hints.real_time_playback(false);
         auto cam = Metavision::Camera::from_file(path, hints);
         setup_camera(std::move(cam), true);
         return true;
@@ -219,9 +217,16 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
                 msg.contains(QStringLiteral("NonMonotonicTimeHigh"), Qt::CaseInsensitive) ||
                 msg.contains(QStringLiteral("Evt3 protocol violation"), Qt::CaseInsensitive);
 
-            if (is_file_) {
+            if (is_evt3_time_glitch) {
+                // Transient Evt3 timestamp glitch — ignore for BOTH live and
+                // file sources.  Gen3 raw files frequently contain
+                // NonMonotonicTimeHigh warnings; treating them as EOF (the
+                // previous behaviour for is_file_) stopped playback before
+                // any frames were visible.
+                emit runtime_warning(tr("Transient timestamp glitch (ignored): %1").arg(msg));
+            } else if (is_file_) {
+                // File source + non-glitch error → genuine EOF.
                 emit runtime_warning(tr("Playback ended: %1").arg(msg));
-                // File EOF → stop as before.
                 QMetaObject::invokeMethod(this, [this]() {
                     if (!camera_) return;
                     if (camera_->is_running()) {
@@ -229,11 +234,6 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
                     }
                     emit stopped();
                 }, Qt::QueuedConnection);
-            } else if (is_evt3_time_glitch) {
-                // Live camera + transient Evt3 timestamp glitch: do NOT
-                // stop the stream. Emit a warning so the user knows
-                // something happened, but keep running.
-                emit runtime_warning(tr("Transient camera timestamp glitch (ignored): %1").arg(msg));
             } else {
                 // Live camera + genuine error: stop and report.
                 emit error(msg);
@@ -295,11 +295,23 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     last_ts_.store(-1, std::memory_order_relaxed);
     filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
 
-    // Start the frame pipeline for the new sensor geometry.
+    // Start the frame pipeline for the new sensor geometry. File sources use
+    // FileFrameGenerator (buffers events, controls playback rate via QTimer);
+    // live sources use CDFrameGenerator (shows latest accumulation window).
+    // fps_ / accumulation_us_ / fps_limit_ persist across stop/start cycles
+    // so user settings survive camera reconnects and file reopens.
     const long w = sensor_info_.width;
     const long h = sensor_info_.height;
-    if (!frame_pipeline_.start(w, h, /*fps*/ 30, /*accumulation_us*/ 33000)) {
-        emit runtime_warning(tr("Failed to start frame pipeline."));
+    const std::uint16_t fps = frame_pipeline_.fps();
+    const Metavision::timestamp acc = frame_pipeline_.accumulation_time_us();
+    if (is_file) {
+        if (!frame_pipeline_.start_file(w, h, fps, acc)) {
+            emit runtime_warning(tr("Failed to start file frame pipeline."));
+        }
+    } else {
+        if (!frame_pipeline_.start(w, h, fps, acc)) {
+            emit runtime_warning(tr("Failed to start frame pipeline."));
+        }
     }
 
     emit connected(sensor_info_);

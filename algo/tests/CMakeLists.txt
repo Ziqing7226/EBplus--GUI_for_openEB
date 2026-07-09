@@ -69,3 +69,34 @@ target_link_libraries(test_raw_e2v PRIVATE
     ${OpenCV_LIBS}
 )
 
+# Standalone diagnostic: open a .raw file with real_time_playback(true/false)
+# and report event delivery + duration. Used to verify SDK behavior matches
+# the GUI's default mode.
+add_executable(test_raw_playback
+    test_raw_playback.cpp
+)
+target_link_libraries(test_raw_playback PRIVATE
+    MetavisionSDK::base
+    MetavisionSDK::core
+    MetavisionSDK::stream
+)
+
+# Standalone diagnostic: verify FileFrameGenerator produces frames at the
+# correct playback rate (fps * window / 1e6). Tests slow-motion, real-time,
+# fast-forward, EOF, and loop behavior.
+add_executable(test_file_frame_generator
+    test_file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+)
+target_include_directories(test_file_frame_generator PRIVATE
+    ${CMAKE_SOURCE_DIR}/gui
+)
+target_link_libraries(test_file_frame_generator PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    MetavisionSDK::base
+    MetavisionSDK::core
+    MetavisionSDK::stream
+    ${OpenCV_LIBS}
+)
+

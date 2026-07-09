@@ -32,6 +32,9 @@ Thumbs.db
 /tmp/
 qt_stderr*.log
 
+# ---- Metavision raw file index cache ----
+*.tmp_index
+
 # ---- User-private launcher (local env customisation) ----
 run.local.sh
 

@@ -4,50 +4,59 @@
 
 #include <metavision/sdk/stream/camera.h>
 #include <metavision/sdk/stream/camera_exception.h>
-#include <metavision/sdk/stream/file_config_hints.h>
 #include <metavision/sdk/stream/offline_streaming_control.h>
 
 #include "app/camera_controller.h"
+#include "app/frame_pipeline.h"
 
 namespace gui {
 
-PlaybackController::PlaybackController(QObject* parent) : QObject(parent) {
-    probe_timer_.setInterval(100);
-    connect(&probe_timer_, &QTimer::timeout, this, &PlaybackController::probe_position);
-}
+PlaybackController::PlaybackController(QObject* parent) : QObject(parent) {}
 
 void PlaybackController::set_camera(CameraController* controller) {
     if (controller_ == controller) return;
     if (controller_) {
+        // Disconnect FramePipeline signals (not covered by disconnecting
+        // the controller itself, since FramePipeline is a separate object).
+        if (auto* fp = controller_->frame_pipeline()) {
+            disconnect(fp, nullptr, this, nullptr);
+        }
         disconnect(controller_, nullptr, this, nullptr);
     }
-    // Reset stale playback state from the previous controller before binding
-    // the new one: path_/duration_us_ belong to a different stream and
-    // playing_ no longer reflects reality.
-    probe_timer_.stop();
+    // Reset stale playback state from the previous controller.
     path_.clear();
     duration_us_ = 0;
+    at_eof_ = false;
     if (playing_) {
         playing_ = false;
         emit state_changed(false);
     }
     controller_ = controller;
     if (controller_) {
-        // When a file reaches EOF the SDK defers camera_->stop() to the GUI
-        // thread and emits CameraController::stopped. Without this connection
-        // playing_ would stay true, the probe timer would keep firing, and
-        // the play button would keep showing "Pause" — the user would have
-        // to click twice to restart (once to "pause" an already-stopped
-        // stream, once to play). Loop mode handles its own restart in
-        // probe_position(), so it is exempt.
+        // In file mode, the SDK camera stops after buffering all events
+        // (real_time_playback=false delivers them in ~10ms). This is NOT
+        // playback stopping — the FileFrameGenerator continues playing from
+        // its buffer. Only update state for live camera stops.
         connect(controller_, &CameraController::stopped, this, [this]() {
-            if (loop_ && playing_) return; // loop restart handled in probe_position
+            if (controller_ && controller_->is_file_source()) return;
+            // Live camera stopped:
             if (playing_) {
                 playing_ = false;
-                probe_timer_.stop();
                 emit state_changed(false);
             }
         });
+
+        // Listen to FramePipeline signals for file playback.
+        if (auto* fp = controller_->frame_pipeline()) {
+            connect(fp, &FramePipeline::fps_changed,
+                    this, &PlaybackController::on_pipeline_param_changed);
+            connect(fp, &FramePipeline::accumulation_time_changed,
+                    this, &PlaybackController::on_pipeline_param_changed);
+            connect(fp, &FramePipeline::file_position_changed,
+                    this, &PlaybackController::on_file_position_changed);
+            connect(fp, &FramePipeline::file_eof_reached,
+                    this, &PlaybackController::on_file_eof);
+        }
     }
 }
 
@@ -55,27 +64,55 @@ bool PlaybackController::available() const {
     return controller_ && controller_->is_connected() && controller_->is_file_source();
 }
 
-bool PlaybackController::open_file(const QString& path, double speed) {
+Metavision::timestamp PlaybackController::time_window_us() const {
+    if (!controller_ || !controller_->frame_pipeline()) return 33333;
+    return controller_->frame_pipeline()->accumulation_time_us();
+}
+
+std::uint16_t PlaybackController::frame_rate() const {
+    if (!controller_ || !controller_->frame_pipeline()) return 30;
+    return controller_->frame_pipeline()->fps();
+}
+
+double PlaybackController::multiplier() const {
+    if (!controller_ || !controller_->frame_pipeline()) return 1.0;
+    auto* fp = controller_->frame_pipeline();
+    return static_cast<double>(fp->fps()) *
+           static_cast<double>(fp->accumulation_time_us()) / 1.0e6;
+}
+
+bool PlaybackController::open_file(const QString& path) {
     if (!controller_) {
         emit error(tr("No camera controller bound."));
         return false;
     }
     path_ = path;
-    speed_ = speed;
-    if (!controller_->connect_file_speed(path.toStdString(), speed)) {
+    // connect_file opens with real_time_playback=false: all events are read
+    // as fast as possible and buffered in the FileFrameGenerator. Playback
+    // rate is controlled by the FileFrameGenerator's QTimer, not by SDK
+    // delivery speed. This enables slow-motion and fast-forward.
+    if (!controller_->connect_file(path.toStdString())) {
         return false;
     }
-    duration_us_ = query_duration();
-    playing_ = false;
+    // Start the camera so events flow into the FileFrameGenerator buffer.
+    // With real_time_playback=false, all events arrive in ~10ms regardless
+    // of file duration.
     if (!controller_->start()) {
-        // start() already emitted an error via CameraController.
         return false;
     }
-    playing_ = true;
-    probe_timer_.start();
+    // Query duration from OSC (ready after start). The FileFrameGenerator
+    // also updates duration from the last event timestamp, so this is a
+    // secondary source — whichever is larger wins.
+    duration_us_ = query_duration();
+    if (auto* fp = controller_->frame_pipeline()) {
+        fp->set_file_duration_us(duration_us_);
+        fp->set_file_loop(loop_);
+    }
+    at_eof_ = false;
+    // Auto-start playback.
+    play();
     emit opened(duration_us_);
-    emit state_changed(playing_);
-    emit speed_changed(speed_);
+    emit multiplier_changed(multiplier());
     return true;
 }
 
@@ -83,12 +120,16 @@ void PlaybackController::play() {
     if (!available() || playing_) {
         return;
     }
-    if (!controller_->start()) {
-        // start() already emitted an error via CameraController.
-        return;
+    auto* fp = controller_ ? controller_->frame_pipeline() : nullptr;
+    if (!fp) return;
+    // If at EOF, restart from the beginning. The FileFrameGenerator also
+    // does this internally, but we reset at_eof_ for UI state tracking.
+    if (at_eof_) {
+        at_eof_ = false;
+        fp->seek_file(0);
     }
+    fp->play_file();
     playing_ = true;
-    probe_timer_.start();
     emit state_changed(true);
 }
 
@@ -96,9 +137,12 @@ void PlaybackController::pause() {
     if (!playing_) {
         return;
     }
-    controller_->stop();
+    auto* fp = controller_ ? controller_->frame_pipeline() : nullptr;
+    if (fp) {
+        fp->pause_file();
+    }
     playing_ = false;
-    probe_timer_.stop();
+    at_eof_ = false;  // user paused, not EOF
     emit state_changed(false);
 }
 
@@ -114,96 +158,81 @@ bool PlaybackController::seek(Metavision::timestamp t_us) {
     if (!available()) {
         return false;
     }
-    auto* cam = controller_->camera_handle();
-    if (!cam) {
-        return false;
+    auto* fp = controller_ ? controller_->frame_pipeline() : nullptr;
+    if (!fp) return false;
+    // Seek is O(1): just set the cursor and render immediately. No OSC
+    // seek, no file reopen — works even after EOF.
+    fp->seek_file(t_us);
+    // If we were at EOF, seeking clears that state.
+    if (at_eof_) {
+        at_eof_ = false;
     }
-    try {
-        auto& osc = cam->offline_streaming_control();
-        if (!osc.is_ready()) {
-            emit error(tr("Seeking is not available for this file."));
-            return false;
-        }
-        if (!osc.seek(t_us)) {
-            return false;
-        }
-        emit position_changed(t_us, duration_us_);
-        return true;
-    } catch (const Metavision::CameraException& e) {
-        emit error(QString::fromUtf8(e.what()));
-        return false;
-    }
+    return true;
 }
 
 void PlaybackController::set_loop(bool on) {
     loop_ = on;
+    if (auto* fp = controller_ ? controller_->frame_pipeline() : nullptr) {
+        fp->set_file_loop(on);
+    }
     emit loop_changed(on);
 }
 
-void PlaybackController::set_speed(double speed) {
-    if (!available() || path_.isEmpty()) {
-        speed_ = speed;
-        return;
+void PlaybackController::set_time_window_us(Metavision::timestamp us) {
+    if (us < 1) us = 1;
+    if (!controller_ || !controller_->frame_pipeline()) return;
+    controller_->frame_pipeline()->set_accumulation_time_us(us);
+}
+
+void PlaybackController::set_frame_rate(std::uint16_t fps) {
+    if (fps == 0) fps = 1;
+    if (!controller_ || !controller_->frame_pipeline()) return;
+    controller_->frame_pipeline()->set_fps(fps);
+}
+
+void PlaybackController::set_multiplier(double m) {
+    if (m <= 0.0) m = 0.000001;
+    if (!controller_ || !controller_->frame_pipeline()) return;
+    auto* fp = controller_->frame_pipeline();
+    // fps is locked: derive accumulation from the requested multiplier.
+    // accumulation = multiplier * 1e6 / fps
+    Metavision::timestamp tw = static_cast<Metavision::timestamp>(
+        m * 1.0e6 / static_cast<double>(fp->fps()) + 0.5);
+    if (tw < 1) tw = 1;
+    fp->set_accumulation_time_us(tw);
+}
+
+void PlaybackController::on_pipeline_param_changed() {
+    emit multiplier_changed(multiplier());
+}
+
+void PlaybackController::on_file_position_changed(Metavision::timestamp pos,
+                                                   Metavision::timestamp dur) {
+    if (dur > duration_us_) {
+        duration_us_ = dur;
     }
-    if (speed == speed_) {
-        return;
-    }
-    // Reopen the file at the new speed, preserving the current position.
-    // Preserve the prior play/pause state: changing the speed combo should
-    // not silently resume a paused stream. Roll back speed_ on failure so
-    // the UI does not display a speed that was never applied.
-    const bool was_playing = playing_;
-    const Metavision::timestamp pos = query_position();
-    const double old_speed = speed_;
-    speed_ = speed;
-    if (!controller_->connect_file_speed(path_.toStdString(), speed)) {
-        speed_ = old_speed;
-        emit error(tr("Failed to change playback speed."));
-        return;
-    }
-    duration_us_ = query_duration();
-    if (pos > 0) {
-        seek(pos);
-    }
-    if (was_playing) {
-        if (!controller_->start()) {
-            speed_ = old_speed;
-            playing_ = false;
-            emit state_changed(false);
-            emit speed_changed(old_speed);
-            return;
-        }
-        probe_timer_.start();
-    }
-    playing_ = was_playing;
-    emit speed_changed(speed_);
-    emit state_changed(was_playing);
+    emit position_changed(pos, duration_us_);
+}
+
+void PlaybackController::on_file_eof() {
+    playing_ = false;
+    at_eof_ = true;
+    emit state_changed(false);
 }
 
 Metavision::timestamp PlaybackController::duration_us() const {
+    if (auto* fp = controller_ ? controller_->frame_pipeline() : nullptr) {
+        const Metavision::timestamp fd = fp->file_duration_us();
+        if (fd > duration_us_) return fd;
+    }
     return duration_us_;
 }
 
 Metavision::timestamp PlaybackController::position_us() const {
-    return query_position();
-}
-
-void PlaybackController::probe_position() {
-    const Metavision::timestamp pos = query_position();
-    if (pos >= 0) {
-        emit position_changed(pos, duration_us_);
+    if (auto* fp = controller_ ? controller_->frame_pipeline() : nullptr) {
+        return fp->file_position_us();
     }
-    // Loop-on-EOF: when the controller reports the stream has stopped due to
-    // EOF, restart from the beginning if looping is enabled. Break out of the
-    // loop on failure so we don't retry every 100 ms forever with no backoff.
-    if (loop_ && available() && !controller_->is_running() && playing_) {
-        if (!seek(0) || !controller_->start()) {
-            playing_ = false;
-            probe_timer_.stop();
-            emit error(tr("Loop restart failed; stopping playback."));
-            emit state_changed(false);
-        }
-    }
+    return 0;
 }
 
 Metavision::timestamp PlaybackController::query_duration() const {
@@ -223,13 +252,6 @@ Metavision::timestamp PlaybackController::query_duration() const {
     } catch (...) {
         return 0;
     }
-}
-
-Metavision::timestamp PlaybackController::query_position() const {
-    if (!available()) {
-        return 0;
-    }
-    return controller_->last_timestamp_us();
 }
 
 } // namespace gui

@@ -1,8 +1,22 @@
-// gui/app/frame_pipeline.h — Qt-facing wrapper around gui_algo::FrameGenerator.
+// gui/app/frame_pipeline.h — Qt-facing wrapper around the frame generator.
 //
-// Lives on the GUI thread. The frame callback (invoked on the CDFrameGenerator
-// internal thread) deep-copies the cv::Mat into a QImage and emits frame_ready
-// via a queued signal so the GUI thread can safely consume it.
+// Lives on the GUI thread. Supports two backends:
+//
+//   Live mode  — gui_algo::FrameGenerator (wraps Metavision::CDFrameGenerator).
+//                Used for live cameras. Shows the latest accumulation window
+//                of the real-time event stream.
+//
+//   File mode  — FileFrameGenerator. Used for file playback. Buffers all
+//                events and replays them at fps*window/1e6 speed, enabling
+//                slow-motion and fast-forward. Loop = cursor reset (no file
+//                reopen), seek = set cursor, pause = stop timer.
+//
+// Single source of truth for display parameters:
+//   - fps_               : display frame rate (clamped to [1, fps_limit_])
+//   - accumulation_us_   : per-frame event accumulation window (μs)
+//   - fps_limit_         : user-configurable upper bound on fps (default 60)
+//
+// Both DisplayPanel and PlaybackControls read from and write to the pipeline.
 
 #ifndef GUI_APP_FRAME_PIPELINE_H
 #define GUI_APP_FRAME_PIPELINE_H
@@ -11,10 +25,13 @@
 #include <QImage>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include <metavision/sdk/base/utils/timestamp.h>
+#include <metavision/sdk/base/events/event_cd.h>
 
 #include "algo/common/frame_generator.h"
+#include "file_frame_generator.h"
 
 namespace gui {
 
@@ -24,25 +41,78 @@ public:
     explicit FramePipeline(QObject* parent = nullptr);
     ~FramePipeline();
 
-    /// @brief Starts the pipeline. Returns false if already running or invalid.
+    /// @brief Starts the pipeline in live mode (CDFrameGenerator).
     bool start(long width, long height,
                std::uint16_t fps,
                Metavision::timestamp accumulation_time_us);
-    void stop();
-    bool is_running() const { return window_id_ >= 0; }
 
-    /// @brief Thread-safe: called from the SDK CD callback.
+    /// @brief Starts the pipeline in file mode (FileFrameGenerator). Events
+    /// are buffered and replayed at fps*window/1e6 speed.
+    bool start_file(long width, long height,
+                    std::uint16_t fps,
+                    Metavision::timestamp accumulation_time_us);
+
+    void stop();
+    bool is_running() const { return file_mode_ || window_id_ >= 0; }
+    bool is_file_mode() const { return file_mode_; }
+
+    /// @brief Thread-safe: called from the SDK CD callback. In live mode,
+    /// forwards to CDFrameGenerator. In file mode, buffers into FileFrameGenerator.
     void add_events(const Metavision::EventCD* begin, const Metavision::EventCD* end);
 
     void set_accumulation_time_us(Metavision::timestamp us);
+    void set_fps(std::uint16_t fps);
+    void set_fps_limit(std::uint16_t limit);
     void set_color_palette(Metavision::ColorPalette palette);
+
+    // --- File playback control (file mode only) ---
+
+    void play_file();
+    void pause_file();
+    void seek_file(Metavision::timestamp t_us);
+    void set_file_loop(bool on);
+    void set_file_duration_us(Metavision::timestamp us);
+    Metavision::timestamp file_position_us() const;
+    Metavision::timestamp file_duration_us() const;
+    bool file_is_playing() const;
+
+    std::uint16_t fps() const { return fps_; }
+    Metavision::timestamp accumulation_time_us() const { return accumulation_us_; }
+    std::uint16_t fps_limit() const { return fps_limit_; }
 
 signals:
     void frame_ready(QImage frame, Metavision::timestamp ts);
+    void fps_changed(std::uint16_t fps);
+    void accumulation_time_changed(Metavision::timestamp us);
+    void fps_limit_changed(std::uint16_t limit);
+    /// File mode: emitted after each frame with cursor position + duration.
+    void file_position_changed(Metavision::timestamp pos, Metavision::timestamp dur);
+    /// File mode: emitted when playback reaches the end of the buffer.
+    void file_eof_reached();
+
+    /// File mode: emitted with the events in the current accumulation window
+    /// [start, end) so algorithm instances can process them synchronously
+    /// with the displayed frame. Emitted before frame_ready.
+    void events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
+                             Metavision::timestamp ts);
 
 private:
+    void recreate_window();
+    std::uint16_t clamp_fps(std::uint16_t fps) const;
+
+    // Live mode backend
     std::unique_ptr<gui_algo::FrameGenerator> generator_;
     int window_id_{-1};
+
+    // File mode backend
+    FileFrameGenerator file_generator_;
+    bool file_mode_{false};
+
+    long width_{0};
+    long height_{0};
+    std::uint16_t fps_{30};
+    Metavision::timestamp accumulation_us_{33000};
+    std::uint16_t fps_limit_{60};
 };
 
 } // namespace gui

@@ -54,7 +54,7 @@ ExportDialog::ExportDialog(ExporterController* controller, QWidget* parent)
 
     spn_accum_ = new QDoubleSpinBox(this);
     spn_accum_->setRange(1.0, 1000.0);
-    spn_accum_->setValue(33.3);
+    spn_accum_->setValue(33.0);
     spn_accum_->setSuffix(" ms");
     form->addRow(tr("Accumulation (AVI):"), spn_accum_);
 

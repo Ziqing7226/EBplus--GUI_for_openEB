@@ -75,11 +75,11 @@ public:
     bool connect_first_available();
     /// @brief Connects to a camera by serial number.
     bool connect_serial(const std::string& serial);
-    /// @brief Opens an event file (RAW / HDF5 / DAT) for playback.
+    /// @brief Opens an event file (RAW / HDF5 / DAT) for playback. Always
+    /// uses real_time_playback=false so all events are read as fast as
+    /// possible and buffered in the FileFrameGenerator. Playback rate is
+    /// controlled by the FileFrameGenerator's QTimer (fps * window / 1e6).
     bool connect_file(const std::string& path);
-    /// @brief Opens an event file with a playback speed hint.
-    /// @p speed == 0 → as-fast-as-possible; otherwise real-time playback.
-    bool connect_file_speed(const std::string& path, double speed);
 
     void disconnect();
 
@@ -125,7 +125,11 @@ signals:
     void runtime_warning(const QString& message);
 
 private:
+    /// @brief Sets up callbacks + pipeline for a new camera. Calls
+    /// frame_pipeline_.start_file() for file sources (FileFrameGenerator)
+    /// or frame_pipeline_.start() for live sources (CDFrameGenerator).
     void setup_camera(Metavision::Camera&& cam, bool is_file);
+    /// @brief Tears down camera + callbacks + frame pipeline.
     void teardown();
     void fetch_sensor_info();
 

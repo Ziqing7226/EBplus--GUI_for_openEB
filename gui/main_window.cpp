@@ -17,6 +17,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSet>
+#include <QSettings>
 #include <QStatusBar>
 #include <QStyle>
 #include <QToolBar>
@@ -24,6 +25,7 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <cmath>
 #include <vector>
 
 #include <metavision/sdk/core/utils/colors.h>
@@ -323,6 +325,8 @@ void MainWindow::build_menus() {
     auto* m_file = mb->addMenu(tr("&File"));
     m_file->addAction(tr("&Open File..."), this, &MainWindow::on_open_file,
                       QKeySequence::Open);
+    m_recent_files_ = m_file->addMenu(tr("Open &Recent"));
+    build_recent_files_menu();
     a_save_cfg_ = m_file->addAction(tr("Save Camera Config..."), this, &MainWindow::on_save_config);
     a_load_cfg_ = m_file->addAction(tr("Load Camera Config..."), this, &MainWindow::on_load_config);
     a_save_cfg_->setEnabled(false);
@@ -617,6 +621,18 @@ void MainWindow::wire_signals() {
         }
         install_algo_callback();
         camera_.start();
+        // Sync UI to FramePipeline's current (persisted) values so the
+        // DisplayPanel and PlaybackControls reflect the actual fps /
+        // accumulation / fps_limit after a reconnect or file reopen.
+        if (auto* fp = camera_.frame_pipeline()) {
+            settings_->display_panel()->set_accumulation_time_ms(
+                fp->accumulation_time_us() / 1000.0);
+            settings_->display_panel()->set_fps(fp->fps());
+            settings_->display_panel()->set_fps_limit(fp->fps_limit());
+            playback_controls_->on_time_window_changed(fp->accumulation_time_us());
+            playback_controls_->on_frame_rate_changed(fp->fps());
+            playback_controls_->on_fps_limit_changed(fp->fps_limit());
+        }
     });
     connect(&camera_, &CameraController::disconnected, this, [this]() {
         // Explicitly remove the CD callback before clearing the ID, so the
@@ -684,6 +700,16 @@ void MainWindow::wire_signals() {
                 prev_frame_ts_ = ts;
             });
 
+    // File playback: feed the events in each accumulation window to algorithm
+    // instances + XYT display, synchronously with the displayed frame. This
+    // signal is emitted just before frame_ready (see FileFrameGenerator::render_frame),
+    // so by the time the frame_ready handler runs process_algo_results(), the
+    // algorithms have already processed this window's events and their results
+    // are ready to be pulled. For live cameras this signal is never emitted
+    // (CDFrameGenerator path) and the SDK CD callback feeds algorithms instead.
+    connect(camera_.frame_pipeline(), &FramePipeline::events_window_ready,
+            this, &MainWindow::on_events_window_ready);
+
     // Statistics controller -> panel + status bar
     connect(camera_.statistics(), &StatisticsController::rate_updated, this,
             [this](double rate, double peak, Metavision::timestamp t) {
@@ -701,7 +727,7 @@ void MainWindow::wire_signals() {
     connect(camera_.statistics(), &StatisticsController::on_off_updated,
             settings_->statistics_panel(), &StatisticsPanel::set_on_off);
 
-    // Display panel -> pipeline
+    // Display panel -> FramePipeline (single source of truth for display params)
     connect(settings_->display_panel(), &DisplayPanel::color_palette_changed, this,
             &MainWindow::update_palettes);
     connect(settings_->display_panel(), &DisplayPanel::frame_mode_changed, this,
@@ -712,9 +738,9 @@ void MainWindow::wire_signals() {
                 const int us[] = {10000, 50000, 30000};
                 const int accumulation = (idx >= 0 && idx < 3) ? us[idx] : 10000;
                 camera_.frame_pipeline()->set_accumulation_time_us(accumulation);
-                // Sync the accumulation slider/spin so the two controls don't
-                // show stale values (D4 fix).
-                settings_->display_panel()->set_accumulation_time_ms(accumulation / 1000.0);
+                // No need to manually sync the DisplayPanel — the
+                // accumulation_time_changed signal from FramePipeline updates
+                // both the DisplayPanel and PlaybackControls automatically.
                 statusBar()->showMessage(
                     tr("Frame mode %1 (accumulation %2 us)").arg(idx).arg(accumulation), 3000);
             });
@@ -722,6 +748,42 @@ void MainWindow::wire_signals() {
             this, [this](int us) {
                 camera_.frame_pipeline()->set_accumulation_time_us(us);
             });
+    connect(settings_->display_panel(), &DisplayPanel::fps_changed, this,
+            [this](int fps) {
+                camera_.frame_pipeline()->set_fps(static_cast<std::uint16_t>(fps));
+            });
+    connect(settings_->display_panel(), &DisplayPanel::fps_limit_changed, this,
+            [this](int limit) {
+                camera_.frame_pipeline()->set_fps_limit(static_cast<std::uint16_t>(limit));
+            });
+
+    // FramePipeline -> both UIs (DisplayPanel + PlaybackControls).
+    // When the pipeline's params change (from either UI or programmatically),
+    // sync both panels. The blocked setters prevent feedback loops.
+    {
+        auto* fp = camera_.frame_pipeline();
+        connect(fp, &FramePipeline::accumulation_time_changed, this,
+                [this](Metavision::timestamp us) {
+                    if (settings_ && settings_->display_panel())
+                        settings_->display_panel()->set_accumulation_time_ms(us / 1000.0);
+                    if (playback_controls_)
+                        playback_controls_->on_time_window_changed(us);
+                });
+        connect(fp, &FramePipeline::fps_changed, this,
+                [this](std::uint16_t fps) {
+                    if (settings_ && settings_->display_panel())
+                        settings_->display_panel()->set_fps(static_cast<int>(fps));
+                    if (playback_controls_)
+                        playback_controls_->on_frame_rate_changed(static_cast<unsigned>(fps));
+                });
+        connect(fp, &FramePipeline::fps_limit_changed, this,
+                [this](std::uint16_t limit) {
+                    if (settings_ && settings_->display_panel())
+                        settings_->display_panel()->set_fps_limit(static_cast<int>(limit));
+                    if (playback_controls_)
+                        playback_controls_->on_fps_limit_changed(static_cast<unsigned>(limit));
+                });
+    }
 
     // ROI panel <-> display widget (Phase 2)
     auto* roi = settings_->roi_panel();
@@ -749,6 +811,9 @@ void MainWindow::wire_signals() {
     });
 
     // Phase 3 — playback.
+    // Parameter sync (time_window/fps/fps_limit) is handled by the
+    // FramePipeline signal connections above — both the DisplayPanel and
+    // PlaybackControls listen to the same FramePipeline signals.
     connect(&playback_, &PlaybackController::opened, this,
             [this](Metavision::timestamp) {
                 playback_controls_->activate(true);
@@ -841,10 +906,63 @@ void MainWindow::on_open_file() {
 void MainWindow::on_file_opened_for_playback(const QString& path) {
     // Route through the playback controller so it can capture duration and
     // start the position probe timer.
-    if (!playback_.open_file(path, 1.0)) {
+    if (!playback_.open_file(path)) {
         QMessageBox::warning(this, tr("Open file"),
                              tr("Failed to open event file:\n%1").arg(path));
+        return;
     }
+    add_recent_file(path);
+}
+
+void MainWindow::build_recent_files_menu() {
+    if (!m_recent_files_) return;
+    m_recent_files_->clear();
+    QSettings s;
+    const QStringList recent = s.value("recentFiles").toStringList();
+    if (recent.isEmpty()) {
+        auto* a = m_recent_files_->addAction(tr("(none)"));
+        a->setEnabled(false);
+        return;
+    }
+    for (const QString& path : recent) {
+        // Show just the file name in the menu, full path as tooltip.
+        const QString name = QFileInfo(path).fileName();
+        auto* a = m_recent_files_->addAction(name);
+        a->setToolTip(path);
+        connect(a, &QAction::triggered, this, [this, path]() {
+            on_open_recent_file(path);
+        });
+    }
+}
+
+void MainWindow::add_recent_file(const QString& path) {
+    if (path.isEmpty()) return;
+    QSettings s;
+    QStringList recent = s.value("recentFiles").toStringList();
+    // Remove duplicates (case-insensitive on Windows, exact on Linux), then
+    // prepend and cap at 10.
+    recent.removeAll(path);
+    recent.prepend(path);
+    while (recent.size() > 10) {
+        recent.removeLast();
+    }
+    s.setValue("recentFiles", recent);
+    build_recent_files_menu();
+}
+
+void MainWindow::on_open_recent_file(const QString& path) {
+    if (!QFileInfo::exists(path)) {
+        QMessageBox::warning(this, tr("Open recent"),
+                             tr("File no longer exists:\n%1").arg(path));
+        // Remove stale entry.
+        QSettings s;
+        QStringList recent = s.value("recentFiles").toStringList();
+        recent.removeAll(path);
+        s.setValue("recentFiles", recent);
+        build_recent_files_menu();
+        return;
+    }
+    on_file_opened_for_playback(path);
 }
 
 void MainWindow::on_connect_first() {
@@ -973,27 +1091,43 @@ void MainWindow::install_algo_callback() {
     if (algo_cd_cb_id_) return;              // already installed
     auto* cam = camera_.camera_handle();
     if (!cam) return;
+    // For file sources, the SDK CD callback delivers ALL events in ~10ms
+    // (real_time_playback(false)), which is completely out of sync with the
+    // FileFrameGenerator's timer-based frame playback. Algorithms would
+    // process everything before the first frame is even shown. Instead, file
+    // sources feed events to algorithms via the FramePipeline::events_window_ready
+    // signal (see on_events_window_ready), synchronized with each displayed
+    // frame. We still install the SDK callback here so the event buffer in
+    // FileFrameGenerator gets filled (FramePipeline::add_events forwards to it).
+    const bool file_source = camera_.is_file_source();
     algo_cd_cb_id_ = cam->cd().add_callback(
-        [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+        [this, file_source](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             if (b == nullptr || e == nullptr || b >= e) return;
-            try {
-                // Push events to every live algorithm instance. AlgoInstance
-                // is internally mutex-guarded, so this is safe from the SDK
-                // data thread. The reinterpret_cast inside AlgoBackend is
-                // valid because gui_algo::Event is layout-compatible with
-                // Metavision::EventCD (POD x,y,p,t).
-                auto instances = algo_bridge_.list_live();
-                for (auto& inst : instances) {
-                    if (inst->is_enabled()) {
-                        inst->push_events(b, e);
+            // Only the live-camera path feeds algorithms from the SDK thread.
+            // File playback feeds algorithms from the GUI thread via
+            // events_window_ready (synchronous with frame display).
+            if (!file_source) {
+                try {
+                    // Push events to every live algorithm instance. AlgoInstance
+                    // is internally mutex-guarded, so this is safe from the SDK
+                    // data thread. The reinterpret_cast inside AlgoBackend is
+                    // valid because gui_algo::Event is layout-compatible with
+                    // Metavision::EventCD (POD x,y,p,t).
+                    auto instances = algo_bridge_.list_live();
+                    for (auto& inst : instances) {
+                        if (inst->is_enabled()) {
+                            inst->push_events(b, e);
+                        }
                     }
-                }
-            } catch (...) {}
+                } catch (...) {}
+            }
 
             // Throttled, downsampled feed to the XYT 3D window. The
             // SpaceTimeDisplay is a QOpenGLWidget and must only be touched
             // from the GUI thread, so we marshal via QMetaObject::invokeMethod.
-            if (xyt_display_) {
+            // For file sources the XYT feed is driven by events_window_ready
+            // instead (synchronized with playback), so skip it here.
+            if (!file_source && xyt_display_) {
                 const Metavision::timestamp cur_ts = (e - 1)->t;
                 const Metavision::timestamp last =
                     algo_last_xyt_post_us_.load(std::memory_order_relaxed);
@@ -1028,6 +1162,129 @@ void MainWindow::install_algo_callback() {
                 }
             }
         });
+}
+
+void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
+                                        Metavision::timestamp ts) {
+    if (!events || events->empty()) return;
+
+    // ======================================================================
+    // TIMESTAMP SCALING FOR ALGORITHM EVENT FEEDING (FILE PLAYBACK ONLY)
+    // ======================================================================
+    // Problem: During file playback, FileFrameGenerator replays events at a
+    // user-controlled rate:
+    //   playback_rate = fps * accumulation_window_us / 1e6
+    //
+    //   - Slow motion (rate < 1): e.g. fps=30, window=100us → rate=0.003.
+    //     Each displayed frame contains events spanning only 100us of real
+    //     event time, but 33ms of wall-clock time pass between frames.
+    //   - Fast forward (rate > 1): e.g. fps=60, window=33000us → rate=1.98.
+    //     Each frame spans 33000us of event time but only 16ms of wall-clock.
+    //
+    // Temporal algorithms (InteractingMaps decay-tau, E2VID recurrent state,
+    // XYT time-window normalization, etc.) rely on the RELATIVE time between
+    // events to evolve their internal state. When fed real event timestamps
+    // in slow motion, the algorithm sees time barely advancing (100us per
+    // frame) while its decay tau is 500ms — the state never evolves, causing
+    // flickering (InteractingMaps), flat gray output (BardowVariational), or
+    // a collapsed Z axis (XYT 3D display shows a single plane instead of a
+    // cloud).
+    //
+    // Solution: Scale event timestamps by 1/playback_rate before feeding them
+    // to algorithm instances. This makes the algorithm perceive time
+    // advancing at wall-clock rate (1/fps per frame), exactly as it would
+    // with a live camera at the same fps. The algorithm's temporal parameters
+    // (decay tau, time windows) then behave as intended.
+    //
+    //     scaled_t = real_t / playback_rate
+    //
+    // IMPORTANT — DISPLAY USES REAL TIMESTAMPS:
+    //   The XYT 3D display and any algorithm-output annotations that use
+    //   timestamps for visualization MUST use real event timestamps, not
+    //   scaled ones. The XYT display is fed the ORIGINAL (unscaled) events
+    //   below. Algorithm output frames/overlays produced from scaled-time
+    //   input do NOT carry timestamps in their results (AlgoResult contains
+    //   spatial data: colored_events with x/y/p, trajectories with x/y, and
+    //   cv::Mat frames — no timestamp fields), so no back-conversion is
+    //   needed for display. The `ts` parameter in frame_ready is the real
+    //   cursor timestamp from FileFrameGenerator and is used directly for
+    //   status-bar/position display.
+    //
+    // This scaling is NOT a bug — it is an intentional adaptation for
+    // rate-controlled file playback. See doc/gui_optimization.md §8.
+    // ======================================================================
+
+    // Compute playback rate from FramePipeline's current parameters.
+    double playback_rate = 1.0;
+    if (auto* fp = camera_.frame_pipeline()) {
+        const double fps = static_cast<double>(fp->fps());
+        const double window_us = static_cast<double>(fp->accumulation_time_us());
+        playback_rate = fps * window_us / 1.0e6;
+    }
+    // Guard against division by zero.
+    if (playback_rate < 1.0e-9) playback_rate = 1.0;
+
+    // Feed algorithm instances. If playback_rate ≈ 1.0 (real-time), feed the
+    // original events directly. Otherwise, create a scaled-timestamp copy.
+    // The 0.5% tolerance avoids unnecessary copies for near-real-time rates.
+    const bool need_scaling = std::fabs(playback_rate - 1.0) > 0.005;
+    try {
+        auto instances = algo_bridge_.list_live();
+        if (!instances.empty()) {
+            if (need_scaling) {
+                // Create a copy with scaled timestamps: scaled_t = real_t / rate.
+                // This makes the algorithm see time advancing at wall-clock rate.
+                auto scaled = std::make_shared<std::vector<Metavision::EventCD>>();
+                scaled->reserve(events->size());
+                const double inv_rate = 1.0 / playback_rate;
+                for (const auto& ev : *events) {
+                    Metavision::EventCD scaled_ev = ev;
+                    scaled_ev.t = static_cast<Metavision::timestamp>(
+                        static_cast<double>(ev.t) * inv_rate);
+                    scaled->push_back(scaled_ev);
+                }
+                for (auto& inst : instances) {
+                    if (inst->is_enabled()) {
+                        inst->push_events(scaled->data(),
+                                          scaled->data() + scaled->size());
+                    }
+                }
+            } else {
+                for (auto& inst : instances) {
+                    if (inst->is_enabled()) {
+                        inst->push_events(events->data(),
+                                          events->data() + events->size());
+                    }
+                }
+            }
+        }
+    } catch (...) {}
+
+    // Feed the XYT 3D display with REAL (unscaled) timestamps — the Z axis
+    // must show the actual event time, not the scaled playback time.
+    // Same downsampling as the live path so a large accumulation window
+    // doesn't overwhelm the OpenGL point cloud.
+    if (xyt_display_) {
+        const std::size_t count = events->size();
+        auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
+        if (count > 5000) {
+            const std::size_t stride = count / 5000;
+            copy->reserve(count / stride + 1);
+            for (std::size_t i = 0; i < count; i += stride) {
+                copy->push_back((*events)[i]);
+            }
+        } else {
+            *copy = *events;
+        }
+        if (xyt_algo_) {
+            const auto tw = xyt_algo_->get_param("time_window_us");
+            if (!tw.empty()) {
+                xyt_display_->set_time_window_ms(
+                    static_cast<float>(std::stoi(tw)) / 1000.0f);
+            }
+        }
+        xyt_display_->push_events(copy->data(), copy->data() + copy->size());
+    }
 }
 
 void MainWindow::remove_algo_callback() {

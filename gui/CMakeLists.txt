@@ -5,6 +5,7 @@ set(GUI_SOURCES
     main_window.cpp
     app/camera_controller.cpp
     app/file_converter.cpp
+    app/file_frame_generator.cpp
     app/frame_pipeline.cpp
     app/statistics_controller.cpp
     app/theme_controller.cpp

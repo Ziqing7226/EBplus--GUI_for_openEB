@@ -28,8 +28,10 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <metavision/sdk/base/utils/callback_id.h>
+#include <metavision/sdk/base/events/event_cd.h>
 
 #include "algo_bridge/algo_bridge.h"
 #include "app/camera_controller.h"
@@ -132,6 +134,14 @@ private:
     void remove_algo_callback();
     void process_algo_results(QImage& frame);
 
+    /// File playback: feeds the events in the current accumulation window
+    /// (emitted by FileFrameGenerator) to all live AlgoInstances and to the
+    /// XYT 3D display, synchronously with the displayed frame. This replaces
+    /// the SDK CD callback path for file sources, where all events arrive in
+    /// ~10ms and would otherwise be processed before the first frame is shown.
+    void on_events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
+                                Metavision::timestamp ts);
+
     EventDisplayWidget* display_{nullptr};
     SettingsPanel* settings_{nullptr};
     QDockWidget* settings_dock_{nullptr};  ///< Right-dock wrapper, for hide/show.
@@ -150,6 +160,13 @@ private:
     QAction* a_export_{nullptr};
     QAction* a_record_start_{nullptr};
     QAction* a_record_stop_{nullptr};
+
+    /// "Recent Files" submenu — persisted via QSettings so the list survives
+    /// restarts. Most recent first, capped at 10 entries.
+    QMenu* m_recent_files_{nullptr};
+    void build_recent_files_menu();
+    void add_recent_file(const QString& path);
+    void on_open_recent_file(const QString& path);
 
     // Camera menu actions.
     QAction* a_roi_drag_{nullptr};

@@ -761,4 +761,220 @@ WCAG AA 标准要求文字对比度 ≥ 4.5:1。当前 `#888` 在各暗色背景
 
 ---
 
+## 八、播放与显示参数统一架构
+
+> 日期：2026-07-09
+> 状态：**已实现**
+
+### 8.1 背景
+
+原实现中，播放控制栏（PlaybackControls）与侧边显示面板（DisplayPanel）各自维护独立的帧率/累积时间状态，二者通过单向信号同步。这导致：
+
+1. **状态分歧**：DisplayPanel 的 accumulation 与 PlaybackController 的 time_window 可能不一致
+2. **参数重复**：帧率仅在 PlaybackControls 暴露，DisplayPanel 无法调节
+3. **循环播放失效**：文件 EOF 后 seek(0)+start() 在部分 SDK 版本下失败，无回退机制
+4. **科学计数显示**：累积窗口用 QDoubleSpinBox 显示 ms，大值时出现科学计数
+
+### 8.2 设计：FramePipeline 作为单一数据源
+
+将 FramePipeline 提升为显示参数的**唯一权威来源**（single source of truth），DisplayPanel 与 PlaybackControls 均作为" spokes "读写同一组参数。
+
+```
+┌──────────────┐      写 fps/accum/limit      ┌──────────────────┐
+│ DisplayPanel │ ─────────────────────────────►│                  │
+└──────────────┘                                │   FramePipeline  │
+                                                │  (single source) │
+┌──────────────┐      写 window/fps/multiplier  │                  │
+│PlaybackCtrls │ ─────────────────────────────►│                  │
+└──────────────┘                                └────────┬─────────┘
+      ▲                                                 │
+      │           fps_changed / accumulation_time_changed│
+      │           fps_limit_changed (信号扇出)            │
+      └─────────────────────────────────────────────────┘
+                          QSignalBlocker 防止反馈环
+```
+
+#### 8.2.1 FramePipeline 新增成员
+
+[frame_pipeline.h](file:///home/justin/GUI-for-openEB/gui/app/frame_pipeline.h)：
+
+```cpp
+class FramePipeline : public QObject {
+    // ...
+    std::uint16_t fps_limit_{60};       // 用户可配置的帧率上限
+    // 三个信号：参数变化时扇出到所有 UI
+signals:
+    void fps_changed(std::uint16_t fps);
+    void accumulation_time_changed(Metavision::timestamp us);
+    void fps_limit_changed(std::uint16_t limit);
+};
+```
+
+- `fps_`、`accumulation_us_`、`fps_limit_` 在 `stop()`/`start()` 周期中**持久化**，用户设置在相机重连/文件重打开后自动恢复
+- `clamp_fps()` 将帧率限制在 `[1, fps_limit_]`
+- `set_fps_limit()` 改变上限后，若当前 fps 超限则自动钳位并 emit `fps_changed`
+
+#### 8.2.2 参数关系
+
+三个参数满足约束：
+
+```
+multiplier = fps * accumulation_time_us / 1e6
+```
+
+- **编辑 Window**（累积窗口）→ fps 锁定，multiplier 自动重算
+- **编辑 Rate**（帧率）→ window 锁定，multiplier 自动重算
+- **编辑 Multiplier**（倍率）→ fps 锁定，window 自动反推 `window = multiplier * 1e6 / fps`
+
+#### 8.2.3 播放速率控制（FileFrameGenerator）
+
+**核心问题**：Metavision SDK 的 `CDFrameGenerator` 无法控制文件回放速率。`real_time_playback(true)` 以 1x 速度投递事件（96ms 文件在 30fps 下仅产生 ~3 帧）；`real_time_playback(false)` 在 ~10ms 内投递全部事件，`CDFrameGenerator` 反复显示同一末尾窗口。两种模式都无法实现慢速播放。
+
+**解决方案**：`FileFrameGenerator`（[file_frame_generator.h](file:///home/justin/GUI-for-openEB/gui/app/file_frame_generator.h)）：
+1. 以 `real_time_playback(false)` 读取全部事件并缓存到内存（~10ms 完成）
+2. 使用 `QTimer` 以 `1/fps` 间隔产生帧
+3. 每次 tick：渲染 `[cursor, cursor+window)` 范围内的事件为 `cv::Mat`，emit `frame_ready`，cursor 前进 `window_us`
+4. 回放速率 = `fps * window / 1e6`（30fps × 100us = 0.003x 慢放；60fps × 33000us = 1.98x 快进）
+5. 循环 = cursor 重置（无需重开文件）；seek = 设置 cursor + 立即渲染；pause = 停止 timer
+
+`FramePipeline` 支持双后端：在线相机使用 `CDFrameGenerator`（实时累积最新窗口），文件回放使用 `FileFrameGenerator`（按速率回放缓存事件）。`CameraController::setup_camera()` 根据 `is_file` 选择后端。
+
+**诊断验证**（`test/sparklers.raw`，95871us / 521252 events）：
+- fps=30, window=100us → 200ms 内产生 6 帧，cursor 仅前进 600us（慢放 ✓）
+- fps=30, window=33000us → 200ms 内产生 4 帧，cursor 到 99000us（实时 ✓）
+- fps=60, window=33000us → 51ms 达到 EOF（快进 ✓）
+- 循环模式：2 秒内产生 125 帧，cursor 始终在 duration 内（循环 ✓）
+
+### 8.3 GUI 控件规范
+
+#### 8.3.1 累积窗口（Window）
+
+- **整数显示**，单位微秒（μs），范围 `[1, 1000000]`（1 μs ~ 1 s）
+- **禁止科学计数法**：使用 `QSpinBox`（整数类型）而非 `QDoubleSpinBox`
+- DisplayPanel 中仍以 ms 显示（`QDoubleSpinBox`，1.0~1000.0 ms），但底层统一为 μs
+
+#### 8.3.2 帧率（Frame Rate）
+
+- 范围 `[1, fps_limit]`，默认 30
+- DisplayPanel 与 PlaybackControls **共享同一参数**，两处编辑等效
+- 帧率**任何情况下都不能超过上限**，上限用户可设定（默认 60，最大 1000）
+
+#### 8.3.3 帧率上限（FPS Limit）
+
+- 范围 `[1, 1000]`，默认 60
+- 改变上限时自动钳位当前帧率
+- DisplayPanel 独有此控件（PlaybackControls 不暴露，但其 fps 范围跟随上限变化）
+
+#### 8.3.4 倍率（Multiplier）
+
+- 精度：**小数点后 6 位**（`setDecimals(6)`）
+- 范围 `[0.000001, 100.0]`——最小值足够小以支持 window=1μs 时的极端倍率（如 fps=30 时 multiplier=0.000030）
+- 显示实际生效值（整数 μs 取整后的真实倍率），非用户输入值
+- 在线相机模式下 PlaybackControls 隐藏（`pb->setVisible(info.is_file)`），倍率隐式锁定为 1
+
+### 8.4 在线相机实时性保障
+
+在线相机模式下，`CDFrameGenerator` 的基于时间的累积机制天然丢弃过期事件：
+- 累积窗口设为 N μs，则超过 N μs 的事件自动从窗口滚出
+- 帧率上限保证显示线程不会积压
+- 当累积窗口 < 帧率倒数时（即 multiplier < 1），部分事件被丢弃以维持实时性
+
+无需额外实现显式事件丢弃逻辑。
+
+### 8.5 循环播放与 EOF 恢复（FileFrameGenerator）
+
+FileFrameGenerator 的循环和 EOF 处理完全在内存中完成，无需重开文件：
+
+1. **EOF 检测**：`on_timer()` 中 `cursor_us_ >= duration_us_` 时，循环模式重置 `cursor_us_ = 0`（不 emit `eof_reached`），非循环模式停止 timer 并 emit `eof_reached`
+2. **循环播放**：cursor 重置到 0 即可，无需 `seek(0)+start()` 或重开文件（绕过了 SDK 终态问题）
+3. **play() 后 EOF 恢复**：`FileFrameGenerator::play()` 检测 `cursor_us_ >= duration_us_` 时自动重置 cursor
+4. **seek()**：直接设置 `cursor_us_` 并立即渲染，无需 OSC seek（OSC seek 在 EOF 后不可靠）
+5. **CameraController::stopped 信号**：文件模式下相机在缓冲完事件后停止（~10ms），这是正常行为，不影响 FileFrameGenerator 回放。PlaybackController 的 `stopped` handler 对 `is_file_source()` 直接 return
+6. **position 更新**：FileFrameGenerator 每帧 emit `position_changed(pos, dur)`，无需 probe timer
+
+### 8.6 信号接线
+
+[main_window.cpp:716-772](file:///home/justin/GUI-for-openEB/gui/main_window.cpp#L716-L772)：
+
+```cpp
+// DisplayPanel → FramePipeline（写入）
+connect(display_panel, &DisplayPanel::accumulation_time_changed_us, ...);
+connect(display_panel, &DisplayPanel::fps_changed, ...);
+connect(display_panel, &DisplayPanel::fps_limit_changed, ...);
+
+// FramePipeline → 两个 UI（扇出同步，QSignalBlocker 防环）
+connect(fp, &FramePipeline::accumulation_time_changed, ...);
+connect(fp, &FramePipeline::fps_changed, ...);
+connect(fp, &FramePipeline::fps_limit_changed, ...);
+
+// 相机连接时初始同步
+settings_->display_panel()->set_fps(fp->fps());
+playback_controls_->on_time_window_changed(fp->accumulation_time_us());
+```
+
+PlaybackController 额外监听 FramePipeline 信号用于：
+- 重算 multiplier 并 emit `multiplier_changed`
+- 监听 `file_position_changed` 驱动播放滑块
+- 监听 `file_eof_reached` 更新播放状态
+
+### 8.7 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| [file_frame_generator.h](file:///home/justin/GUI-for-openEB/gui/app/file_frame_generator.h) / [.cpp](file:///home/justin/GUI-for-openEB/gui/app/file_frame_generator.cpp) | **新增**：FileFrameGenerator，缓存事件 + QTimer 驱动按速率回放 |
+| [frame_pipeline.h](file:///home/justin/GUI-for-openEB/gui/app/frame_pipeline.h) / [.cpp](file:///home/justin/GUI-for-openEB/gui/app/frame_pipeline.cpp) | 双后端：live (CDFrameGenerator) / file (FileFrameGenerator)；新增 `start_file()`、file playback 控制方法、`file_position_changed` / `file_eof_reached` 信号 |
+| [display_panel.h](file:///home/justin/GUI-for-openEB/gui/panels/display_panel.h) / [.cpp](file:///home/justin/GUI-for-openEB/gui/panels/display_panel.cpp) | 新增 fps / fps_limit 控件与信号 |
+| [playback_controller.h](file:///home/justin/GUI-for-openEB/gui/recorder/playback_controller.h) / [.cpp](file:///home/justin/GUI-for-openEB/gui/recorder/playback_controller.cpp) | 重写：play/pause/seek/loop 委托 FileFrameGenerator；移除 probe_timer、reopen_with_playback_mode、real_time_playback 翻转检测 |
+| [playback_controls.h](file:///home/justin/GUI-for-openEB/gui/recorder/playback_controls.h) / [.cpp](file:///home/justin/GUI-for-openEB/gui/recorder/playback_controls.cpp) | Step 按钮简化（seek_file 立即渲染，无需 play-then-pause hack） |
+| [camera_controller.h](file:///home/justin/GUI-for-openEB/gui/app/camera_controller.h) / [.cpp](file:///home/justin/GUI-for-openEB/gui/app/camera_controller.cpp) | `connect_file()` 始终用 `real_time_playback(false)`；`setup_camera()` 根据 is_file 选择 `start_file()` / `start()`；移除 `reopen_file()`、`teardown(keep_pipeline)` |
+| [main_window.cpp](file:///home/justin/GUI-for-openEB/gui/main_window.cpp) | 统一信号接线、相机连接时初始同步 |
+
+### 8.8 文件回放算法同步与时间戳缩放
+
+#### 8.8.1 问题：算法事件投喂与帧显示不同步
+
+文件回放使用 `real_time_playback(false)`，SDK CD 回调在 ~10ms 内将全部事件投喂给算法实例。而 `FileFrameGenerator` 的 QTimer 按 fps 逐帧显示（30fps → 33ms/帧）。算法在第一帧显示前就已处理完所有事件，导致：
+
+- **event→video 方法2（InteractingMaps）画面闪烁**：算法状态在 ~10ms 内完成全部演化，后续帧无新事件可处理
+- **XYT 3D 显示时而扁平**：3D 显示收到的事件时间跨度极小，Z 轴塌缩为单一平面
+
+#### 8.8.2 解决方案：events_window_ready 信号
+
+`FileFrameGenerator::render_frame()` 在渲染 `[cursor, cursor+window)` 窗口事件后，发射 `events_window_ready` 信号（在 `frame_ready` 之前）。`MainWindow::on_events_window_ready()` 将该窗口事件同步投喂给算法实例和 XYT 显示。
+
+**SDK CD 回调分流**（[main_window.cpp install_algo_callback](file:///home/justin/GUI-for-openEB/gui/main_window.cpp)）：
+- 在线相机：SDK CD 回调直接 push_events 到算法实例（实时流）
+- 文件回放：SDK CD 回调仅填充 FileFrameGenerator 缓冲（`FramePipeline::add_events` 转发），算法投喂由 `events_window_ready` 驱动
+
+**颜色主题同步**：`FileFrameGenerator::render_frame()` 使用 `Metavision::get_bgr_color(palette_, ColorType)` 替代硬编码红/白色，`FramePipeline::set_color_palette()` 同时转发到 `CDFrameGenerator` 和 `FileFrameGenerator`。
+
+#### 8.8.3 时间戳缩放（核心修正）
+
+**问题**：慢速回放时（rate=0.003，100us窗口/30fps），每帧事件仅跨 100us 真实事件时间，但 33ms 墙钟时间过去。时间敏感算法（decay_tau=500ms 的 InteractingMaps、E2VID 循环状态等）看到时间几乎不前进，状态无法正确演化。
+
+**解决方案**：投喂给算法实例前，按倍速比例缩放时间戳：
+
+```
+playback_rate = fps * accumulation_window_us / 1e6
+scaled_t = real_t / playback_rate
+```
+
+- rate=0.003 → scaled_t = real_t × 333 → 100us 变为 33333us ≈ 33ms（一帧墙钟时间）
+- rate=2.0 → scaled_t = real_t × 0.5 → 33000us 变为 16500us ≈ 16ms
+
+算法感知到的时间以墙钟速率推进（1/fps 每帧），与在线相机行为一致。算法的时间参数（decay tau、time window）按预期工作。
+
+**显示使用真实时间戳**：
+- XYT 3D 显示直接投喂原始（未缩放）事件 — Z 轴必须显示真实事件时间
+- `frame_ready` 的 `ts` 参数是 FileFrameGenerator 的真实 cursor 时间戳，用于状态栏/位置显示
+- AlgoResult 不包含时间戳字段（仅空间数据：colored_events 的 x/y/p、trajectories 的 x/y、cv::Mat 帧），无需反向转换
+
+> **⚠️ 此缩放是有意设计，非 bug**：这是速率可控文件回放的必要适配。在线相机路径（rate=1.0）不执行缩放。详见 `on_events_window_ready()` 注释。
+
+#### 8.8.4 近期文件记录
+
+File 菜单新增 "Open Recent" 子菜单，通过 QSettings 持久化最近 10 个文件路径。打开文件时自动添加到列表顶部（去重），点击菜单项直接打开。文件不存在时提示并移除过期条目。
+
+---
+
 *本文档与 [design.md](file:///home/justin/GUI-for-openEB/doc/design.md) 配合使用，design.md 定义"做什么"，本文档定义"怎么做得更好"。*
