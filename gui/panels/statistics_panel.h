@@ -22,7 +22,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("statistics"); }
     QString panel_title() const override { return tr("Statistics"); }
-    QString panel_group() const override { return QStringLiteral("显示与统计"); }
+    QString panel_group() const override { return QStringLiteral("Display & Stats"); }
 
     public slots:
     void set_rate(double rate_eps, double peak_eps, Metavision::timestamp t);

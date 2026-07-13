@@ -304,6 +304,10 @@ struct RoiFilter {
         auto pp = preproc.get_param(k);
         if (!pp.empty()) return pp;
         if (k == "roi_enabled") return from_b(region.enabled);
+        if (k == "roi_x") return from_i(region.x);
+        if (k == "roi_y") return from_i(region.y);
+        if (k == "roi_w") return from_i(region.w);
+        if (k == "roi_h") return from_i(region.h);
         return {};
     }
 

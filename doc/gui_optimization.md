@@ -1354,4 +1354,154 @@ std::string get_param(const std::string& k) const {
 
 ---
 
+## 十一、侧栏美化方案（第二轮用户反馈）
+
+> 日期：2026-07-13
+> 状态：**已实现**
+
+### 11.1 背景
+
+第十章实现的 VSCode 风格 Activity Bar 解决了分组导航问题，但仍有以下不足：
+1. 每个 group 页面内部仍用 CollapsibleSection 包裹，折叠功能与 ActivityBar 的分组切换冗余
+2. ActivityBar 按钮间距过小（4px），视觉上不够分明
+3. 侧栏默认停靠右侧，与算法输出窗口抢占同一侧
+4. 侧栏最小宽度 320px 偏宽，输入框宽度分配过多
+5. 侧栏仍有标题栏（显示 group 名称），与 ActivityBar 的分组导航重复；顶栏的 toggle sidebar 与右边缘的 collapsed marker 也冗余
+6. Theme 菜单嵌套在 View 子菜单中，切换主题需要两次点击
+
+### 11.2 方案
+
+#### 11.2.1 移除 group 内部折叠功能（Point 1）
+
+ActivityBar 的分组切换已经实现了"只看一组"的效果，group 内部的 CollapsibleSection 折叠头冗余。移除 CollapsibleSection，每个 group 页面直接用 QVBoxLayout 堆叠 panel 的 QGroupBox。
+
+**改动**：[settings_panel.cpp](file:///home/justin/GUI-for-openEB/gui/panels/settings_panel.cpp) 中不再创建 CollapsibleSection，改为直接 `host_layout->addWidget(panel_groupbox)`。
+
+#### 11.2.2 调整 ActivityBar 按钮间距（Point 2）
+
+当前 `setSpacing(4)` 约为图标的 1/5。改为 `setSpacing(7)`（约图标 20px 的 1/3），并在按钮列底部添加 `addStretch` 将 toggle 按钮推到底部。
+
+#### 11.2.3 侧栏默认左侧，算法输出默认右侧（Point 3）
+
+- `settings_dock_`：`addDockWidget(Qt::RightDockWidgetArea, ...)` → `Qt::LeftDockWidgetArea`
+- AlgoWindow：`addDockWidget(Qt::LeftDockWidgetArea, w)` → `Qt::RightDockWidgetArea`
+
+#### 11.2.4 缩小侧栏宽度（Point 4）
+
+- `settings_dock_->setMinimumWidth(320)` → `260`
+- 基础 QSS 添加 `QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit { max-width: 140px; }` 限制输入框宽度
+
+#### 11.2.5 移除侧栏标题栏，toggle 作为 ActivityBar 按钮（Point 5）
+
+**移除**：
+- `settings_dock_->setTitleBarWidget(new QWidget(this))` — 空标题栏 widget
+- View 菜单的 `a_toggle_sidebar_` action
+- 工具栏的 sidebar toggle 按钮
+- 右边缘的 `sidebar_tab_` collapsed marker toolbar
+
+**新增**：ActivityBar 底部添加 toggle 按钮（非 checkable）：
+- 侧栏停靠左侧且显示时：按钮图标 `chevron-left`，点击隐藏内容
+- 侧栏停靠左侧且隐藏时：按钮图标 `chevron-right`，点击展开内容
+- 侧栏停靠右侧且显示时：按钮图标 `chevron-right`，点击隐藏内容
+- 侧栏停靠右侧且隐藏时：按钮图标 `chevron-left`，点击展开内容
+
+**隐藏机制**：不隐藏整个 dock（否则 ActivityBar 也消失），而是隐藏 QStackedWidget 内容区 + 收缩 dock 宽度至 48px（仅 ActivityBar 可见）。展开时恢复用户之前的 dock 宽度。
+
+**需要新增图标**：`chevron-right.svg`（当前仅有 `chevron-left.svg`）
+
+#### 11.2.6 Theme 菜单独立为顶级下拉（Point 6）
+
+将 Theme 从 View 子菜单提取为独立顶级下拉按钮，位置在 View 右侧。菜单顺序变为：File | View | Theme | Camera | Tools | Help。
+
+### 11.3 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| [settings_panel.cpp](file:///home/justin/GUI-for-openEB/gui/panels/settings_panel.cpp) / [.h](file:///home/justin/GUI-for-openEB/gui/panels/settings_panel.h) | 移除 CollapsibleSection；添加 toggle 内容隐藏逻辑；调整宽度 |
+| [activity_bar.cpp](file:///home/justin/GUI-for-openEB/gui/widgets/activity_bar.cpp) / [.h](file:///home/justin/GUI-for-openEB/gui/widgets/activity_bar.h) | 调整间距；添加 toggle 按钮 + 图标切换逻辑 |
+| [main_window.cpp](file:///home/justin/GUI-for-openEB/gui/main_window.cpp) / [.h](file:///home/justin/GUI-for-openEB/gui/main_window.h) | 侧栏移至左侧；algo 输出移至右侧；移除 dock 标题栏；移除 toggle sidebar 菜单/工具栏/sidebar_tab；Theme 菜单独立 |
+| [base.qss.in](file:///home/justin/GUI-for-openEB/gui/resources/theme/base.qss.in) | 添加输入框 max-width |
+| gui/resources/icons/chevron-right.svg | **新增** |
+
+---
+
+## 十二、§11 落地后的 5 个遗留问题修复
+
+> 日期：2026-07-13
+> 状态：**已实现**
+
+### 12.1 背景
+
+§11 美化方案落实后，用户反馈了 5 个遗留问题：
+1. 删除标题栏后侧栏无法拖动（dock 不可移动）
+2. 切换 theme 时，ActivityBar 和侧栏其它部分颜色滞后（显示上一次 theme）
+3. 标题栏 "EB plus" 文字和相机图标颜色未与背景成反色
+4. 侧栏默认宽度仍偏大，输入框过宽
+5. Algorithms 面板中 analytics/calibration/computervision 区域有小滚轮，应全部展开
+
+### 12.2 修复方案
+
+#### 12.2.1 侧栏拖动（通过 ActivityBar 空白区域）
+
+**问题**：§11.2 point 5 设置 `NoDockWidgetFeatures` + 空标题栏后，QDockWidget 完全不可移动。
+
+**方案**：在 ActivityBar 的空白区域（按钮之间的间距 + stretch 区域）实现手动拖动：
+- `mousePressEvent`：检测点击是否落在空白区域（非 QPushButton 子控件），记录起始全局坐标
+- `mouseMoveEvent`：如果鼠标越过主窗口水平中线，将 dock 从当前区域移到对侧（Left↔Right）
+- `mouseReleaseEvent`：清除拖动状态
+- 空白区域设置 `Qt::OpenHandCursor` 提示可拖动
+
+**文件**：activity_bar.h/.cpp
+
+#### 12.2.2 theme 切换颜色滞后
+
+**问题**：`apply_stylesheet()` 先设 QSS 再设 palette，但 ActivityBar 的局部 `setStyleSheet()` 使用 `palette(window)` 等 Qt palette 引用，palette 变更后 QSS 不会自动重新求值。
+
+**方案**：
+- 在 `ActivityBar::refresh_icons()` 中调用 `style()->unpolish(this); style()->polish(this);` 强制重新求值 palette 引用
+- 在 `SettingsPanel::refresh_icons()` 中对整个 panel 做 unpolish/polish，确保所有子控件同步更新
+- 确保 `theme_changed` 信号的 `apply` lambda 中 `refresh_icons()` 在 palette 设置之后调用（当前已是此顺序）
+
+**文件**：activity_bar.cpp, settings_panel.cpp
+
+#### 12.2.3 标题栏文字/图标反色
+
+**问题**：`apply` lambda 中标题文字颜色通过 `setColors(bg, fg)` 正确更新，但相机图标只在 `build_title_bar_controls()` 中设置一次，theme 切换后不刷新。
+
+**方案**：在 `apply` lambda 中添加 `title_bar_->setAppIcon(IconProvider::get("camera"))` 重新渲染图标。
+
+**文件**：main_window.cpp
+
+#### 12.2.4 进一步减小侧栏宽度
+
+**问题**：§11.4 将 min width 从 320→260，但用户认为仍偏大。
+
+**方案**：
+- dock min width 260→200
+- 输入框 max-width 140→100（base.qss.in）
+- `on_sidebar_content_toggled` 恢复时的默认宽度 300→240
+
+**文件**：main_window.cpp, base.qss.in
+
+#### 12.2.5 Algorithms 面板移除内部滚轮
+
+**问题**：AlgorithmsPanel 在 ROI 选择器 + Preprocessing 选择器下方有一个 QScrollArea 包裹 analytics/calibration/computervision 三个分组，导致侧栏内出现嵌套滚轮。
+
+**方案**：移除内部 QScrollArea，将三个分组直接添加到 outer layout。外层 SettingsPanel 的 QScrollArea 已经提供滚动功能。
+
+**文件**：algorithms_panel.cpp
+
+### 12.3 文件变更表
+
+| 文件 | 变更 |
+|------|------|
+| gui/widgets/activity_bar.h | 新增 drag 相关成员 + mouse event override |
+| gui/widgets/activity_bar.cpp | 实现拖动逻辑 + refresh_icons unpolish/polish |
+| gui/panels/settings_panel.cpp | refresh_icons 中添加 unpolish/polish |
+| gui/main_window.cpp | apply lambda 中刷新图标 + 调整 min width |
+| gui/resources/theme/base.qss.in | max-width 140→100 |
+| gui/panels/algorithms_panel.cpp | 移除内部 QScrollArea |
+
+---
+
 *本文档与 [design.md](file:///home/justin/GUI-for-openEB/doc/design.md) 配合使用，design.md 定义"做什么"，本文档定义"怎么做得更好"。*

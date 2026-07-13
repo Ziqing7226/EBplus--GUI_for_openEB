@@ -29,7 +29,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("preprocessing"); }
     QString panel_title() const override { return tr("Preprocessing"); }
-    QString panel_group() const override { return QStringLiteral("算法模块"); }
+    QString panel_group() const override { return QStringLiteral("Algorithms"); }
 
 public slots:
     void on_camera_connected(CameraController* controller) override;

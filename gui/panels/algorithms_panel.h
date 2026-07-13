@@ -28,6 +28,7 @@
 // Forward declarations of Qt widgets (defined in the global namespace).
 class QLabel;
 class QComboBox;
+class QFormLayout;
 
 namespace gui {
 
@@ -40,7 +41,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("algorithms"); }
     QString panel_title() const override { return tr("Algorithms"); }
-    QString panel_group() const override { return QStringLiteral("算法模块"); }
+    QString panel_group() const override { return QStringLiteral("Algorithms"); }
 
     /// @brief Programmatically sets the enable-checkbox state for @p name
     /// without emitting toggled signals. Used by MainWindow to keep the
@@ -78,6 +79,12 @@ private:
     /// downsample). The checkboxes are NOT part of the algorithm mutex
     /// (checkboxes_) — preprocessing overlays on top of any main algorithm.
     void build_preproc_selector(QVBoxLayout* parent_layout);
+    /// Rebuilds the mode-specific NoiseFilter parameter rows in the
+    /// Preprocessing group based on the selected filter mode (BUG-3 fix).
+    /// Each of the 8 denoiser modes (BAF/STCF/Refractory/DWF/AgePolarity/
+    /// Harmonic/Repetitious/SpatialBP) has its own parameter set; only the
+    /// rows matching the current mode are shown.
+    void refresh_preproc_params();
     /// Shows/hides mode-scoped parameter rows for @p algo_name based on the
     /// currently selected index of its "mode" enum combobox. Params whose
     /// AlgoParamSpec::mode_filter does not contain the current mode index are
@@ -138,6 +145,24 @@ private:
     QCheckBox* preproc_filter_cb_{nullptr};
     QCheckBox* preproc_downsample_cb_{nullptr};
     QComboBox* preproc_filter_mode_combo_{nullptr};
+
+    /// Container for mode-specific NoiseFilter parameter rows (BUG-3).
+    /// Rows are pre-created for all 8 modes and shown/hidden based on the
+    /// selected filter mode. Each entry: {label, field, mode_index}.
+    /// mode_index -1 = cross-mode (always visible when filter is on).
+    QFormLayout* preproc_params_form_{nullptr};
+    struct PreprocRow {
+        QLabel* label{nullptr};
+        QWidget* field{nullptr};
+        int mode{-1};  ///< -1 = cross-mode, 0-7 = specific filter mode
+        std::string key;
+    };
+    std::vector<PreprocRow> preproc_rows_;
+
+    /// Flag: true during build_ui() so refresh_mode_visibility knows to apply
+    /// default ROI/fps; set to false after build_ui completes so user-driven
+    /// mode switches don't clobber user-customised ROI/fps (BUG-14 fix).
+    bool first_init_{true};
 };
 
 } // namespace gui

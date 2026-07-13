@@ -3,9 +3,12 @@
 #include "settings_panel.h"
 
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
-#include <QScrollArea>
 #include <QSettings>
+#include <QScrollArea>
+#include <QStackedWidget>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <utility>
 
@@ -22,7 +25,7 @@
 #include "trigger_panel.h"
 #include "algo_bridge/algo_bridge.h"
 #include "app/file_converter.h"
-#include "widgets/collapsible_section.h"
+#include "widgets/activity_bar.h"
 
 namespace gui {
 
@@ -49,26 +52,28 @@ std::vector<AbstractPanel*> SettingsPanel::panels_in_group(const QString& group)
 SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
                              QWidget* parent)
     : QWidget(parent) {
-    auto* outer = new QVBoxLayout(this);
+    // --- VSCode-style sidebar (gui_optimization.md §10.3 + §11) ---
+    // ActivityBar (48px icon column) on the left + QStackedWidget on the
+    // right. Each group becomes one page containing a QScrollArea with the
+    // group's panels stacked directly (no CollapsibleSection — the
+    // ActivityBar already handles group switching, so per-group collapse is
+    // redundant per §11.2 point 1). Selecting an ActivityBar entry switches
+    // the page. The active group is persisted under "sidebar/active_group".
+    auto* outer = new QHBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
 
-    // --- Phase 3 (§3.7): VSCode-style stacked CollapsibleSections. ---
-    // Panels are aggregated by panel_group(); each group becomes one
-    // collapsible section. The whole stack lives in a scroll area so all
-    // sections remain reachable even when they exceed the viewport.
-    auto* scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto* host = new QWidget(scroll);
-    auto* host_layout = new QVBoxLayout(host);
-    host_layout->setContentsMargins(6, 6, 6, 6);
-    host_layout->setSpacing(8);
+    activity_bar_ = new ActivityBar(this);
+    outer->addWidget(activity_bar_);
+
+    stacked_ = new QStackedWidget(this);
+    outer->addWidget(stacked_, 1);
 
     // Register every panel into the registry first (ownership via panels_).
-    // The unique_ptr is the authoritative owner; add_panel reparents each
-    // widget into a group box inside its section (Qt removes it from the old
-    // parent first), which is safe — deleting a QWidget removes it from its
-    // parent's child list, so the unique_ptr can destroy it later.
+    // The unique_ptr is the authoritative owner; addWidget reparents each
+    // widget into the group page (Qt removes it from the old parent first),
+    // which is safe — deleting a QWidget removes it from its parent's child
+    // list, so the unique_ptr can destroy it later.
     register_panel(std::make_unique<DevicesPanel>(nullptr));
     register_panel(std::make_unique<InformationPanel>(nullptr));
     register_panel(std::make_unique<StatisticsPanel>(nullptr));
@@ -81,31 +86,50 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
     register_panel(std::make_unique<FileToolsPanel>(converter, nullptr));
     register_panel(std::make_unique<AlgorithmsPanel>(bridge, nullptr));
 
-    // Group order + default collapse state (design §3.7.3 table).
-    struct GroupDef { QString name; bool default_collapsed; };
+    // Group order, icon, and tooltip (design §3.7.3 table + §10.3.4 icon
+    // mapping). No default_collapsed — CollapsibleSection removed (§11.2).
+    struct GroupDef {
+        QString name;
+        QString icon;
+        QString tooltip;
+    };
     const GroupDef groups[] = {
-        {QStringLiteral("相机设备"),   false},
-        {QStringLiteral("显示与统计"), false},
-        {QStringLiteral("硬件配置"),   false},
-        {QStringLiteral("算法模块"),   true},
-        {QStringLiteral("工具"),       true},
+        {QStringLiteral("Camera"),          QStringLiteral("camera"),
+         tr("Camera devices and connection info")},
+        {QStringLiteral("Display & Stats"), QStringLiteral("chart"),
+         tr("Display settings and statistics")},
+        {QStringLiteral("Hardware"),        QStringLiteral("cpu"),
+         tr("Biases, ROI, ESP and trigger configuration")},
+        {QStringLiteral("Algorithms"),      QStringLiteral("blocks"),
+         tr("Algorithm selection and preprocessing")},
+        {QStringLiteral("Tools"),           QStringLiteral("tools"),
+         tr("File conversion and tools")},
     };
 
-    QSettings s;
     for (const auto& g : groups) {
         const auto panels = panels_in_group(g.name);
         if (panels.empty()) continue;
 
-        auto* section = new CollapsibleSection(g.name, host);
+        // Each group lives in its own scrollable page so only one group is
+        // visible at a time (VSCode Activity Bar behavior). Panels are added
+        // directly to the page layout — no CollapsibleSection wrapper.
+        auto* scroll = new QScrollArea(stacked_);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto* host = new QWidget(scroll);
+        auto* host_layout = new QVBoxLayout(host);
+        host_layout->setContentsMargins(6, 6, 6, 6);
+        host_layout->setSpacing(8);
+
         for (auto* p : panels) {
-            section->add_panel(p);
+            host_layout->addWidget(p);
         }
 
-        // The 工具 group also holds the Calibration placeholder (Phase 9
+        // The Tools group also holds the Calibration placeholder (Phase 9
         // install target for set_calibration_panel). The wizard itself is
         // launched from the Tools menu; this group box just shows a hint.
-        if (g.name == QStringLiteral("工具")) {
-            calibration_group_ = new QGroupBox(tr("Calibration"), section);
+        if (g.name == QStringLiteral("Tools")) {
+            calibration_group_ = new QGroupBox(tr("Calibration"), host);
             auto* gl = new QVBoxLayout(calibration_group_);
             gl->setContentsMargins(6, 6, 6, 6);
             auto* lbl = new QLabel(
@@ -115,22 +139,61 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
             lbl->setProperty("class", "hint");
             gl->addWidget(lbl);
             calibration_group_->setEnabled(false);
-            section->add_widget(calibration_group_);
+            host_layout->addWidget(calibration_group_);
         }
 
-        // Apply persisted (or default) collapse state. set_collapsed also
-        // writes the value back to QSettings, which is harmless.
-        const QString key =
-            QStringLiteral("layout/section_%1_collapsed").arg(g.name);
-        const bool collapsed = s.value(key, g.default_collapsed).toBool();
-        section->set_collapsed(collapsed);
+        host_layout->addStretch(1);
+        scroll->setWidget(host);
 
-        host_layout->addWidget(section);
+        stacked_->addWidget(scroll);
+        activity_bar_->add_button(g.icon, g.name, g.tooltip);
     }
 
-    host_layout->addStretch(1);
-    scroll->setWidget(host);
-    outer->addWidget(scroll);
+    // ActivityBar → QStackedWidget page switch.
+    connect(activity_bar_, &ActivityBar::group_selected, this,
+            [this](int index, const QString& title) {
+                if (index >= 0 && index < stacked_->count()) {
+                    stacked_->setCurrentIndex(index);
+                    QSettings().setValue(QStringLiteral("sidebar/active_group"),
+                                         index);
+                    emit current_title_changed(title);
+                }
+            });
+
+    // ActivityBar toggle button → hide/show sidebar content (§11.2 point 5).
+    connect(activity_bar_, &ActivityBar::toggle_clicked, this,
+            [this]() { toggle_content(); });
+
+    // Restore the last active group (default 0 = Camera).
+    const int saved = QSettings()
+                          .value(QStringLiteral("sidebar/active_group"), 0)
+                          .toInt();
+    activity_bar_->select(saved);
+}
+
+QString SettingsPanel::current_title() const {
+    return activity_bar_ ? activity_bar_->title_at(activity_bar_->current_index())
+                         : QString();
+}
+
+void SettingsPanel::refresh_icons() {
+    if (activity_bar_) activity_bar_->refresh_icons();
+    // Force QSS re-polish on the entire panel so all child widgets pick up the
+    // new theme colors (§12.2.2 — theme color lag fix).
+    style()->unpolish(this);
+    style()->polish(this);
+    update();
+}
+
+void SettingsPanel::toggle_content() {
+    if (!stacked_) return;
+    const bool new_visible = !stacked_->isVisible();
+    stacked_->setVisible(new_visible);
+    emit content_toggled(new_visible);
+}
+
+bool SettingsPanel::is_content_visible() const {
+    return stacked_ && stacked_->isVisible();
 }
 
 // Type-safe accessors — each delegates to find_panel() + static_cast so the

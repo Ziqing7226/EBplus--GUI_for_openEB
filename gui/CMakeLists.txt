@@ -59,6 +59,7 @@ list(APPEND GUI_LIB_SOURCES
     widgets/multi_window_manager.cpp
     widgets/custom_title_bar.cpp
     widgets/collapsible_section.cpp
+    widgets/activity_bar.cpp
     config/layout_manager.cpp
 )
 

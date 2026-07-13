@@ -200,7 +200,7 @@ std::vector<AlgoParamSpec> roi_params() {
     };
 }
 
-/// Returns the shared preprocessing parameters (v1.1.0): a stackable noise
+/// Returns the shared preprocessing parameters (v1.0.9): a stackable noise
 /// filter + 1/4 downsample applied AFTER the algorithm ROI, in the order
 /// ROI → filter → downsample. These overlay on top of any main algorithm and
 /// are NOT mutually exclusive with it. preproc_downsample defaults to "true"
@@ -312,13 +312,15 @@ void AlgoBridge::set_sensor_dimensions(int width, int height) {
 void AlgoBridge::apply_global_preproc(const std::string& key,
                                       const std::string& value) {
     // Apply the preproc_* parameter to every live self-developed instance.
-    // Preprocessing is stackable and overlays on top of any main algorithm;
-    // it is NOT mutually exclusive with it. Each backend's Preprocessor /
-    // RoiFilter member handles the key (returns true from set_param).
+    // OpenEB wrapper algorithms (source=="openeb") have backend_==nullptr
+    // (pass-through); preproc_* params have no effect on them and would
+    // pollute their param_values_ map, so they are skipped.
     std::lock_guard<std::mutex> lk(live_mutex_);
     for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
         if (auto inst = it->second.lock()) {
-            inst->set_param(key, value);
+            if (inst->info().source == "self") {
+                inst->set_param(key, value);
+            }
             ++it;
         } else {
             it = live_instances_.erase(it);
@@ -554,13 +556,13 @@ void AlgoBridge::register_self_cv() {
         a.source = "self";
         a.category = "cv";
         // All self-developed CV algorithms support ROI (design §5.6.6) and the
-        // shared preprocessing stage (v1.1.0: ROI → filter → downsample).
+        // shared preprocessing stage (v1.0.9: ROI → filter → downsample).
         for (auto& p : roi_params()) a.params.push_back(std::move(p));
         for (auto& p : preproc_params()) a.params.push_back(std::move(p));
         registry_[a.name] = std::move(a);
     };
 
-    // §4.3.5 Noise Filter — removed as a standalone algorithm in v1.1.0; the
+    // §4.3.5 Noise Filter — removed as a standalone algorithm in v1.0.9; the
     // noise filter is now a stackable preprocessing stage (see preproc_params)
     // shared by all self-developed algorithms (ROI → filter → downsample).
 

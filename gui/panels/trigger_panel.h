@@ -32,7 +32,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("trigger"); }
     QString panel_title() const override { return tr("Trigger"); }
-    QString panel_group() const override { return QStringLiteral("硬件配置"); }
+    QString panel_group() const override { return QStringLiteral("Hardware"); }
 
 public slots:
     void on_camera_connected(CameraController* controller) override;

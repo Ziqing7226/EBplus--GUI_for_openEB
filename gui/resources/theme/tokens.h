@@ -64,7 +64,7 @@ constexpr const char* kValues[kColorCount][kModeCount][9] = {
             "DCDCDC",  // bg-hover
             "1A1A1A",  // fg-primary
             "5A5A5A",  // fg-secondary
-            "6A6A6A",  // fg-muted
+            "5A5A5A",  // fg-muted (BUG-6 fix: 4.5:1 contrast)
             "0066B8",  // accent
             "C0C0C0",  // border
         },
@@ -172,7 +172,7 @@ constexpr const char* kValues[kColorCount][kModeCount][9] = {
             "C4DAEC",  // bg-hover
             "14233A",  // fg-primary
             "3A5A7A",  // fg-secondary
-            "5A7590",  // fg-muted
+            "4A6580",  // fg-muted (BUG-6 fix: 4.6:1 contrast)
             "005A9E",  // accent
             "A8C4DC",  // border
         },

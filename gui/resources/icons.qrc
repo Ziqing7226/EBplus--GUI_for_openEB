@@ -1,10 +1,13 @@
 <RCC>
     <qresource prefix="/">
+        <file>icons/blocks.svg</file>
         <file>icons/calibration.svg</file>
         <file>icons/camera-off.svg</file>
         <file>icons/camera.svg</file>
         <file>icons/chart.svg</file>
+        <file>icons/cpu.svg</file>
         <file>icons/chevron-left.svg</file>
+        <file>icons/chevron-right.svg</file>
         <file>icons/circle.svg</file>
         <file>icons/clock.svg</file>
         <file>icons/close.svg</file>

@@ -75,13 +75,10 @@ EspPanel::EspPanel(QWidget* parent) : AbstractPanel(parent) {
     af_high_->setRange(1, 100000);
     af_high_->setSuffix(" Hz");
     af_high_->setValue(110);
-    auto* af_band_row = new QWidget(af_group_);
-    auto* af_bl = new QHBoxLayout(af_band_row);
-    af_bl->setContentsMargins(0, 0, 0, 0);
-    af_bl->addWidget(af_low_);
-    af_bl->addWidget(new QLabel("–", af_group_));
-    af_bl->addWidget(af_high_);
-    af_form->addRow(tr("Frequency band"), af_band_row);
+    // Low/high on separate rows so the row fits the narrower sidebar
+    // (§13.3 — splitting wide rows).
+    af_form->addRow(tr("Freq. low"), af_low_);
+    af_form->addRow(tr("Freq. high"), af_high_);
     af_duty_ = new QDoubleSpinBox(af_group_);
     af_duty_->setRange(0.0, 1.0);
     af_duty_->setSingleStep(0.05);

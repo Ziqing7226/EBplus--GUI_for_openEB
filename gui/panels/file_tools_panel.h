@@ -25,7 +25,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("file_tools"); }
     QString panel_title() const override { return tr("File Tools"); }
-    QString panel_group() const override { return QStringLiteral("工具"); }
+    QString panel_group() const override { return QStringLiteral("Tools"); }
 
     private slots:
     void on_convert_hdf5();

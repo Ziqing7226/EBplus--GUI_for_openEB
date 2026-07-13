@@ -68,9 +68,11 @@ void PreprocessingPanel::build_ui() {
     make_enum_row("rotate", tr("Rotate"),
                   {"0", "90", "180", "270"}, "rotation");
     make_row("transpose", tr("Transpose"));
-    // Rescale needs two float inputs; expose as a simple spinbox pair.
+    // Rescale needs two float inputs; expose as separate rows so the row
+    // width fits the narrower sidebar (§13.3 — splitting wide rows).
     {
         auto* cb = new QCheckBox(tr("Rescale"), group_);
+        form->addRow(cb);
         auto* sx = new QDoubleSpinBox(group_);
         sx->setRange(0.01, 10.0);
         sx->setValue(1.0);
@@ -79,13 +81,8 @@ void PreprocessingPanel::build_ui() {
         sy->setRange(0.01, 10.0);
         sy->setValue(1.0);
         sy->setEnabled(false);
-        auto* w = new QWidget;
-        auto* hl = new QHBoxLayout(w);
-        hl->setContentsMargins(0, 0, 0, 0);
-        hl->addWidget(cb);
-        hl->addWidget(sx, 1);
-        hl->addWidget(sy, 1);
-        form->addRow(w);
+        form->addRow(tr("  Scale X"), sx);
+        form->addRow(tr("  Scale Y"), sy);
         enables_["rescale"] = cb;
         // Store pointers for apply_stage (typed correctly, no casts).
         double_spins_["rescale|scale_width"] = sx;
@@ -101,25 +98,20 @@ void PreprocessingPanel::build_ui() {
             apply_stage("rescale");
         });
     }
-    // ROI filter
+    // ROI filter — each coordinate on its own row so the row width fits
+    // the narrower sidebar (§13.3 — splitting wide rows).
     {
         auto* cb = new QCheckBox(tr("ROI Filter"), group_);
+        form->addRow(cb);
         auto* x0 = new QSpinBox(group_); x0->setRange(0, 100000);
         auto* y0 = new QSpinBox(group_); y0->setRange(0, 100000);
         auto* x1 = new QSpinBox(group_); x1->setRange(0, 100000); x1->setValue(1279);
         auto* y1 = new QSpinBox(group_); y1->setRange(0, 100000); y1->setValue(719);
         for (auto* s : {x0, y0, x1, y1}) s->setEnabled(false);
-        auto* w = new QWidget;
-        auto* hl = new QHBoxLayout(w);
-        hl->setContentsMargins(0, 0, 0, 0);
-        hl->addWidget(cb);
-        auto* g = new QGridLayout;
-        g->addWidget(new QLabel("x0"), 0, 0); g->addWidget(x0, 0, 1);
-        g->addWidget(new QLabel("y0"), 0, 2); g->addWidget(y0, 0, 3);
-        g->addWidget(new QLabel("x1"), 1, 0); g->addWidget(x1, 1, 1);
-        g->addWidget(new QLabel("y1"), 1, 2); g->addWidget(y1, 1, 3);
-        hl->addLayout(g, 1);
-        form->addRow(w);
+        form->addRow(tr("  X0"), x0);
+        form->addRow(tr("  Y0"), y0);
+        form->addRow(tr("  X1"), x1);
+        form->addRow(tr("  Y1"), y1);
         enables_["roi_filter"] = cb;
         spins_["roi_filter|x0"] = x0;
         spins_["roi_filter|y0"] = y0;

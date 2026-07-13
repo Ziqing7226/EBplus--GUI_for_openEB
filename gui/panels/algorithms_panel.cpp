@@ -5,7 +5,6 @@
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QLabel>
-#include <QScrollArea>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
@@ -41,21 +40,19 @@ void AlgorithmsPanel::build_ui() {
     // algo's parameter editor and controlled exclusively here.
     build_preproc_selector(outer);
 
-    auto* scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    outer->addWidget(scroll);
-
-    auto* host = new QWidget(scroll);
+    // Algorithm category groups are added directly to the outer layout —
+    // no inner QScrollArea. The outer SettingsPanel scroll area already
+    // provides scrolling for the entire sidebar page (§12.2.5).
+    auto* host = new QWidget(this);
     auto* layout = new QVBoxLayout(host);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setSpacing(6);
+    outer->addWidget(host);
 
     if (!bridge_) {
         auto* lbl = new QLabel(tr("Algorithm bridge unavailable."), host);
         layout->addWidget(lbl);
         layout->addStretch(1);
-        scroll->setWidget(host);
         return;
     }
 
@@ -260,7 +257,10 @@ void AlgorithmsPanel::build_ui() {
     }
 
     layout->addStretch(1);
-    scroll->setWidget(host);
+
+    // Initial build complete — subsequent mode switches are user-driven and
+    // must not clobber user-customised ROI/fps (BUG-14 fix).
+    first_init_ = false;
 }
 
 void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
@@ -313,10 +313,14 @@ void AlgorithmsPanel::apply_global_roi() {
     const std::string y = std::to_string(roi_y_sp_->value());
     const std::string w = std::to_string(roi_w_sp_->value());
     const std::string h = std::to_string(roi_h_sp_->value());
-    // Apply to every live instance. Also apply to instances that are created
-    // lazily but not yet enabled (so the ROI is set before the algo starts).
+    // Apply to every live self-developed instance. OpenEB wrapper algorithms
+    // (source=="openeb") have backend_==nullptr (pass-through); their ROI is
+    // handled by the OpenEB filter_chain, not by AlgoBridge, so setting
+    // roi_* params on them has no effect and would only pollute their
+    // param_values_ map (BUG-13 fix).
     for (auto& [name, inst] : live_instances_) {
         if (!inst) continue;
+        if (inst->info().source != "self") continue;
         inst->set_param("roi_enabled", enabled);
         inst->set_param("roi_x", x);
         inst->set_param("roi_y", y);
@@ -335,7 +339,7 @@ void AlgorithmsPanel::apply_global_preproc(const std::string& key,
 }
 
 void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
-    auto* gb = new QGroupBox(tr("Preprocessing (ROI → filter → downsample)"), this);
+    auto* gb = new QGroupBox(tr("Preprocessing (ROI > filter > downsample)"), this);
     auto* form = new QFormLayout(gb);
     form->setContentsMargins(6, 6, 6, 6);
 
@@ -363,6 +367,101 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_mode_combo_->setCurrentIndex(1);  // STCF
     form->addRow(tr("Filter mode"), preproc_filter_mode_combo_);
 
+    // Mode-specific parameter rows (BUG-3 fix). All 8 modes' params are
+    // pre-created and shown/hidden based on the selected filter mode.
+    // Cross-mode params (mode=-1) are always visible when the filter is on.
+    preproc_params_form_ = new QFormLayout();
+    preproc_params_form_->setContentsMargins(6, 6, 6, 6);
+    form->addRow(preproc_params_form_);
+
+    // Parameter definitions: {key, display, type, def, lo, hi, mode}
+    // type: "i"=int, "f"=float, "b"=bool
+    struct PDef {
+        const char* key;
+        const char* disp;
+        char type;
+        const char* def;
+        const char* lo;
+        const char* hi;
+        int mode;
+    };
+    static const PDef pdefs[] = {
+        // STCF (mode 1)
+        {"preproc_filter_correlation_time_s", "STCF corr (s)", 'f', "0.005", "0.001", "0.1", 1},
+        {"preproc_filter_min_neighbors", "STCF min nbr", 'i', "2", "1", "8", 1},
+        {"preproc_filter_require_polarity_match", "STCF pol match", 'b', "false", "", "", 1},
+        {"preproc_filter_allow_coincidence", "STCF coincide", 'b', "false", "", "", 1},
+        // BAF (mode 0)
+        {"preproc_filter_baf_dt_us", "BAF dt (us)", 'i', "1000", "1000", "100000", 0},
+        {"preproc_filter_baf_subsample_by", "BAF subsample", 'i', "0", "0", "4", 0},
+        // Refractory (mode 2)
+        {"preproc_filter_refractory_us", "Refractory (us)", 'i', "1000", "100", "100000", 2},
+        // DWF (mode 3)
+        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "100", 3},
+        {"preproc_filter_dwf_dist_threshold", "DWF dist", 'i', "2", "1", "1024", 3},
+        {"preproc_filter_dwf_min_correlated", "DWF min corr", 'i', "2", "1", "8", 3},
+        {"preproc_filter_dwf_double_mode", "DWF double", 'b', "false", "", "", 3},
+        // AgePolarity (mode 4)
+        {"preproc_filter_agep_tau_us", "AgePol tau (us)", 'i', "3000", "1000", "100000", 4},
+        {"preproc_filter_age_threshold", "AgePol thresh", 'f', "2.0", "0.0", "8.0", 4},
+        {"preproc_filter_agep_radius", "AgePol radius", 'i', "2", "1", "5", 4},
+        // Harmonic (mode 5)
+        {"preproc_filter_line_freq_hz", "Harm Hz", 'i', "50", "50", "60", 5},
+        {"preproc_filter_notch_q", "Harm Q", 'f', "5.0", "0.1", "100.0", 5},
+        {"preproc_filter_harmonic_threshold", "Harm thresh", 'f', "0.1", "0.0", "1.0", 5},
+        // Repetitious (mode 6)
+        {"preproc_filter_rep_period_us", "Rep period (us)", 'i', "5000", "1000", "1000000", 6},
+        {"preproc_filter_rep_tolerance_us", "Rep tol (us)", 'i', "1000", "100", "10000", 6},
+        {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "10", "1", "100", 6},
+        {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "10", "1", "100", 6},
+        {"preproc_filter_rep_min_dt_to_store_us", "Rep min dt (us)", 'i', "1000", "0", "1000000", 6},
+        // SpatialBP (mode 7)
+        {"preproc_filter_sbp_center_radius_px", "SBP center", 'i', "2", "1", "10", 7},
+        {"preproc_filter_sbp_surround_radius_px", "SBP surround", 'i', "10", "5", "30", 7},
+        {"preproc_filter_sbp_dt_surround_us", "SBP dt (us)", 'i', "10000", "100", "1000000", 7},
+        // Cross-mode flags
+        {"preproc_filter_filter_hot_pixels", "Filter hot px", 'b', "false", "", "", -1},
+        {"preproc_filter_adaptive_correlation_time", "Adaptive corr", 'b', "false", "", "", -1},
+    };
+
+    for (const auto& p : pdefs) {
+        auto* lbl = new QLabel(tr(p.disp), gb);
+        QWidget* w = nullptr;
+        const std::string pkey = p.key;
+        if (p.type == 'b') {
+            auto* cmb = new QComboBox(gb);
+            cmb->addItem("false"); cmb->addItem("true");
+            cmb->setCurrentIndex(std::string(p.def) == "true" ? 1 : 0);
+            w = cmb;
+            connect(cmb, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                    [this, pkey, cmb](int) {
+                        apply_global_preproc(pkey, cmb->currentText().toStdString());
+                    });
+        } else if (p.type == 'i') {
+            auto* sp = new QSpinBox(gb);
+            sp->setRange(std::string(p.lo).empty() ? -100000000 : std::stoi(p.lo),
+                         std::string(p.hi).empty() ? 100000000 : std::stoi(p.hi));
+            sp->setValue(std::stoi(p.def));
+            w = sp;
+            connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this,
+                    [this, pkey](int v) {
+                        apply_global_preproc(pkey, std::to_string(v));
+                    });
+        } else { // 'f'
+            auto* sp = new QDoubleSpinBox(gb);
+            sp->setRange(-1e9, 1e9);
+            sp->setDecimals(6);
+            sp->setValue(std::stod(p.def));
+            w = sp;
+            connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                    [this, pkey](double v) {
+                        apply_global_preproc(pkey, std::to_string(v));
+                    });
+        }
+        preproc_params_form_->addRow(lbl, w);
+        preproc_rows_.push_back({lbl, w, p.mode, pkey});
+    }
+
     parent_layout->addWidget(gb);
 
     // Wire up: any change applies the preproc setting to all live instances.
@@ -371,6 +470,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     // main algorithm — preprocessing overlays on top of it.
     connect(preproc_filter_cb_, &QCheckBox::toggled, this, [this](bool on) {
         apply_global_preproc("preproc_filter_enabled", on ? "true" : "false");
+        refresh_preproc_params();
     });
     connect(preproc_downsample_cb_, &QCheckBox::toggled, this, [this](bool on) {
         apply_global_preproc("preproc_downsample", on ? "true" : "false");
@@ -379,7 +479,22 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int idx) {
                 apply_global_preproc("preproc_filter_mode", std::to_string(idx));
+                refresh_preproc_params();
             });
+
+    // Show the rows matching the default mode (STCF=1).
+    refresh_preproc_params();
+}
+
+void AlgorithmsPanel::refresh_preproc_params() {
+    if (!preproc_filter_mode_combo_) return;
+    const int mode = preproc_filter_mode_combo_->currentIndex();
+    const bool filter_on = preproc_filter_cb_ && preproc_filter_cb_->isChecked();
+    for (auto& row : preproc_rows_) {
+        const bool visible = filter_on && (row.mode < 0 || row.mode == mode);
+        if (row.label) row.label->setVisible(visible);
+        if (row.field) row.field->setVisible(visible);
+    }
 }
 
 void AlgorithmsPanel::apply_param(const std::string& algo_name,
@@ -427,7 +542,7 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
         if (row.field) row.field->setVisible(visible);
     }
 
-    // Auto-set mode-appropriate ROI and output_fps on every mode switch
+    // Auto-set mode-appropriate ROI and output_fps only during initial build
     // (design §4.4.2): all three event_to_video modes default to a 128×128
     // center ROI with 1/4 downsample enabled (effective reconstruction at
     // 64×64). E2VID runs NN inference at this resolution; BardowVariational
@@ -435,6 +550,10 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
     // (the output is upsampled back to the ROI size for display). 24 fps is
     // a comfortable target across all modes.
     // Only event_to_video has a "mode" enum, so this code only runs for it.
+    // BUG-14 fix: skip ROI/fps reset on user-driven mode switches so
+    // user-customised values are preserved.
+    if (!first_init_) return;
+
     const int target_w  = 128;
     const int target_h  = 128;
     const int target_fps = 24;

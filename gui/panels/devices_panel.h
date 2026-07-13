@@ -20,7 +20,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("devices"); }
     QString panel_title() const override { return tr("Devices"); }
-    QString panel_group() const override { return QStringLiteral("相机设备"); }
+    QString panel_group() const override { return QStringLiteral("Camera"); }
 
     public slots:
     void refresh_sources(const std::vector<std::pair<QString, QString>>& sources);

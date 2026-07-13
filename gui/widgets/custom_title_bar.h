@@ -41,12 +41,21 @@ public:
 
     /// Sets the application title text shown on the left.
     void setTitle(const QString& title);
-    /// Sets the application icon shown on the left of the title.
-    void setAppIcon(const QIcon& icon);
+    /// Sets the application icon (by SVG name) shown on the left of the title.
+    /// The icon is re-rendered with the title color whenever setColors() is
+    /// called, so it tracks the inverse-color rule applied to the title.
+    void setAppIcon(const QString& icon_name);
 
     /// Sets the background and text colors. The background always tracks the
-    /// application theme; the text color is black in light mode, white in dark.
-    void setColors(const QColor& bg, const QColor& fg);
+    /// application theme. @p fg is used for menus and window controls; @p
+    /// title_fg is used ONLY for the title label and app icon — it should be
+    /// pure black/white (inverse of @p bg) so the title is the most eye-
+    /// catching element on the bar (§13 — inverse color rule, title only).
+    void setColors(const QColor& bg, const QColor& fg, const QColor& title_fg);
+
+    /// Re-renders the window control button icons so they pick up the new
+    /// theme's foreground color. Called from MainWindow's theme-changed handler.
+    void refresh_icons();
 
     /// @brief Adds a menu dropdown button labeled @p title.
     /// @return The QMenu owned by the button, so the caller can populate it
@@ -61,6 +70,9 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
 
 private:
+    /// Re-renders icon_label_ with app_icon_name_ + title_color_.
+    void renderAppIcon();
+
     QLabel* icon_label_{nullptr};
     QLabel* title_label_{nullptr};
     QHBoxLayout* menu_layout_{nullptr};
@@ -69,6 +81,11 @@ private:
     QPushButton* btn_close_{nullptr};
     QColor bg_color_;
     QColor fg_color_;
+    QColor title_color_;      // pure black/white — title label + app icon only
+    QString app_icon_name_;   // SVG name for the app icon (e.g. "camera")
+    QString min_icon_name_;
+    QString max_icon_name_;
+    QString close_icon_name_;
 };
 
 /// @brief Invisible resize handle on a window edge or corner.

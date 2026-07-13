@@ -33,7 +33,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("biases"); }
     QString panel_title() const override { return tr("Biases"); }
-    QString panel_group() const override { return QStringLiteral("硬件配置"); }
+    QString panel_group() const override { return QStringLiteral("Hardware"); }
 
 public slots:
     /// @brief Populates the panel from the connected camera's bias facility.

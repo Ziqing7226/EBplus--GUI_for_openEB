@@ -19,7 +19,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("information"); }
     QString panel_title() const override { return tr("Information"); }
-    QString panel_group() const override { return QStringLiteral("相机设备"); }
+    QString panel_group() const override { return QStringLiteral("Camera"); }
 
     public slots:
     void set_info(const SensorInfo& info);

@@ -38,7 +38,7 @@ public:
     /// Human-readable title shown in the collapsible-section header (§3.7).
     virtual QString panel_title() const = 0;
     /// Group key used by Phase 3's CollapsibleSection to aggregate panels.
-    /// One of: "相机设备" / "显示与统计" / "硬件配置" / "算法模块" / "工具".
+    /// One of: "Camera" / "Display & Stats" / "Hardware" / "Algorithms" / "Tools".
     virtual QString panel_group() const = 0;
 
     /// @brief Binds @p cam as the camera source for this panel.

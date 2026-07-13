@@ -62,14 +62,12 @@ RoiPanel::RoiPanel(QWidget* parent) : AbstractPanel(parent) {
     hint_label_->setProperty("class", "hint");
     form->addRow(QString(), hint_label_);
 
-    auto* btn_row = new QWidget(this);
-    auto* bl = new QHBoxLayout(btn_row);
-    bl->setContentsMargins(0, 0, 0, 0);
-    apply_btn_ = new QPushButton(tr("Apply"), btn_row);
-    clear_btn_ = new QPushButton(tr("Clear Windows"), btn_row);
-    bl->addWidget(apply_btn_);
-    bl->addWidget(clear_btn_);
-    form->addRow(QString(), btn_row);
+    // Buttons on separate rows so the row width stays within the narrower
+    // sidebar (§13.3 — splitting wide rows).
+    apply_btn_ = new QPushButton(tr("Apply"), this);
+    clear_btn_ = new QPushButton(tr("Clear Windows"), this);
+    form->addRow(QString(), apply_btn_);
+    form->addRow(QString(), clear_btn_);
 
     setEnabled(false);
 

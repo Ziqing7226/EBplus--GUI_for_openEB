@@ -27,7 +27,7 @@ public:
 
     QString panel_id() const override { return QStringLiteral("display"); }
     QString panel_title() const override { return tr("Display"); }
-    QString panel_group() const override { return QStringLiteral("显示与统计"); }
+    QString panel_group() const override { return QStringLiteral("Display & Stats"); }
 
     int accumulation_time_us() const;
     int color_palette_index() const;

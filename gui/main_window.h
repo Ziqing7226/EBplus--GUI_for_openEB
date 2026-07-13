@@ -1,18 +1,20 @@
 // gui/main_window.h — top-level QMainWindow.
 //
-// Layout (design §5.1):
-//   - title bar:  CustomTitleBar (app icon/name + 5 menu dropdowns + window
+// Layout (design §5.1 + §11):
+//   - title bar:  CustomTitleBar (app icon/name + 6 menu dropdowns + window
 //                 controls), installed via setMenuWidget — no QMenuBar hack.
 //   - central:    EventDisplayWidget (OpenGL)
-//   - right dock: SettingsPanel (stacked CollapsibleSections per panel_group)
+//   - left dock:  SettingsPanel (VSCode-style sidebar: ActivityBar + stacked
+//                 panels, no title bar — §11.2 point 5)
+//   - right dock: AlgoWindow instances (event→video, XYT plot, etc. — §11.2
+//                 point 3)
 //   - bottom (status bar): connection | event rate | timestamp | recording state
 //   - bottom (above status bar): PlaybackControls (file playback only)
-//   - menus:      File | View | Camera | Tools | Help (Theme folds into View,
-//                 Calibration folds into Tools — design §3.6.3)
+//   - menus:      File | View | Theme | Camera | Tools | Help (Theme is a
+//                 top-level dropdown to the right of View — §11.2 point 6)
 //
-// The Algorithm menu has been removed — all algorithm configuration lives
-// in the sidebar's "算法模块" section. The sidebar can be hidden via the
-// View menu (Ctrl+Shift+S) to maximize the display area.
+// The sidebar has no title bar; its visibility is toggled via a button at the
+// bottom of the ActivityBar (chevron direction depends on dock area + state).
 //
 // Phase 1-2: live camera + bias/roi/esp/trigger control.
 // Phase 3:   recorder + playback controls.
@@ -137,9 +139,19 @@ private:
     /// Stops the blink timer and hides the red dot.
     void stop_rec_blink();
 
-    /// Shows/hides the right-edge sidebar tab based on dock visibility.
-    /// Called whenever the settings dock is toggled.
-    void update_sidebar_tab_visibility();
+    /// Updates the ActivityBar toggle button's chevron icon based on the
+    /// current dock area (left/right) and content visibility state (§11.2
+    /// point 5):
+    ///   - Left dock + visible  → chevron-left
+    ///   - Left dock + hidden   → chevron-right
+    ///   - Right dock + visible → chevron-right
+    ///   - Right dock + hidden  → chevron-left
+    void update_toggle_icon();
+
+    /// Handles the SettingsPanel::content_toggled signal: saves the dock
+    /// width before hiding content, restores it after showing, and updates
+    /// the toggle button icon (§11.2 point 5).
+    void on_sidebar_content_toggled(bool visible);
 
     void on_file_opened_for_playback(const QString& path);
 
@@ -168,6 +180,8 @@ private:
     QLabel* status_rec_{nullptr};
     QLabel* status_conn_dot_{nullptr};   ///< Colored dot (green/gray).
     QLabel* status_rec_dot_{nullptr};    ///< Red dot, blinks while recording.
+    QLabel* status_rate_icon_{nullptr};  ///< Chart icon (theme-recolorable, BUG-4).
+    QLabel* status_ts_icon_{nullptr};    ///< Clock icon (theme-recolorable, BUG-4).
     QTimer* rec_blink_timer_{nullptr};
     bool rec_blink_on_{false};
 
@@ -237,18 +251,15 @@ private:
     FrameAnnotator annotator_;
     Metavision::timestamp prev_frame_ts_{0};
 
-    /// View menu action to toggle the sidebar (settings dock) visibility.
-    QAction* a_toggle_sidebar_{nullptr};
+    /// Saved sidebar dock width before content was hidden via the toggle
+    /// button. Used to restore the width when content is shown again
+    /// (§11.2 point 5). 0 means no saved width (first toggle or never set).
+    int saved_sidebar_width_{0};
 
-    /// Main toolbar (top) with prominent toggle buttons for sidebar,
-    /// playback panel, and layout actions.
+    /// Main toolbar (top) with prominent buttons for playback panel and
+    /// layout actions. The sidebar toggle is no longer in the toolbar — it
+    /// lives at the bottom of the ActivityBar (§11.2 point 5).
     QToolBar* main_toolbar_{nullptr};
-
-    /// Thin vertical toolbar on the right edge — visible only when the
-    /// sidebar is hidden, so the user always has a way to bring it back.
-    /// Acts as the "collapsed marker" requested in the UX pass.
-    QToolBar* sidebar_tab_{nullptr};
-    QAction* a_show_sidebar_{nullptr};  ///< Action inside sidebar_tab_.
 
     /// Draws the ROI rectangle of any enabled self-developed algorithm
     /// (design §5.6.6: all self-developed algos support ROI) on the main
@@ -264,8 +275,8 @@ private:
     std::vector<ResizeGrip*> resize_grips_;
 
     /// Custom title bar (installed via setMenuWidget) — replaces the old
-    /// QMenuBar hack. Holds the app icon/name, the 5 menu dropdown buttons,
-    /// and the window control buttons (design §3.6.1).
+    /// QMenuBar hack. Holds the app icon/name, the 6 menu dropdown buttons,
+    /// and the window control buttons (design §3.6.1 + §11.2 point 6).
     CustomTitleBar* title_bar_{nullptr};
 };
 

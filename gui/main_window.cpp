@@ -46,6 +46,7 @@
 #include "calibration/calibration_wizard.h"
 #include "app/icon_provider.h"
 #include "display/display_strategy.h"
+#include "widgets/activity_bar.h"
 
 namespace gui {
 
@@ -81,9 +82,25 @@ MainWindow::MainWindow(QWidget* parent)
     settings_dock_->setObjectName("SettingsDock");
     settings_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     settings_dock_->setWidget(settings_);
-    settings_dock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
-    addDockWidget(Qt::RightDockWidgetArea, settings_dock_);
-    settings_dock_->setMinimumWidth(320);
+    // No dock features (not movable, not closable) and no title bar — the
+    // sidebar is controlled entirely via the ActivityBar toggle button
+    // (§11.2 point 5). An empty QWidget as the title bar widget hides the
+    // default title bar (title text + close button).
+    settings_dock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
+    settings_dock_->setTitleBarWidget(new QWidget(this));
+    addDockWidget(Qt::LeftDockWidgetArea, settings_dock_);
+    settings_dock_->setMinimumWidth(160);
+
+    // Sidebar content toggle (§11.2 point 5): when the user clicks the
+    // toggle button at the bottom of the ActivityBar, SettingsPanel emits
+    // content_toggled. MainWindow saves/restores the dock width and updates
+    // the toggle icon's chevron direction based on dock area + visibility.
+    connect(settings_, &SettingsPanel::content_toggled, this,
+            &MainWindow::on_sidebar_content_toggled);
+    // Also update the toggle icon when the dock is moved to a different area
+    // (left → right or vice versa).
+    connect(settings_dock_, &QDockWidget::dockLocationChanged, this,
+            [this](Qt::DockWidgetArea) { update_toggle_icon(); });
 
     // Phase 3: bottom-bar playback transport (hidden until a file is opened).
     playback_controls_ = new PlaybackControls(this);
@@ -106,7 +123,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Phase 3 (§3.6.1): real custom title bar — replaces the QMenuBar hack.
     // Installed via setMenuWidget so it sits at the very top of the window,
-    // above the central widget and docks. build_menus() adds the 5 dropdown
+    // above the central widget and docks. build_menus() adds the 6 dropdown
     // menus to it; build_title_bar_controls() applies the title/icon/colors.
     title_bar_ = new CustomTitleBar(this);
     setMenuWidget(title_bar_);
@@ -130,7 +147,15 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Capture the factory layout (all docks in their default positions) so
     // reset_layout() can restore it. Must be called before load_default()
-    // which may overlay a user-customized layout.
+    // which may overlay a user-customized layout.  Set the sidebar to the
+    // default width BEFORE capturing so reset_layout() restores to this
+    // width instead of Qt's initial wide default (§13.2).
+    if (settings_dock_) {
+        settings_dock_->setMinimumWidth(160);
+        const QList<QDockWidget*> docks = {settings_dock_};
+        const QList<int> sizes = {190};
+        resizeDocks(docks, sizes, Qt::Horizontal);
+    }
     layout_manager_->capture_default();
 
     // Try restoring the previous layout (silent on failure).
@@ -138,14 +163,25 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Force the sidebar visible on startup regardless of the restored
     // layout state — the user explicitly requested it be shown by default.
-    // Sync the toggle action to match.
     if (settings_dock_) {
         settings_dock_->setVisible(true);
     }
-    if (a_toggle_sidebar_) {
-        a_toggle_sidebar_->setChecked(true);
-    }
-    update_sidebar_tab_visibility();
+    // Explicitly set the sidebar to the default width.  setMinimumWidth
+    // alone doesn't set the actual width — the dock's width is controlled
+    // by the saved layout state (restoreState) which may have a previously
+    // saved wider width.  resizeDocks() is the only way to programmatically
+    // set the dock width.  Deferred via QTimer::singleShot so it runs after
+    // the window is shown and the layout pass has settled (§13.2).
+    QTimer::singleShot(0, this, [this]() {
+        if (!settings_dock_ || !settings_dock_->isVisible()) return;
+        settings_dock_->setMinimumWidth(160);
+        const QList<QDockWidget*> docks = {settings_dock_};
+        const QList<int> sizes = {190};
+        resizeDocks(docks, sizes, Qt::Horizontal);
+    });
+    // Set the initial toggle icon based on the dock's current area (left by
+    // default) and content visibility (visible by default).
+    update_toggle_icon();
 
     // Populate the device list on startup.
     on_refresh_devices();
@@ -212,16 +248,56 @@ void MainWindow::resizeEvent(QResizeEvent* event) {
 void MainWindow::build_title_bar_controls() {
     if (!title_bar_) return;
     title_bar_->setTitle(windowTitle());
-    title_bar_->setAppIcon(IconProvider::get(QStringLiteral("camera")));
+    title_bar_->setAppIcon(QStringLiteral("camera"));
 
     // Apply the theme background/text colors and re-apply whenever the theme
     // changes (user color switch or system light/dark flip). The native WM
     // title bar color cannot be changed from Qt, but our custom title bar's
     // color is set directly so it always tracks the application theme.
+    //
+    // §13 — inverse color rule: the title label "EB plus" and the camera icon
+    // get PURE black/white (inverse of the background) so they are the most
+    // eye-catching elements on the bar. This rule applies ONLY here; all
+    // other title-bar elements (menus, window controls) use the theme's
+    // normal text color.
+    //
+    // BUG-4: the status bar chart/clock icons are rendered once via
+    // IconProvider::get(name) which reads QPalette::WindowText at call time;
+    // after a theme switch the palette changes but the cached pixmaps do
+    // not, so we re-render them here. The ActivityBar icons are refreshed
+    // via SettingsPanel::refresh_icons() for the same reason. The toolbar
+    // action icons are re-rendered via the "icon_name" property (§13.1).
     auto apply = [this]() {
         if (!title_bar_) return;
-        title_bar_->setColors(QColor(theme_.effective_background_hex()),
-                              QColor(theme_.effective_text_hex()));
+        const QColor bg(theme_.effective_background_hex());
+        const QColor fg(theme_.effective_text_hex());
+        // RGB-inverse of the background — "颜色意义上的反色" like main branch
+        // (255-r, 255-g, 255-b). This rule applies ONLY to the title label
+        // and camera icon; all other title-bar elements use the theme fg.
+        const QColor title_fg(255 - bg.red(), 255 - bg.green(), 255 - bg.blue());
+        title_bar_->setColors(bg, fg, title_fg);
+        // Re-render theme-recolorable status bar icons (BUG-4).
+        if (status_rate_icon_) {
+            status_rate_icon_->setPixmap(
+                IconProvider::get(QStringLiteral("chart")).pixmap(QSize(12, 12)));
+        }
+        if (status_ts_icon_) {
+            status_ts_icon_->setPixmap(
+                IconProvider::get(QStringLiteral("clock")).pixmap(QSize(12, 12)));
+        }
+        // Refresh toolbar action icons — each action stores its SVG name in
+        // the "icon_name" property (set in build_toolbar) so we can re-render
+        // with the new theme's foreground color (§13.1).
+        if (main_toolbar_) {
+            for (QAction* act : main_toolbar_->actions()) {
+                const QString name = act->property("icon_name").toString();
+                if (!name.isEmpty()) {
+                    act->setIcon(IconProvider::get(name));
+                }
+            }
+        }
+        // Refresh ActivityBar icons so they track the new theme.
+        if (settings_) settings_->refresh_icons();
     };
     apply();
     connect(&theme_, &ThemeController::theme_changed, this, apply);
@@ -297,14 +373,10 @@ void MainWindow::build_menus() {
     m_file->addSeparator();
     m_file->addAction(tr("E&xit"), this, &QWidget::close, QKeySequence::Quit);
 
-    // View — includes the sidebar (settings dock) toggle with shortcut.
+    // View — sidebar toggle is no longer here; it lives in the ActivityBar
+    // toggle button (§11.2 point 5). Playback panel toggle and layout actions
+    // remain.
     auto* m_view = mb->addMenu(tr("&View"));
-    a_toggle_sidebar_ = m_view->addAction(tr("Toggle Sidebar"));
-    a_toggle_sidebar_->setCheckable(true);
-    a_toggle_sidebar_->setChecked(true);
-    a_toggle_sidebar_->setShortcut(QKeySequence("Ctrl+Shift+S"));
-    // The toggled -> setVisible connection is wired in wire_signals() after
-    // the sidebar tab is created, so the tab visibility stays in sync.
     auto* pb_toggle = m_view->addAction(tr("Toggle Playback Panel"));
     pb_toggle->setCheckable(true);
     pb_toggle->setChecked(false);
@@ -322,11 +394,11 @@ void MainWindow::build_menus() {
                           if (isFullScreen()) showNormal();
                           else showFullScreen();
                       }, QKeySequence("F11"));
-    m_view->addSeparator();
-    // Theme — background color + light/dark mode. Folded into the View
-    // dropdown (§3.6.3: 5 dropdowns). The controller builds its own submenu
-    // with radio actions for each color and mode.
-    auto* m_theme = m_view->addMenu(tr("&Theme"));
+
+    // Theme — top-level dropdown to the right of View (§11.2 point 6).
+    // The controller builds its own submenu with radio actions for each
+    // color and mode.
+    auto* m_theme = mb->addMenu(tr("&Theme"));
     theme_.build_menu(m_theme);
 
     // Camera — only display-interaction controls and presets that are NOT
@@ -398,10 +470,12 @@ void MainWindow::build_toolbar() {
     // --- Group 1: 连接 (camera connection) ---
     auto* a_connect = main_toolbar_->addAction(
         IconProvider::get(QStringLiteral("connect")), tr("Connect"));
+    a_connect->setProperty("icon_name", QStringLiteral("connect"));
     a_connect->setToolTip(tr("Connect to first available camera"));
     connect(a_connect, &QAction::triggered, this, &MainWindow::on_connect_first);
     auto* a_refresh = main_toolbar_->addAction(
         IconProvider::get(QStringLiteral("refresh")), tr("Refresh"));
+    a_refresh->setProperty("icon_name", QStringLiteral("refresh"));
     a_refresh->setToolTip(tr("Refresh device list"));
     connect(a_refresh, &QAction::triggered, this, &MainWindow::on_refresh_devices);
 
@@ -410,25 +484,23 @@ void MainWindow::build_toolbar() {
     // --- Group 2: 录制 (recording) — surfaces the File menu action. ---
     if (a_record_start_) {
         a_record_start_->setIcon(IconProvider::get(QStringLiteral("record")));
+        a_record_start_->setProperty("icon_name", QStringLiteral("record"));
         main_toolbar_->addAction(a_record_start_);
     }
 
     main_toolbar_->addSeparator();
 
-    // --- Group 3: 侧栏 布局 (sidebar toggle + window layout) ---
-    if (a_toggle_sidebar_) {
-        a_toggle_sidebar_->setIcon(IconProvider::get(QStringLiteral("sidebar")));
-        // Make the toolbar button show the checked state visually.
-        auto* btn = qobject_cast<QToolButton*>(main_toolbar_->widgetForAction(a_toggle_sidebar_));
-        if (btn) btn->setCheckable(true);
-        main_toolbar_->addAction(a_toggle_sidebar_);
-    }
+    // --- Group 3: 布局 (window layout) ---
+    // The sidebar toggle is no longer in the toolbar — it lives at the
+    // bottom of the ActivityBar (§11.2 point 5).
     auto* a_tile = main_toolbar_->addAction(
         IconProvider::get(QStringLiteral("restore")), tr("Tile"));
+    a_tile->setProperty("icon_name", QStringLiteral("restore"));
     a_tile->setToolTip(tr("Tile display windows"));
     connect(a_tile, &QAction::triggered, this, &MainWindow::on_tile_windows);
     auto* a_reset = main_toolbar_->addAction(
         IconProvider::get(QStringLiteral("layout")), tr("Reset Layout"));
+    a_reset->setProperty("icon_name", QStringLiteral("layout"));
     a_reset->setToolTip(tr("Reset window layout"));
     connect(a_reset, &QAction::triggered, this, &MainWindow::on_reset_layout);
 
@@ -437,6 +509,7 @@ void MainWindow::build_toolbar() {
     // --- Group 4: 导出 (export) — surfaces the File menu action. ---
     if (a_export_) {
         a_export_->setIcon(IconProvider::get(QStringLiteral("export")));
+        a_export_->setProperty("icon_name", QStringLiteral("export"));
         main_toolbar_->addAction(a_export_);
     }
 
@@ -445,49 +518,11 @@ void MainWindow::build_toolbar() {
     // --- Group 5: 全屏 (fullscreen) ---
     auto* a_fs = main_toolbar_->addAction(
         IconProvider::get(QStringLiteral("fullscreen")), tr("Fullscreen"));
+    a_fs->setProperty("icon_name", QStringLiteral("fullscreen"));
     connect(a_fs, &QAction::triggered, this, [this]() {
         if (isFullScreen()) showNormal();
         else showFullScreen();
     });
-
-    // --- Right-edge sidebar tab (collapsed marker) ---
-    // A thin vertical toolbar docked to the right edge. It's visible ONLY
-    // when the sidebar is hidden, giving the user a clear way to bring it
-    // back without hunting through the View menu. The arrow icon makes it
-    // obvious that clicking it expands something to the right.
-    sidebar_tab_ = new QToolBar(tr("Sidebar Tab"), this);
-    sidebar_tab_->setObjectName("SidebarTab");
-    sidebar_tab_->setMovable(false);
-    sidebar_tab_->setFloatable(false);
-    sidebar_tab_->setIconSize({22, 22});
-    sidebar_tab_->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    addToolBar(Qt::RightToolBarArea, sidebar_tab_);
-    a_show_sidebar_ = sidebar_tab_->addAction(
-        IconProvider::get(QStringLiteral("chevron-left")), tr("Show Sidebar"));
-    a_show_sidebar_->setToolTip(tr("Show Sidebar (Ctrl+Shift+S)"));
-    auto* sb_btn = qobject_cast<QToolButton*>(sidebar_tab_->widgetForAction(a_show_sidebar_));
-    if (sb_btn) {
-        sb_btn->setAutoRaise(true);
-        sb_btn->setFixedWidth(28);
-    }
-    connect(a_show_sidebar_, &QAction::triggered, this, [this]() {
-        if (settings_dock_) {
-            settings_dock_->setVisible(true);
-            if (a_toggle_sidebar_) {
-                QSignalBlocker b(a_toggle_sidebar_);
-                a_toggle_sidebar_->setChecked(true);
-            }
-        }
-        update_sidebar_tab_visibility();
-    });
-    sidebar_tab_->setVisible(false);  // hidden until sidebar is closed
-}
-
-void MainWindow::update_sidebar_tab_visibility() {
-    const bool dock_visible = settings_dock_ && settings_dock_->isVisible();
-    if (sidebar_tab_) {
-        sidebar_tab_->setVisible(!dock_visible);
-    }
 }
 
 void MainWindow::build_status_bar() {
@@ -530,12 +565,12 @@ void MainWindow::build_status_bar() {
     set_conn_connected(false);
 
     // Event rate: chart icon + monospace numeric.
-    sb->addWidget(make_item(QStringLiteral("chart"), &status_rate_));
+    sb->addWidget(make_item(QStringLiteral("chart"), &status_rate_, &status_rate_icon_));
     status_rate_->setText(tr("— ev/s"));
     status_rate_->setFont(mono);
 
     // Timestamp: clock icon + monospace numeric.
-    sb->addWidget(make_item(QStringLiteral("clock"), &status_ts_));
+    sb->addWidget(make_item(QStringLiteral("clock"), &status_ts_, &status_ts_icon_));
     status_ts_->setText(tr("t: —"));
     status_ts_->setFont(mono);
 
@@ -589,24 +624,57 @@ void MainWindow::on_rec_blink() {
     }
 }
 
-void MainWindow::wire_signals() {
-    // Sidebar toggle (menu action + toolbar button) <-> settings dock.
-    // The dock's visibilityChanged signal keeps the toggle action checked
-    // state and the collapsed-side-tab visibility in sync no matter how the
-    // dock is shown/hidden (menu, toolbar, dock X button, or layout restore).
-    if (a_toggle_sidebar_ && settings_dock_) {
-        connect(a_toggle_sidebar_, &QAction::toggled, this, [this](bool on) {
-            if (settings_dock_) settings_dock_->setVisible(on);
-        });
-        connect(settings_dock_, &QDockWidget::visibilityChanged, this,
-                [this](bool visible) {
-                    if (a_toggle_sidebar_) {
-                        QSignalBlocker b(a_toggle_sidebar_);
-                        a_toggle_sidebar_->setChecked(visible);
-                    }
-                    update_sidebar_tab_visibility();
-                });
+void MainWindow::update_toggle_icon() {
+    if (!settings_dock_ || !settings_) return;
+    const auto area = dockWidgetArea(settings_dock_);
+    const bool content_visible = settings_->is_content_visible();
+    // Chevron direction (§11.2 point 5):
+    //   Left dock + visible  → chevron-left
+    //   Left dock + hidden   → chevron-right
+    //   Right dock + visible → chevron-right
+    //   Right dock + hidden  → chevron-left
+    QString icon_name;
+    if (area == Qt::LeftDockWidgetArea) {
+        icon_name = content_visible ? QStringLiteral("chevron-left")
+                                    : QStringLiteral("chevron-right");
+    } else {
+        icon_name = content_visible ? QStringLiteral("chevron-right")
+                                    : QStringLiteral("chevron-left");
     }
+    // Access the ActivityBar via SettingsPanel to set the toggle icon.
+    // We use findChild to avoid exposing ActivityBar as a public accessor.
+    if (auto* bar = settings_->findChild<ActivityBar*>()) {
+        bar->set_toggle_icon(icon_name);
+    }
+}
+
+void MainWindow::on_sidebar_content_toggled(bool visible) {
+    if (!settings_dock_ || !settings_) return;
+    if (visible) {
+        // Restore the minimum width and the saved dock width (or a sensible
+        // default if none saved).
+        settings_dock_->setMinimumWidth(160);
+        const int target = saved_sidebar_width_ > 0 ? saved_sidebar_width_ : 190;
+        const QList<QDockWidget*> docks = {settings_dock_};
+        const QList<int> sizes = {target};
+        resizeDocks(docks, sizes, Qt::Horizontal);
+    } else {
+        // Save the current dock width before shrinking to ActivityBar width.
+        saved_sidebar_width_ = settings_dock_->width();
+        // Lower the minimum width so the dock can shrink to just the
+        // ActivityBar (48px).
+        settings_dock_->setMinimumWidth(48);
+        const QList<QDockWidget*> docks = {settings_dock_};
+        const QList<int> sizes = {48};
+        resizeDocks(docks, sizes, Qt::Horizontal);
+    }
+    update_toggle_icon();
+}
+
+void MainWindow::wire_signals() {
+    // Sidebar toggle is now handled by the ActivityBar toggle button →
+    // SettingsPanel::content_toggled → on_sidebar_content_toggled (connected
+    // in the constructor). No menu action or toolbar button involved.
 
     // Devices panel <-> controller
     auto* dp = settings_->devices_panel();
@@ -1503,7 +1571,7 @@ void MainWindow::on_load_layout() {
         this, tr("Load Layout"), {}, tr("Layout JSON (*.json);;All Files (*)"));
     if (!path.isEmpty()) {
         if (layout_manager_->load(path)) {
-            update_sidebar_tab_visibility();
+            update_toggle_icon();
             statusBar()->showMessage(tr("Layout loaded from %1").arg(path), 3000);
         } else {
             QMessageBox::warning(this, tr("Load Layout"), tr("Could not load layout."));
@@ -1513,7 +1581,17 @@ void MainWindow::on_load_layout() {
 
 void MainWindow::on_reset_layout() {
     if (layout_manager_) layout_manager_->reset_layout();
-    update_sidebar_tab_visibility();
+    // Force the sidebar to the default width after layout reset —
+    // reset_layout() restores the captured state which may have a wider
+    // dock width (§13.2).
+    if (settings_dock_) {
+        settings_dock_->setVisible(true);
+        settings_dock_->setMinimumWidth(160);
+        const QList<QDockWidget*> docks = {settings_dock_};
+        const QList<int> sizes = {190};
+        resizeDocks(docks, sizes, Qt::Horizontal);
+    }
+    update_toggle_icon();
     statusBar()->showMessage(tr("Layout reset to default."), 3000);
 }
 
@@ -1610,12 +1688,12 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
         ap->set_algo_enabled(algo_name, true);
     }
 
-    // Dock the AlgoWindow into the main window. Default to the left edge so
-    // it doesn't conflict with the settings sidebar (right) or playback bar
-    // (bottom). If another algo dock is already there, tab this one with it
-    // so multiple algo windows share a single dock slot (the user can switch
-    // between them via the tab bar).
-    addDockWidget(Qt::LeftDockWidgetArea, w);
+    // Dock the AlgoWindow into the main window. Default to the right edge
+    // (§11.2 point 3) so it doesn't conflict with the settings sidebar
+    // (left) or playback bar (bottom). If another algo dock is already
+    // there, tab this one with it so multiple algo windows share a single
+    // dock slot (the user can switch between them via the tab bar).
+    addDockWidget(Qt::RightDockWidgetArea, w);
     // Find any other already-docked algo window to tabify with.
     for (auto tit = algo_windows_.constBegin(); tit != algo_windows_.constEnd(); ++tit) {
         AlgoWindow* other = tit.value().data();
