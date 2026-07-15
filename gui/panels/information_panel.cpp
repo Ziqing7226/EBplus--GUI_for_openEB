@@ -34,6 +34,7 @@ InformationPanel::InformationPanel(QWidget* parent) : AbstractPanel(parent) {
     value_latency_        = mk(tr("Latency"));
     value_throughput_     = mk(tr("Throughput"));
     value_algo_status_    = mk(tr("Algorithms"));
+    value_drop_rate_      = mk(tr("Drop rate"));
 }
 
 void InformationPanel::set_info(const SensorInfo& info) {
@@ -67,10 +68,15 @@ void InformationPanel::set_algo_status(int active, int overloaded) {
     }
 }
 
+void InformationPanel::set_drop_rate(double max_drop_pct) {
+    value_drop_rate_->setText(QStringLiteral("%1%").arg(max_drop_pct, 0, 'f', 1));
+}
+
 void InformationPanel::clear() {
     for (auto* lbl : {value_model_, value_resolution_, value_serial_, value_integrator_,
                       value_plugin_, value_encoding_, value_firmware_, value_source_,
-                      value_latency_, value_throughput_, value_algo_status_}) {
+                      value_latency_, value_throughput_, value_algo_status_,
+                      value_drop_rate_}) {
         lbl->setText(tr("—"));
     }
 }

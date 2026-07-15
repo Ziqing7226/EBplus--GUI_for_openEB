@@ -100,6 +100,13 @@ signals:
     /// with temporal state must reset to avoid stale-state freezes.
     void file_looped();
 
+    /// File mode: emitted when seek() moves the cursor. Stateful algorithms
+    /// whose internal timestamps are ahead of the new cursor position must
+    /// be reset to avoid the same stale-state freeze as file_looped().
+    /// Emitted BEFORE the seeked frame is rendered so the reset takes
+    /// effect before new events are pushed.
+    void file_seeked(Metavision::timestamp t_us);
+
     /// File mode: emitted with the events in the current accumulation window
     /// [start, end) so algorithm instances can process them synchronously
     /// with the displayed frame. Emitted before frame_ready.

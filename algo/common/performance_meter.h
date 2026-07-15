@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 
 #include <metavision/sdk/base/utils/timestamp.h>
@@ -88,7 +89,9 @@ public:
         : smoothing_(smoothing) {}
 
     /// @brief Marks the arrival of an event batch (start of pipeline latency).
+    /// Thread-safe: called from the SDK data thread in live-camera mode.
     void tick_events(std::size_t n, Metavision::timestamp t_us) {
+        std::lock_guard<std::mutex> lk(mutex_);
         rate_estimator_.add_events(n, t_us);
         last_event_tick_ = Clock::now();
         total_events_ += n;
@@ -96,7 +99,9 @@ public:
 
     /// @brief Marks the completion of a rendered frame (end of pipeline latency).
     /// Computes FPS and instantaneous latency.
+    /// Thread-safe: called from the GUI thread.
     void tick_frame() {
+        std::lock_guard<std::mutex> lk(mutex_);
         const auto now = Clock::now();
         if (last_frame_tick_.has_value()) {
             const double dt_s =
@@ -121,12 +126,14 @@ public:
 
     /// @brief Records a dropped batch (overload backpressure).
     void tick_drop(std::size_t n) {
+        std::lock_guard<std::mutex> lk(mutex_);
         total_dropped_ += n;
     }
 
     /// @brief Starts a per-section timing measurement over @p n_events events.
     /// Matches jAER EventProcessingPerformanceMeter.start(int nEvents).
     void start(std::uint64_t n_events) {
+        std::lock_guard<std::mutex> lk(mutex_);
         start_n_events_ = n_events;
         start_time_ns_ = now_ns();
     }
@@ -135,6 +142,7 @@ public:
     /// ns/event sample for averaging. Matches jAER
     /// EventProcessingPerformanceMeter.stop().
     void stop() {
+        std::lock_guard<std::mutex> lk(mutex_);
         const std::int64_t duration_ns = now_ns() - start_time_ns_;
         duration_ns_ = duration_ns;
         const double this_nspe = (start_n_events_ == 0)
@@ -147,12 +155,14 @@ public:
 
     /// @brief ns/event for the most recent start/stop sample.
     double ns_per_event() const {
+        std::lock_guard<std::mutex> lk(mutex_);
         if (start_n_events_ == 0 || duration_ns_ == 0) return 0.0;
         return static_cast<double>(duration_ns_) / static_cast<double>(start_n_events_);
     }
 
     /// @brief events/second for the most recent start/stop sample.
     double eps() const {
+        std::lock_guard<std::mutex> lk(mutex_);
         if (duration_ns_ <= 0) return 0.0;
         return static_cast<double>(start_n_events_) /
                (static_cast<double>(duration_ns_) * 1.0e-9);
@@ -160,36 +170,64 @@ public:
 
     /// @brief Average ns/event over all accumulated start/stop samples.
     double avg_ns_per_event() const {
+        std::lock_guard<std::mutex> lk(mutex_);
         if (n_samples_ == 0) return 0.0;
         return nspe_sum_ / static_cast<double>(n_samples_);
     }
 
     /// @brief Standard error of the mean ns/event over all accumulated samples.
     double stderr_ns_per_event() const {
+        std::lock_guard<std::mutex> lk(mutex_);
         if (n_samples_ < 2) return 0.0;
         const double n = static_cast<double>(n_samples_);
         const double var = (nspe_sq_ - nspe_sum_ * nspe_sum_ / n) / (n - 1.0);
         return var <= 0.0 ? 0.0 : std::sqrt(var);
     }
 
-    std::uint64_t n_samples() const { return n_samples_; }
+    std::uint64_t n_samples() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return n_samples_;
+    }
 
-    double fps() const { return fps_; }
-    double latency_us() const { return latency_us_; }
-    double event_rate_eps() const { return rate_estimator_.rate_eps(); }
-    double event_rate_meps() const { return rate_estimator_.rate_meps(); }
+    double fps() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return fps_;
+    }
+    double latency_us() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return latency_us_;
+    }
+    double event_rate_eps() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return rate_estimator_.rate_eps();
+    }
+    double event_rate_meps() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return rate_estimator_.rate_meps();
+    }
 
     /// @brief Drop ratio in [0, 1]: dropped / (processed + dropped).
     double drop_ratio() const {
+        std::lock_guard<std::mutex> lk(mutex_);
         const std::uint64_t denom = total_events_ + total_dropped_;
         return denom == 0 ? 0.0 : static_cast<double>(total_dropped_) / denom;
     }
 
-    std::uint64_t total_events() const { return total_events_; }
-    std::uint64_t total_frames() const { return total_frames_; }
-    std::uint64_t total_dropped() const { return total_dropped_; }
+    std::uint64_t total_events() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return total_events_;
+    }
+    std::uint64_t total_frames() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return total_frames_;
+    }
+    std::uint64_t total_dropped() const {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return total_dropped_;
+    }
 
     void reset() {
+        std::lock_guard<std::mutex> lk(mutex_);
         fps_ = 0.0;
         latency_us_ = 0.0;
         total_events_ = 0;
@@ -215,6 +253,11 @@ private:
 
     float smoothing_;
     EventRateEstimator rate_estimator_;
+    // Protects all members: tick_events() is called from the SDK data thread
+    // (live-camera mode) while tick_frame()/reset()/getters are called from
+    // the GUI thread. Without this, concurrent read/write of last_event_tick_
+    // (std::optional<time_point>) is undefined behaviour.
+    mutable std::mutex mutex_;
     double fps_{0.0};
     double latency_us_{0.0};
     std::uint64_t total_events_{0};

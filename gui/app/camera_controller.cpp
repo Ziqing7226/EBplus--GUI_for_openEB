@@ -54,6 +54,11 @@ bool CameraController::connect_first_available() {
         setup_camera(std::move(cam), false);
         return true;
     } catch (const Metavision::CameraException& e) {
+        // teardown() already destroyed the previous camera/pipeline but never
+        // emits disconnected() — do so here so the UI cleans up its stale
+        // connection state (status bar, panels, playback controls) before
+        // the error dialog appears.
+        emit disconnected();
         emit error(QString::fromUtf8(e.what()));
         return false;
     }
@@ -66,6 +71,7 @@ bool CameraController::connect_serial(const std::string& serial) {
         setup_camera(std::move(cam), false);
         return true;
     } catch (const Metavision::CameraException& e) {
+        emit disconnected();
         emit error(QString::fromUtf8(e.what()));
         return false;
     }
@@ -84,6 +90,7 @@ bool CameraController::connect_file(const std::string& path) {
         setup_camera(std::move(cam), true);
         return true;
     } catch (const Metavision::CameraException& e) {
+        emit disconnected();
         emit error(QString::fromUtf8(e.what()));
         return false;
     }

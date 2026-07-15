@@ -29,6 +29,10 @@ public:
     void set_performance(double latency_ms, double throughput_mbs);
     /// @brief Updates algorithm overload status.
     void set_algo_status(int active, int overloaded);
+    /// @brief Updates the maximum event drop rate across all live algorithm
+    /// instances. @p max_drop_pct is a percentage in [0, 100]; 0 means no
+    /// events were dropped by any flood guard.
+    void set_drop_rate(double max_drop_pct);
     void clear();
 
 private:
@@ -44,6 +48,7 @@ private:
     QLabel* value_latency_{nullptr};
     QLabel* value_throughput_{nullptr};
     QLabel* value_algo_status_{nullptr};
+    QLabel* value_drop_rate_{nullptr};
 };
 
 } // namespace gui

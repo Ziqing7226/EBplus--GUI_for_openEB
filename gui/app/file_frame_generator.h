@@ -125,6 +125,13 @@ signals:
     /// where new events have timestamps < current_t_ and are ignored.
     void looped();
 
+    /// @brief Emitted when seek() moves the cursor. Stateful algorithms
+    /// whose internal timestamps are ahead of the new cursor position must
+    /// be reset to avoid the same stale-state freeze as looped(). Emitted
+    /// BEFORE render_frame() so the reset takes effect before new events
+    /// are pushed.
+    void seeked(Metavision::timestamp t_us);
+
     /// @brief Emitted with the (filtered) events in the current accumulation
     /// window [start, end). Used to feed algorithm instances synchronously
     /// with the displayed frame during file playback. When a FilterChain is

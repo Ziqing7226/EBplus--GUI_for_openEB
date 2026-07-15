@@ -16,6 +16,8 @@ FramePipeline::FramePipeline(QObject* parent) : QObject(parent) {
             this, &FramePipeline::file_eof_reached);
     connect(&file_generator_, &FileFrameGenerator::looped,
             this, &FramePipeline::file_looped);
+    connect(&file_generator_, &FileFrameGenerator::seeked,
+            this, &FramePipeline::file_seeked);
     connect(&file_generator_, &FileFrameGenerator::events_window_ready,
             this, &FramePipeline::events_window_ready);
 }

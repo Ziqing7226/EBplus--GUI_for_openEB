@@ -100,9 +100,12 @@ void AlgoInstance::set_enabled(bool e) {
         // intact (e.g. E2VID log_intensity_, InteractingMaps I_map_). Full
         // reset is performed separately by the caller when starting a new
         // session (e.g. MainWindow::on_camera_connected calls inst->reset()
-        // for every live instance).
+        // for every live instance). Drop-rate counters are also reset so
+        // the InformationPanel shows fresh telemetry for the new session.
         overloaded_ = false;
         flood_strikes_ = 0;
+        total_pushed_ = 0;
+        total_dropped_ = 0;
     }
 }
 
@@ -122,15 +125,27 @@ void AlgoInstance::clear_overload() {
     flood_strikes_ = 0;
 }
 
+std::size_t AlgoInstance::total_pushed() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return total_pushed_;
+}
+
+std::size_t AlgoInstance::total_dropped() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return total_dropped_;
+}
+
 void AlgoInstance::push_events(const Metavision::EventCD* begin,
                                const Metavision::EventCD* end) {
     std::lock_guard<std::mutex> lk(mutex_);
+    const std::size_t n = static_cast<std::size_t>(end - begin);
+    total_pushed_ += n;
     if (!enabled_ || overloaded_) {
+        // Instance is disabled/overloaded — the entire batch is dropped.
+        total_dropped_ += n;
         return;
     }
     if (backend_) {
-        std::size_t n = static_cast<std::size_t>(end - begin);
-
         // Flood guard (design §5.6.7): cap each batch to the most recent
         // kMaxBatchEvents events. If a batch was capped, increment the strike
         // counter; kFloodStrikes consecutive capped batches mean the algo is
@@ -141,10 +156,13 @@ void AlgoInstance::push_events(const Metavision::EventCD* begin,
         if (n > kMaxBatchEvents) {
             // Keep the most recent events (drop older ones from the front).
             b = end - kMaxBatchEvents;
-            n = kMaxBatchEvents;
+            const std::size_t dropped_front = n - kMaxBatchEvents;
+            total_dropped_ += dropped_front;
             if (++flood_strikes_ >= kFloodStrikes) {
                 overloaded_ = true;
                 enabled_ = false;
+                // The capped batch is also dropped (backend never sees it).
+                total_dropped_ += kMaxBatchEvents;
                 return;
             }
         } else {

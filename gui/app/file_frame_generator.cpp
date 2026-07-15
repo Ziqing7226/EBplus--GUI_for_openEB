@@ -92,6 +92,12 @@ void FileFrameGenerator::pause() {
 void FileFrameGenerator::seek(Metavision::timestamp t_us) {
     if (t_us < 0) t_us = 0;
     cursor_us_ = t_us;
+    // Notify listeners so stateful algorithms can reset their temporal state
+    // before the new (possibly earlier) events arrive. Without this, a
+    // backward seek leaves algorithm timestamps ahead of the new events,
+    // causing them to be ignored and the output to freeze — the same issue
+    // as looped() but triggered by user-initiated cursor jumps.
+    emit seeked(t_us);
     // Render immediately so the user sees the seeked frame.
     render_frame(cursor_us_, cursor_us_ + accumulation_us_);
     if (width_ > 0 && height_ > 0 && !frame_.empty()) {

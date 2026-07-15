@@ -516,15 +516,26 @@ void MainWindow::build_status_bar() {
         constexpr double event_size = sizeof(Metavision::EventCD);
         const double throughput_mbs = last_rate_eps_ * event_size / 1.0e6;
         settings_->information_panel()->set_performance(latency_ms, throughput_mbs);
-        // Algorithm overload status from AlgoBridge.
+        // Algorithm overload status from AlgoBridge. Also compute the max
+        // drop rate across all live instances (total_dropped / total_pushed)
+        // so the user can see if any algorithm is falling behind the event
+        // rate and silently discarding events via the flood guard.
         int active = 0, overloaded = 0;
+        double max_drop_pct = 0.0;
         for (const auto& inst : algo_bridge_.list_live()) {
             if (inst->is_overloaded())
                 ++overloaded;
             else if (inst->is_enabled())
                 ++active;
+            const std::size_t pushed = inst->total_pushed();
+            if (pushed > 0) {
+                const double pct = 100.0 * static_cast<double>(inst->total_dropped())
+                                   / static_cast<double>(pushed);
+                if (pct > max_drop_pct) max_drop_pct = pct;
+            }
         }
         settings_->information_panel()->set_algo_status(active, overloaded);
+        settings_->information_panel()->set_drop_rate(max_drop_pct);
     });
     perf_timer_->start();
 }
@@ -850,6 +861,27 @@ void MainWindow::wire_signals() {
                 }
             });
 
+    // File seek: reset all algorithm instances when the cursor jumps to a
+    // new position. Backward seeks trigger the same stale-state freeze as
+    // looped() — algorithms with monotonically-increasing internal
+    // timestamps (time_surface current_t_, E2VID log_intensity_, etc.)
+    // would ignore new events whose timestamps are below current_t_. Even
+    // forward seeks can leave algorithms with buffered state that doesn't
+    // match the new cursor position, so we reset unconditionally. The XYT
+    // point cloud is cleared to avoid mixing pre-seek and post-seek events
+    // on the Z axis. The seeked signal is emitted BEFORE render_frame()
+    // (see FileFrameGenerator::seek), so the reset takes effect before
+    // the new window's events are pushed via events_window_ready.
+    connect(camera_.frame_pipeline(), &FramePipeline::file_seeked,
+            this, [this](Metavision::timestamp) {
+                for (auto& inst : algo_bridge_.list_live()) {
+                    inst->reset();
+                }
+                if (xyt_display_) {
+                    xyt_display_->clear();
+                }
+            });
+
     // Statistics controller -> panel + status bar
     connect(camera_.statistics(), &StatisticsController::rate_updated, this,
             [this](double rate, double peak, Metavision::timestamp t) {
@@ -1116,10 +1148,10 @@ void MainWindow::on_connect_first() {
     // recorder_.stop() can no longer call stop_log_raw_data() and the file is
     // left without a clean footer (BUG-S2).
     if (recorder_.is_recording()) recorder_.stop();
-    if (!camera_.connect_first_available()) {
-        QMessageBox::information(this, tr("Connect"),
-                                 tr("No live camera available."));
-    }
+    // On failure, CameraController emits disconnected() (UI cleanup) then
+    // error() (which already shows a QMessageBox::warning in the error
+    // handler). No additional dialog needed here — that was a duplicate.
+    camera_.connect_first_available();
 }
 
 void MainWindow::on_disconnect() {
@@ -1261,60 +1293,91 @@ void MainWindow::install_algo_callback() {
             // File playback feeds algorithms from the GUI thread via
             // events_window_ready (synchronous with frame display).
             if (!file_source) {
+                // Apply FilterChain so algorithms AND the XYT display receive
+                // the same orientation (flip/rotate/etc.) as the display
+                // pipeline. Without this, Replace-mode algorithms overwrite
+                // the flipped display frame with an unflipped output, making
+                // flip/rotate invisible (same issue fixed for file mode in
+                // FileFrameGenerator::render_frame).
+                //
+                // Thread safety: FilterChain::process() and has_enabled()
+                // both acquire chain_mutex(), which serialises with GUI-thread
+                // mutations (set_stage_enabled / set_stage_param).  No data
+                // race.
+                const Metavision::EventCD* pb = b;
+                const Metavision::EventCD* pe = e;
+                std::vector<Metavision::EventCD> filtered;
+                auto* fc = camera_.filter_chain();
+                if (fc && fc->has_enabled()) {
+                    fc->process(b, e, filtered);
+                    if (filtered.empty()) {
+                        // All events filtered out — still tick the profiler
+                        // with the raw count so the event rate is accurate.
+                        perf_meter_.tick_events(static_cast<std::size_t>(e - b),
+                                                (e - 1)->t);
+                        return;
+                    }
+                    pb = filtered.data();
+                    pe = pb + filtered.size();
+                }
                 try {
-                    // Push events to every live algorithm instance. AlgoInstance
-                    // is internally mutex-guarded, so this is safe from the SDK
-                    // data thread. The reinterpret_cast inside AlgoBackend is
-                    // valid because gui_algo::Event is layout-compatible with
-                    // Metavision::EventCD (POD x,y,p,t).
+                    // Push (filtered) events to every live algorithm instance.
+                    // AlgoInstance is internally mutex-guarded, so this is safe
+                    // from the SDK data thread. The reinterpret_cast inside
+                    // AlgoBackend is valid because gui_algo::Event is
+                    // layout-compatible with Metavision::EventCD (POD x,y,p,t).
                     auto instances = algo_bridge_.list_live();
                     for (auto& inst : instances) {
                         if (inst->is_enabled()) {
-                            inst->push_events(b, e);
+                            inst->push_events(pb, pe);
                         }
                     }
                 } catch (...) {}
                 // Feed the performance profiler for live-camera latency measurement.
+                // Uses the RAW event count/timestamp so the rate reflects camera
+                // output, not the post-filter count.
                 perf_meter_.tick_events(static_cast<std::size_t>(e - b), (e - 1)->t);
-            }
 
-            // Throttled, downsampled feed to the XYT 3D window. The
-            // SpaceTimeDisplay is a QOpenGLWidget and must only be touched
-            // from the GUI thread, so we marshal via QMetaObject::invokeMethod.
-            // For file sources the XYT feed is driven by events_window_ready
-            // instead (synchronized with playback), so skip it here.
-            if (!file_source && xyt_display_) {
-                const Metavision::timestamp cur_ts = (e - 1)->t;
-                const Metavision::timestamp last =
-                    algo_last_xyt_post_us_.load(std::memory_order_relaxed);
-                if (cur_ts - last >= 16000) {  // 16ms ≈ 60 FPS
-                    algo_last_xyt_post_us_.store(cur_ts, std::memory_order_relaxed);
-                    const std::size_t count = static_cast<std::size_t>(e - b);
-                    auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
-                    if (count > 5000) {
-                        const std::size_t stride = count / 5000;
-                        copy->reserve(count / stride + 1);
-                        for (std::size_t i = 0; i < count; i += stride) {
-                            copy->push_back(b[i]);
-                        }
-                    } else {
-                        copy->assign(b, e);
-                    }
-                    QMetaObject::invokeMethod(this, [this, copy]() {
-                        if (xyt_display_) {
-                            // Sync time_window from algo parameter in case
-                            // the user changed it in the sidebar.
-                            if (xyt_algo_) {
-                                const auto tw = xyt_algo_->get_param("time_window_us");
-                                if (!tw.empty()) {
-                                    xyt_display_->set_time_window_ms(
-                                        static_cast<float>(std::stoi(tw)) / 1000.0f);
-                                }
+                // Throttled, downsampled feed to the XYT 3D window. The
+                // SpaceTimeDisplay is a QOpenGLWidget and must only be touched
+                // from the GUI thread, so we marshal via QMetaObject::invokeMethod.
+                // For file sources the XYT feed is driven by events_window_ready
+                // instead (synchronized with playback), so skip it here.
+                // Uses the filtered pointers (pb/pe) so the 3D point cloud
+                // matches the display orientation.
+                if (xyt_display_) {
+                    const Metavision::timestamp cur_ts = (pe - 1)->t;
+                    const Metavision::timestamp last =
+                        algo_last_xyt_post_us_.load(std::memory_order_relaxed);
+                    if (cur_ts - last >= 16000) {  // 16ms ≈ 60 FPS
+                        algo_last_xyt_post_us_.store(cur_ts, std::memory_order_relaxed);
+                        const std::size_t count = static_cast<std::size_t>(pe - pb);
+                        auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
+                        if (count > 5000) {
+                            const std::size_t stride = count / 5000;
+                            copy->reserve(count / stride + 1);
+                            for (std::size_t i = 0; i < count; i += stride) {
+                                copy->push_back(pb[i]);
                             }
-                            xyt_display_->push_events(copy->data(),
-                                                      copy->data() + copy->size());
+                        } else {
+                            copy->assign(pb, pe);
                         }
-                    }, Qt::QueuedConnection);
+                        QMetaObject::invokeMethod(this, [this, copy]() {
+                            if (xyt_display_) {
+                                // Sync time_window from algo parameter in case
+                                // the user changed it in the sidebar.
+                                if (xyt_algo_) {
+                                    const auto tw = xyt_algo_->get_param("time_window_us");
+                                    if (!tw.empty()) {
+                                        xyt_display_->set_time_window_ms(
+                                            static_cast<float>(std::stoi(tw)) / 1000.0f);
+                                    }
+                                }
+                                xyt_display_->push_events(copy->data(),
+                                                          copy->data() + copy->size());
+                            }
+                        }, Qt::QueuedConnection);
+                    }
                 }
             }
         });

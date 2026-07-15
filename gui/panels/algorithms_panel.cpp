@@ -412,8 +412,10 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_agep_tau_us", "AgePol tau (us)", 'i', "3000", "1000", "100000", 4},
         {"preproc_filter_age_threshold", "AgePol thresh", 'f', "2.0", "0.0", "8.0", 4},
         {"preproc_filter_agep_radius", "AgePol radius", 'i', "2", "1", "5", 4},
-        // Harmonic (mode 5)
-        {"preproc_filter_line_freq_hz", "Harm Hz", 'i', "50", "50", "60", 5},
+        // Harmonic (mode 5) — line_freq_hz is an enum (50 or 60 Hz), not an
+        // arbitrary int. Use type 'e' so the UI presents a combo box and the
+        // backend's penum definition (algo_bridge.cpp) is respected.
+        {"preproc_filter_line_freq_hz", "Harm Hz", 'e', "50", "50", "60", 5},
         {"preproc_filter_notch_q", "Harm Q", 'f', "5.0", "0.1", "100.0", 5},
         {"preproc_filter_harmonic_threshold", "Harm thresh", 'f', "0.1", "0.0", "1.0", 5},
         // Repetitious (mode 6)
@@ -439,6 +441,17 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
             auto* cmb = new QComboBox(gb);
             cmb->addItem("false"); cmb->addItem("true");
             cmb->setCurrentIndex(std::string(p.def) == "true" ? 1 : 0);
+            w = cmb;
+            connect(cmb, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                    [this, pkey, cmb](int) {
+                        apply_global_preproc(pkey, cmb->currentText().toStdString());
+                    });
+        } else if (p.type == 'e') {
+            // Enum: lo and hi are the two valid string values (e.g. "50"/"60").
+            auto* cmb = new QComboBox(gb);
+            cmb->addItem(QString::fromUtf8(p.lo));
+            cmb->addItem(QString::fromUtf8(p.hi));
+            cmb->setCurrentIndex(std::string(p.def) == p.hi ? 1 : 0);
             w = cmb;
             connect(cmb, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
                     [this, pkey, cmb](int) {

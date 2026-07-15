@@ -449,13 +449,14 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
     // all saved parameters.
     const auto algos = obj.value("algorithms").toObject();
     bool ok = true;
+    QStringList unknown_algos;
     for (auto it = algos.begin(); it != algos.end(); ++it) {
         const auto name = it.key().toStdString();
         if (!bridge->find(name)) {
             // Unknown algorithm — skip but flag failure with a descriptive
-            // message so the user knows which entry was rejected (BUG-R1).
+            // message so the user knows which entries were rejected (BUG-R1).
             ok = false;
-            err = tr("Unknown algorithm in config: %1").arg(it.key());
+            unknown_algos << it.key();
             continue;
         }
         const auto entry = it.value().toObject();
@@ -477,6 +478,9 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
             }
             bridge->cache_algo_params(name, cached);
         }
+    }
+    if (!unknown_algos.isEmpty()) {
+        err = tr("Unknown algorithm(s) in config: %1").arg(unknown_algos.join(", "));
     }
     return ok;
 }

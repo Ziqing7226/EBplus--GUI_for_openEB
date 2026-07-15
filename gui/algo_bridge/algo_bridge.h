@@ -95,6 +95,15 @@ public:
     /// Clears the overload flag (called when the user re-enables the algo).
     void clear_overload();
 
+    /// @brief Total number of events pushed to this instance (received via
+    /// push_events) since it was last enabled. Thread-safe.
+    std::size_t total_pushed() const;
+
+    /// @brief Total number of events dropped by the flood guard (capped
+    /// batches, auto-disable) since the instance was last enabled.
+    /// Thread-safe. Drop rate = total_dropped() / total_pushed().
+    std::size_t total_dropped() const;
+
     /// Push events to the algorithm backend. Thread-safe.
     /// A flood guard caps the batch size and auto-disables the instance if
     /// events arrive far faster than the algo can process them, preventing
@@ -143,6 +152,16 @@ private:
     Metavision::timestamp last_batch_t_{0};
     static constexpr std::size_t kMaxBatchEvents = 50000;
     static constexpr int kFloodStrikes = 4;
+
+    // --- Drop-rate telemetry (design §5.6.7) ----------------------------
+    // total_pushed_ = events received via push_events (the denominator).
+    // total_dropped_ = events discarded by the flood guard (capped batches,
+    // auto-disable, or calls while disabled/overloaded). The ratio
+    // total_dropped_/total_pushed_ is surfaced in InformationPanel as the
+    // max drop rate across all live instances. Reset in set_enabled(true)
+    // so re-enabling gives a fresh session.
+    std::size_t total_pushed_{0};
+    std::size_t total_dropped_{0};
 };
 
 /// @brief Unified algorithm-call bridge (design §3.8).
