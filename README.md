@@ -8,7 +8,7 @@ Real-time visualization · camera control · recording & playback · calibration
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
-![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)
 ![Version](https://img.shields.io/badge/version-1.9.0-blue)
 
 ![Main Window](pic/1.9.0.png)
@@ -34,6 +34,8 @@ The whole project is open source — feel free to fork it and adapt it to whatev
 
 ## Quick Start
 
+### Linux
+
 ```bash
 # Build
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -45,7 +47,17 @@ cmake --build build -- -j$(nproc)
 
 That's it. The launcher handles Wayland compatibility, HAL plugin paths, and OpenGL backend selection automatically.
 
-> **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [doc/compile.md](doc/compile.md) for details.
+### macOS Apple Silicon
+
+```bash
+brew install cmake qtbase qtsvg opencv boost libusb protobuf abseil gcc
+./scripts/build_macos_app.sh
+open build/dist/EBplus.app
+```
+
+The macOS packaging flow builds the vendored `openeb/` tree and creates `build/dist/EBplus-macos-arm64.dmg`. It bundles the Qt SVG runtime so the activity-bar icons render correctly. It ships generic OpenEB plugins; vendor plugins such as silkyCam are opt-in local additions. HDF5 is not supported by the current macOS package. See [doc/macos.md](doc/macos.md) for plugin bundling, signing, and verification notes.
+
+> **Requirements**: Ubuntu 22.04+ / Apple Silicon macOS · Qt 6 · OpenCV 4. See [doc/compile.md](doc/compile.md) and [doc/macos.md](doc/macos.md) for details.
 
 ---
 
@@ -164,6 +176,7 @@ GUI-for-openEB/
 ├── models/            # E2VID PyTorch → ONNX conversion
 ├── run.sh             # Launcher (sets env vars)
 ├── doc/               # Design spec + build guide + wiki
+│   └── macos.md       # Apple Silicon app/DMG packaging
 └── pic/               # Screenshots
 ```
 

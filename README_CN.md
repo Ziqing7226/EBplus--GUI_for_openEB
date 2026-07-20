@@ -8,7 +8,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
-![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)
 ![Version](https://img.shields.io/badge/version-1.9.0-blue)
 
 ![主界面](pic/1.9.0.png)
@@ -166,11 +166,67 @@ GUI-for-openEB/
 ├── models/            # E2VID PyTorch → ONNX 转换
 ├── run.sh             # 启动脚本（环境变量设置）
 ├── doc/               # 设计规格 + 编译指南 + wiki
+│   └── macos.md       # macOS Apple Silicon 打包指南
 └── pic/               # 截图
 ```
 
 ---
 
+## 环境要求
+
+| 组件 | 版本 |
+|------|------|
+| 操作系统 | Ubuntu 26.04（或兼容 Linux）；macOS Apple Silicon 见 [doc/macos.md](doc/macos.md) |
+| 编译器 | GCC 15+ |
+| CMake | 4.x |
+| Qt | 6.x（Widgets、OpenGL、OpenGLWidgets） |
+| OpenEB SDK | 5.2.0（已作为子树包含） |
+| OpenCV | 4.x |
+| Python | 3.12（仅在从源码编译 openEB 时需要） |
+
+详见 [doc/compile.md](doc/compile.md) 和 [doc/macos.md](doc/macos.md)，包含 GCC 15 `<cstdint>` 修复、Python 3.12 说明和 macOS 打包流程。
+
+---
+
+## 编译
+
+```bash
+# 1. 确保 openEB SDK 已安装（见 doc/compile.md）
+# 2. 配置
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+# 3. 编译
+cmake --build build -- -j$(nproc)
+```
+
+编译产物输出到 `build/gui/gui_for_openeb`。
+
+---
+
+## macOS Apple Silicon
+
+macOS 打包路径会优先构建仓库内的 `openeb/`，并生成 `.app` 和 `.dmg`：
+
+```bash
+brew install cmake qtbase qtsvg opencv boost libusb protobuf abseil gcc
+./scripts/build_macos_app.sh
+open build/dist/EBplus.app
+```
+
+产物：
+
+- `build/dist/EBplus.app`
+- `build/dist/EBplus-macos-arm64.dmg`
+
+打包会携带 Qt SVG 运行时，确保左侧 activity bar 图标正常显示。默认产物只包含通用 OpenEB plugin；silkyCam 等厂商 plugin 仅可作为本地测试时的显式附加项，确认源代码和再分发条款前不会进入 CI 或公开 DMG：
+
+```bash
+EXTRA_HAL_PLUGIN_PATHS="/path/to/silkycam/hal/plugins" ./scripts/build_macos_app.sh
+```
+
+当前 macOS 包不支持 HDF5；详细说明见 [doc/macos.md](doc/macos.md)，包括签名、notarization、依赖检查、插件分发边界和 HDF5 限制。
+
+---
 ## 运行
 
 ### 方式一：启动脚本（推荐）

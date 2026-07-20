@@ -5,7 +5,17 @@
 
 #include "backend_common.h"
 
+// OpenCV 5.0 moved undistortPoints from calib3d to the new geometry module
+// (opencv2/geometry/3d.hpp, pulled in via the geometry.hpp umbrella). The
+// calib3d.hpp shim shipped by some 5.x packagings (e.g. Homebrew) does not
+// include geometry, so undistortPoints goes missing. Include geometry.hpp
+// directly on v5+; fall back to calib3d.hpp on v4.x. CV_MAJOR_VERSION is
+// provided by backend_common.h's <opencv2/core.hpp>.
+#if CV_MAJOR_VERSION >= 5
+#include <opencv2/geometry.hpp>
+#else
 #include <opencv2/calib3d.hpp>
+#endif
 
 namespace gui {
 namespace backend_detail {

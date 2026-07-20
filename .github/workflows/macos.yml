@@ -1,0 +1,88 @@
+name: macOS
+
+on:
+  pull_request:
+    branches: [develop-MacOS]
+  push:
+    branches: [develop-MacOS]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-app:
+    name: Build Apple Silicon app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: brew install cmake qtbase qtsvg opencv boost libusb protobuf abseil gcc ripgrep
+
+      - name: Build bundle
+        run: CREATE_DMG=OFF ./scripts/build_macos_app.sh
+
+      - name: Verify packaging configuration
+        run: |
+          bash tests/macos/test_plugin_loader_config.sh
+          bash tests/macos/test_release_bundle_config.sh
+          bash tests/macos/test_packaged_bundle.sh
+
+      - name: Upload app artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: EBplus-macos-arm64-app
+          path: build/dist/EBplus.app
+          retention-days: 7
+
+  unit-tests:
+    name: Run Apple Silicon tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: brew install cmake qtbase qtsvg opencv boost libusb protobuf abseil gcc googletest
+
+      - name: Build vendored OpenEB runtime
+        run: CREATE_DMG=OFF ./scripts/build_macos_app.sh
+
+      - name: Configure and run CTest
+        run: |
+          cmake -S . -B build/macos-tests \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DGUI_FOR_OPENEB_BUILD_TESTS=ON \
+            -DGUI_BUILD_TESTS=ON \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/build/openeb-install;$(brew --prefix)"
+          cmake --build build/macos-tests --parallel
+          ctest --test-dir build/macos-tests --output-on-failure
+
+  package-dmg:
+    name: Package Apple Silicon DMG
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: brew install cmake qtbase qtsvg opencv boost libusb protobuf abseil gcc
+
+      - name: Build DMG
+        run: ./scripts/build_macos_app.sh
+
+      - name: Verify DMG and bundle
+        run: |
+          bash tests/macos/test_packaged_bundle.sh
+          hdiutil verify build/dist/EBplus-macos-arm64.dmg
+          shasum -a 256 build/dist/EBplus-macos-arm64.dmg
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EBplus-macos-arm64-dmg
+          path: build/dist/EBplus-macos-arm64.dmg
+          retention-days: 30

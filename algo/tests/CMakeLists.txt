@@ -2,6 +2,17 @@
 
 find_package(GTest REQUIRED)
 
+set(ALGO_TEST_COMPILE_OPTIONS -Wall -Wextra -Werror)
+if(APPLE)
+    # AppleClang diagnoses these existing header-only implementation details
+    # more aggressively than the Linux toolchains used for the project.
+    list(APPEND ALGO_TEST_COMPILE_OPTIONS
+        -Wno-error=unused-private-field
+        -Wno-error=unused-lambda-capture
+        -Wno-error=unused-but-set-variable
+    )
+endif()
+
 # Test executable for Phase 6 (algo/common/) modules.
 add_executable(test_phase6_common
     test_phase6_common.cpp
@@ -13,10 +24,10 @@ target_link_libraries(test_phase6_common PRIVATE
     GTest::Main
 )
 
-target_compile_options(test_phase6_common PRIVATE -Wall -Wextra -Werror)
+target_compile_options(test_phase6_common PRIVATE ${ALGO_TEST_COMPILE_OPTIONS})
 
 include(GoogleTest)
-gtest_discover_tests(test_phase6_common)
+ebplus_gtest_discover_tests(test_phase6_common)
 
 # Test executable for Phase 7-9 (algo/cv/) modules.
 # Depends on algo/cv/ headers (noise_filter, hot_pixel_filter, orientation_filter,
@@ -32,9 +43,9 @@ target_link_libraries(test_phase7_cv PRIVATE
     GTest::Main
 )
 
-target_compile_options(test_phase7_cv PRIVATE -Wall -Wextra -Werror)
+target_compile_options(test_phase7_cv PRIVATE ${ALGO_TEST_COMPILE_OPTIONS})
 
-gtest_discover_tests(test_phase7_cv)
+ebplus_gtest_discover_tests(test_phase7_cv)
 
 # Test executable for Phase 8-10 (algo/cv/ + algo/analytics/) modules.
 # Depends on algo/cv/ and algo/analytics/ headers (line_segment_detector,
@@ -53,9 +64,9 @@ target_link_libraries(test_phase8_10 PRIVATE
     GTest::Main
 )
 
-target_compile_options(test_phase8_10 PRIVATE -Wall -Wextra -Werror)
+target_compile_options(test_phase8_10 PRIVATE ${ALGO_TEST_COMPILE_OPTIONS})
 
-gtest_discover_tests(test_phase8_10)
+ebplus_gtest_discover_tests(test_phase8_10)
 
 # Raw-event integration tests: exercises every streaming algorithm against a
 # real Metavision .raw recording (algo/tests/sparklers.raw, committed). Unlike
@@ -87,7 +98,7 @@ target_compile_definitions(test_raw_algos PRIVATE
 
 target_compile_options(test_raw_algos PRIVATE -Wall -Wextra)
 
-gtest_discover_tests(test_raw_algos)
+ebplus_gtest_discover_tests(test_raw_algos)
 
 # Standalone diagnostic: feed .raw events to EventToVideo and report stats.
 add_executable(test_raw_e2v
@@ -203,4 +214,3 @@ target_link_libraries(test_loop_flip PRIVATE
     MetavisionSDK::stream
     ${OpenCV_LIBS}
 )
-

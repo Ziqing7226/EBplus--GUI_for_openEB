@@ -338,8 +338,8 @@ void MainWindow::build_menus() {
 
     // File
     auto* m_file = mb->addMenu(tr("&File"));
-    m_file->addAction(tr("&Open File..."), this, &MainWindow::on_open_file,
-                      QKeySequence::Open);
+    m_file->addAction(tr("&Open File..."), QKeySequence::Open, this,
+                      &MainWindow::on_open_file);
     m_recent_files_ = m_file->addMenu(tr("Open &Recent"));
     build_recent_files_menu();
     a_save_cfg_ = m_file->addAction(tr("Save Camera Config..."), this, &MainWindow::on_save_config);
@@ -383,7 +383,7 @@ void MainWindow::build_menus() {
         }
     });
     m_file->addSeparator();
-    m_file->addAction(tr("E&xit"), this, &QWidget::close, QKeySequence::Quit);
+    m_file->addAction(tr("E&xit"), QKeySequence::Quit, this, &QWidget::close);
 
     // View — sidebar toggle is no longer here; it lives in the ActivityBar
     // toggle button (§11.2 point 5). Playback panel toggle and layout actions
@@ -401,11 +401,11 @@ void MainWindow::build_menus() {
     m_view->addAction(tr("Save Layout..."), this, &MainWindow::on_save_layout);
     m_view->addAction(tr("Load Layout..."), this, &MainWindow::on_load_layout);
     m_view->addSeparator();
-    m_view->addAction(tr("&Fullscreen"), this,
+    m_view->addAction(tr("&Fullscreen"), QKeySequence("F11"), this,
                       [this]() {
                           if (isFullScreen()) showNormal();
                           else showFullScreen();
-                      }, QKeySequence("F11"));
+                      });
 
     // Theme — top-level dropdown to the right of View (§11.2 point 6).
     // The controller builds its own submenu with radio actions for each

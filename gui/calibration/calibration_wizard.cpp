@@ -23,7 +23,19 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+// OpenCV 5.0 moved the chessboard pattern detection functions
+// (findChessboardCorners, CALIB_CB_*) from calib3d to objdetect. The
+// calib3d.hpp shim shipped by some 5.x packagings (e.g. Homebrew) does not
+// pull in the full objdetect declarations, so findChessboardCorners goes
+// missing. Include <opencv2/core.hpp> first so CV_MAJOR_VERSION is defined,
+// then pick the correct header per OpenCV major version.
+#include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#if CV_MAJOR_VERSION >= 5
+#include <opencv2/objdetect.hpp>
+#else
+#include <opencv2/calib3d.hpp>
+#endif
 
 #include "app/camera_controller.h"
 #include "chessboard_display.h"

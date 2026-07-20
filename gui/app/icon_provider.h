@@ -2,7 +2,7 @@
 //
 // Icons are loaded from the Qt resource system at ":/icons/<name>.svg" and
 // recolored by replacing the SVG's "currentColor" with the requested color,
-// then rendered via QSvgRenderer. This gives cross-platform consistent icons
+// then rendered directly via QSvgRenderer. This gives cross-platform consistent icons
 // that follow the active theme's foreground color.
 //
 // Rendered icons are cached per (name, color) pair so repeated requests for

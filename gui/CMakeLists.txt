@@ -85,6 +85,7 @@ target_link_libraries(gui_core PUBLIC
     Qt6::Widgets
     Qt6::OpenGL
     Qt6::OpenGLWidgets
+    Qt6::Svg
     gui_algo
 )
 
@@ -94,10 +95,25 @@ target_link_libraries(gui_core PUBLIC
 # the include paths propagate even if gui_algo only links base/core/stream.
 if(TARGET MetavisionSDK::hal)
     target_link_libraries(gui_core PUBLIC MetavisionSDK::hal)
+elseif(TARGET Metavision::HAL)
+    target_link_libraries(gui_core PUBLIC Metavision::HAL)
 endif()
 
 # Main executable — entry point only; all logic lives in gui_core.
-add_executable(gui_for_openeb main.cpp)
+if(APPLE)
+    add_executable(gui_for_openeb MACOSX_BUNDLE main.cpp)
+    set_target_properties(gui_for_openeb PROPERTIES
+        OUTPUT_NAME "EBplus"
+        MACOSX_BUNDLE_BUNDLE_NAME "EBplus"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "org.ebplus.gui-for-openeb"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_COPYRIGHT "Copyright EBplus contributors"
+        INSTALL_RPATH "@executable_path/../Frameworks"
+    )
+else()
+    add_executable(gui_for_openeb main.cpp)
+endif()
 
 # Qt resources — theme QSS template + Lucide-style SVG icons (design §3.1/§3.2).
 # AUTORCC compiles these into the binary so the code can load ":/theme/..." and
@@ -109,7 +125,11 @@ target_sources(gui_for_openeb PRIVATE
 
 target_link_libraries(gui_for_openeb PRIVATE gui_core)
 
-install(TARGETS gui_for_openeb RUNTIME DESTINATION bin)
+if(APPLE)
+    install(TARGETS gui_for_openeb BUNDLE DESTINATION . RUNTIME DESTINATION bin)
+else()
+    install(TARGETS gui_for_openeb RUNTIME DESTINATION bin)
+endif()
 
 # --- Unit tests (design §3.11) ---------------------------------------------
 option(GUI_BUILD_TESTS "Build GUI unit tests" ON)
