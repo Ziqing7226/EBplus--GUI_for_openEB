@@ -92,17 +92,10 @@ public:
     /// @brief Returns the underlying Metavision::Camera (nullptr if none).
     Metavision::Camera* camera_handle() { return camera_.get(); }
 
-    /// @brief Last CD event timestamp seen (μs), or -1 if none. Thread-safe.
-    Metavision::timestamp last_timestamp_us() const;
-
     const SensorInfo& sensor_info() const { return sensor_info_; }
     FramePipeline* frame_pipeline() { return &frame_pipeline_; }
     StatisticsController* statistics() { return &statistics_; }
     FilterChain* filter_chain() { return &filter_chain_; }
-
-    /// @brief Saves / loads camera configuration via the SDK's native format.
-    bool save_config(const std::string& path);
-    bool load_config(const std::string& path);
 
     /// @brief Phase 2 facility accessors. Each returns nullptr when no camera
     /// is connected or the connected sensor does not support that feature.
@@ -122,7 +115,6 @@ public:
     /// on start and back to false on stop so the SDK thread only pays the
     /// copy cost while a consumer is actively listening.
     void set_cd_broadcast(bool enabled);
-    bool is_cd_broadcast() const { return cd_broadcast_.load(std::memory_order_relaxed); }
 
 signals:
     void connected(const SensorInfo& info);
@@ -152,7 +144,6 @@ private:
     std::optional<Metavision::CallbackId> status_cb_id_;
     SensorInfo sensor_info_;
     bool is_file_{false};
-    std::atomic<Metavision::timestamp> last_ts_{-1};
 
     FramePipeline frame_pipeline_;
     StatisticsController statistics_;

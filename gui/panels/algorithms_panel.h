@@ -56,6 +56,16 @@ signals:
     /// @brief Emitted when an algorithm is enabled from the sidebar and
     /// needs an AlgoWindow opened (Standalone/Overlay algos need a display).
     void open_algo_window_requested(const std::string& name);
+    /// @brief Emitted (from the SDK data thread, via the bridge's overload
+    /// callback) when the flood guard auto-disables an algorithm. Connected
+    /// queued to on_algorithm_overloaded so the checkbox sync runs on the
+    /// GUI thread (audit §5-E2).
+    void algorithm_overloaded(const QString& name);
+
+private slots:
+    /// Unchecks the sidebar checkbox of a flood-guard-disabled algorithm and
+    /// notifies the user once (audit §5-E2).
+    void on_algorithm_overloaded(const QString& name);
 
 private:
     void build_ui();
@@ -143,8 +153,9 @@ private:
     /// algorithm and are NOT mutually exclusive with it. These checkboxes
     /// are intentionally NOT stored in checkboxes_ (the algorithm-mutex map)
     /// so enabling preprocessing does not disable the main algorithm.
-    /// preproc_downsample defaults to checked (true) to preserve v1.0.0
-    /// behaviour (event_to_video had downsample=true).
+    /// preproc_downsample defaults to UNCHECKED (audit §5-F1): for most
+    /// backends it only thins events (coordinates unchanged), which is a
+    /// silent 4× input loss for detection/tracking algorithms.
     QCheckBox* preproc_filter_cb_{nullptr};
     QCheckBox* preproc_downsample_cb_{nullptr};
     QComboBox* preproc_filter_mode_combo_{nullptr};
@@ -173,6 +184,10 @@ private:
     /// default ROI/fps; set to false after build_ui completes so user-driven
     /// mode switches don't clobber user-customised ROI/fps (BUG-14 fix).
     bool first_init_{true};
+
+    /// One-shot guard for the E2VID "model failed to load" warning
+    /// (audit §5-H1) so the user is not spammed on every model_path edit.
+    bool e2vid_model_error_shown_{false};
 };
 
 } // namespace gui

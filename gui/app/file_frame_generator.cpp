@@ -22,17 +22,38 @@ FileFrameGenerator::~FileFrameGenerator() {
 void FileFrameGenerator::add_events(const Metavision::EventCD* begin,
                                     const Metavision::EventCD* end) {
     if (begin == nullptr || end == nullptr || begin >= end) return;
-    std::lock_guard<std::mutex> lock(mutex_);
-    events_.insert(events_.end(), begin, end);
-    // Duration = last event timestamp. Updated atomically so on_timer()
-    // (GUI thread) can read it without locking.
-    const Metavision::timestamp last_t = (end - 1)->t;
-    Metavision::timestamp cur = duration_us_.load(std::memory_order_relaxed);
-    while (last_t > cur) {
-        if (duration_us_.compare_exchange_weak(cur, last_t,
-                                               std::memory_order_relaxed)) {
-            break;
+    bool just_truncated = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // OOM guard (audit §六-C2): never let the buffer grow past
+        // kMaxBufferedEvents. A batch that would cross the cap is only
+        // appended up to the cap; the rest is dropped and reported once.
+        const std::size_t room = kMaxBufferedEvents - events_.size();
+        const std::size_t n = static_cast<std::size_t>(end - begin);
+        if (room > 0) {
+            const Metavision::EventCD* append_end =
+                begin + std::min(n, room);
+            events_.insert(events_.end(), begin, append_end);
+            // Duration = last buffered event timestamp. Updated atomically
+            // so on_timer() (GUI thread) can read it without locking.
+            const Metavision::timestamp last_t = (append_end - 1)->t;
+            Metavision::timestamp cur =
+                duration_us_.load(std::memory_order_relaxed);
+            while (last_t > cur) {
+                if (duration_us_.compare_exchange_weak(
+                        cur, last_t, std::memory_order_relaxed)) {
+                    break;
+                }
+            }
         }
+        if (n > room && !truncated_) {
+            truncated_ = true;
+            just_truncated = true;
+        }
+    }
+    // Emit outside the lock; Qt queues this to GUI-thread listeners.
+    if (just_truncated) {
+        emit buffer_truncated();
     }
 }
 
@@ -74,10 +95,16 @@ void FileFrameGenerator::set_duration_us(Metavision::timestamp us) {
 void FileFrameGenerator::play() {
     if (playing_) return;
     if (width_ <= 0 || height_ <= 0) return;
-    // If at or past EOF, restart from the beginning.
+    // If at or past EOF, restart from the beginning. Only meaningful once
+    // loading is complete — a cursor parked at the buffer top while the
+    // file is still streaming is NOT EOF (audit §六-P2).
     const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
-    if (dur > 0 && cursor_us_ >= dur) {
+    if (dur > 0 && cursor_us_ >= dur &&
+        loading_complete_.load(std::memory_order_acquire)) {
         cursor_us_ = 0;
+        // Same contract as seek()/looped(): stateful algorithms must reset
+        // before events from the beginning of the file arrive (audit §六-P4).
+        emit seeked(0);
     }
     playing_ = true;
     timer_.start(1000 / static_cast<int>(fps_));
@@ -91,6 +118,11 @@ void FileFrameGenerator::pause() {
 
 void FileFrameGenerator::seek(Metavision::timestamp t_us) {
     if (t_us < 0) t_us = 0;
+    // Clamp to the known duration so a Step past EOF can't park the cursor
+    // beyond the last event (the next Play would then restart from 0 as if
+    // EOF had been reached — audit §六-P5).
+    const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
+    if (dur > 0 && t_us > dur) t_us = dur;
     cursor_us_ = t_us;
     // Notify listeners so stateful algorithms can reset their temporal state
     // before the new (possibly earlier) events arrive. Without this, a
@@ -116,11 +148,6 @@ Metavision::timestamp FileFrameGenerator::duration_us() const {
     return duration_us_.load(std::memory_order_relaxed);
 }
 
-bool FileFrameGenerator::has_events() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return !events_.empty();
-}
-
 std::size_t FileFrameGenerator::event_count() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return events_.size();
@@ -132,17 +159,51 @@ void FileFrameGenerator::clear() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         events_.clear();
+        truncated_ = false;
     }
     duration_us_.store(0, std::memory_order_relaxed);
+    // A new file is about to stream in: suspend EOF handling until the
+    // loader signals completion (audit §六-P2).
+    loading_complete_.store(false, std::memory_order_release);
     cursor_us_ = 0;
+}
+
+bool FileFrameGenerator::is_truncated() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return truncated_;
 }
 
 void FileFrameGenerator::on_timer() {
     if (width_ <= 0 || height_ <= 0) return;
 
+    const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
+
+    // EOF / buffer-wait check (audit §六-P2). duration_us_ is only the max
+    // timestamp buffered SO FAR, so a cursor at/past it means one of two
+    // things:
+    //   - loading complete  → genuine EOF: stop (emit eof_reached) or,
+    //     in loop mode, wrap to 0 (emit looped).
+    //   - still loading     → the cursor merely caught up with the read
+    //     progress: wait silently (no advance, no EOF, no wrap — wrapping
+    //     only makes sense for a complete file) until more events are
+    //     buffered or loading completes. playing_ stays true.
+    if (dur > 0 && cursor_us_ >= dur) {
+        if (!loading_complete_.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (loop_) {
+            cursor_us_ = 0;
+            emit looped();
+        } else {
+            timer_.stop();
+            playing_ = false;
+            emit eof_reached();
+            return;
+        }
+    }
+
     const Metavision::timestamp start = cursor_us_;
     const Metavision::timestamp end = start + accumulation_us_;
-    const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
 
     // Render events in [start, end) to frame_.
     render_frame(start, end);
@@ -159,18 +220,6 @@ void FileFrameGenerator::on_timer() {
 
     cursor_us_ = end;
     emit position_changed(cursor_us_, dur);
-
-    // EOF check: cursor has passed the last event.
-    if (dur > 0 && cursor_us_ >= dur) {
-        if (loop_) {
-            cursor_us_ = 0;
-            emit looped();
-        } else {
-            timer_.stop();
-            playing_ = false;
-            emit eof_reached();
-        }
-    }
 }
 
 void FileFrameGenerator::render_frame(Metavision::timestamp start_us,

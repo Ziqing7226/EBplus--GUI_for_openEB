@@ -99,7 +99,25 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
         }
     });
     // Period <-> Frequency mirror.
-    connect(tout_period_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int us) {
+    // Rollback helper: after a failed set_period(), re-read the hardware's
+    // actual period and mirror it into both widgets so the UI doesn't show
+    // a value that never took effect (audit §六-U3, same pattern as
+    // BiasesPanel::refresh_row_values).
+    auto refresh_period_from_hw = [this]() {
+        if (!camera_) return;
+        auto* to = camera_->trigger_out_facility();
+        if (!to) return;
+        try {
+            const uint32_t p = to->get_period();
+            QSignalBlocker bp(tout_period_);
+            QSignalBlocker bf(tout_freq_);
+            tout_period_->setValue(p > 1000000000u ? 1000000000
+                                                   : static_cast<int>(p));
+            if (p > 0) tout_freq_->setValue(1.0e6 / static_cast<double>(p));
+        } catch (...) {}
+    };
+    connect(tout_period_, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this, refresh_period_from_hw](int us) {
         if (us <= 0) return;
         QSignalBlocker b(tout_freq_);
         tout_freq_->setValue(1.0e6 / static_cast<double>(us));
@@ -107,10 +125,13 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
         auto* to = camera_->trigger_out_facility();
         if (!to) return;
         try { to->set_period(static_cast<uint32_t>(us)); }
-        catch (const std::exception& e) { emit error_message(QString::fromUtf8(e.what())); }
+        catch (const std::exception& e) {
+            emit error_message(QString::fromUtf8(e.what()));
+            refresh_period_from_hw();
+        }
     });
     connect(tout_freq_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-            [this](double hz) {
+            [this, refresh_period_from_hw](double hz) {
         if (hz <= 0.0) return;
         const int us = static_cast<int>(1.0e6 / hz);
         // Defensive: never call set_period(0) — it is invalid and can leave
@@ -124,7 +145,10 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
         auto* to = camera_->trigger_out_facility();
         if (!to) return;
         try { to->set_period(static_cast<uint32_t>(us)); }
-        catch (const std::exception& e) { emit error_message(QString::fromUtf8(e.what())); }
+        catch (const std::exception& e) {
+            emit error_message(QString::fromUtf8(e.what()));
+            refresh_period_from_hw();
+        }
     });
     connect(tout_duty_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             [this](double v) {

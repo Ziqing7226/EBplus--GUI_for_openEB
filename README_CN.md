@@ -4,7 +4,7 @@
 
 基于 [openEB](https://github.com/prophesee-ai/openeb) v5.2.0 的开源 Qt 6 事件相机桌面应用。
 
-实时可视化 · 相机控制 · 录制回放 · 标定 · 59 个算法 · 可定制主题
+实时可视化 · 相机控制 · 录制回放 · 标定 · 36 个算法 · 可定制主题
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
@@ -25,7 +25,7 @@
 - **控制相机** —— biases、ROI、抗闪烁、触发
 - **录制与回放** RAW 事件文件，支持速度控制与跳转
 - **运行算法** —— 噪声过滤、光流、目标跟踪、事件转视频等
-- **标定相机** —— 棋盘格向导
+- **标定相机** —— 闪烁棋盘格向导 + 锐度计
 - **导出** 为 HDF5 / CSV / AVI
 
 本项目完全开源，欢迎 fork 并按需修改。
@@ -79,21 +79,20 @@ cmake --build build -- -j$(nproc)
 ### 事件预处理滤波链
 8 级可叠加阶段，线程安全管线：Polarity Filter、Polarity Invert、Flip X、Flip Y、Rotate、Transpose、Rescale、ROI Filter。从侧栏切换。
 
-### 算法（共 59 项）
-EB plus 内置 **29 个自研算法** + **30 项 openEB 封装能力**，全部注册在统一的 `AlgoBridge` 注册表中。
+### 算法（共 36 项）
+EB plus 内置 **28 个自研算法** + **8 项 openEB 滤波/变换阶段**，全部注册在统一的 `AlgoBridge` 注册表中。
 
 | 类别 | 示例 |
 |------|------|
 | **滤波** | Hot Pixel Filter、Background Mask、Bandpass Filter、Trigger Synced |
 | **运动** | Sparse Optical Flow（4 模式）、Direction Selective、EIS / Optical Gyro |
-| **检测** | Blob Detector、Corner Detector（Harris/FAST/AGAST）、Line Segment（ELiSeD）|
+| **检测** | Blob Detector、Corner Detector（EndStopped/TypeCoincidence/Harris）、Line Segment（ELiSeD）|
 | **跟踪** | Object Tracker（RCT/Median/Kalman/MultiHypothesis）、Hough Circle、Hough Line、Active Marker |
 | **重建** | Event-to-Video —— **E2VID**（默认，DL）、BardowVariational、InteractingMaps |
 | **分析** | Frequency Detector、Flow Statistics、ISI Analyzer、Particle Counter、Auto Bias |
 | **可视化** | Time Surface、XYT 3D 点云、Ultra Slow Motion、Orientation Cluster |
-| **标定** | Intrinsic Calibration（棋盘格 / 圆阵列 / aruco）|
 
-算法**互斥**——启用一个会禁用上一个。每个自研算法支持**全局 ROI**（默认中心 128×128）和共享的 **"ROI → 噪声滤波 → 1/4 下采样"** 预处理阶段以控制计算量。所有算法参数仅在**侧栏**（`AlgorithmsPanel`）调节；算法显示窗口只展示标题与输出，避免两处独立参数面板不同步。
+算法**互斥**——启用一个会禁用上一个。每个自研算法支持**全局 ROI**（默认中心 128×128）和共享的 **"ROI → 噪声滤波 → 1/4 下采样 → 去畸变"** 预处理阶段以控制计算量。噪声滤波、下采样、去畸变三个阶段均**默认关闭**。所有算法参数仅在**侧栏**（`AlgorithmsPanel`）调节；算法显示窗口只展示标题与输出，避免两处独立参数面板不同步。
 
 #### 噪声滤波（共享预处理）
 8 种模式按所选滤波器在侧栏暴露：BAF、STCF、Refractory、DWF、AgePolarity、Harmonic、Repetitious、SpatialBP。
@@ -127,7 +126,7 @@ wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.ta
 cmake --build build -- -j$(nproc)
 ```
 
-完成后启动 EB plus，启用 **Algorithm → Event → Video** 即默认 E2VID 模式（128×128 ROI、30fps、1/4 下采样：64×64 推理 → 上采样回 128×128）。GUI 暴露可调参数：模型路径、auto-HDR、锐化强度、双边滤波。
+完成后启动 EB plus，启用 **Algorithm → Event → Video** 即默认 E2VID 模式（128×128 ROI、24fps）。启用共享的 **1/4 下采样**预处理阶段（默认关闭）可在 64×64 推理 → 上采样回 128×128（约 4 倍加速）。E2VID 推理在**后台 worker 线程**运行，UI 不卡顿；当推理慢于事件率时丢弃最旧批次，状态栏显示 `dropped=N`。GUI 暴露可调参数：模型路径、auto-HDR、锐化强度、双边滤波。
 
 > **无 ONNX Runtime 时**：E2VID 自动回退到启发式模式（体素网格求和 + Sigmoid）。BardowVariational 和 InteractingMaps 模式无需任何额外依赖——BardowVariational 通过 Chambolle-Pock 原始-对偶优化联合估计光流与亮度（六个 λ 正则化项），InteractingMaps 使用六张互连图（I/G/V/F/C/R）交替松弛，旋转由线性最小二乘估计。
 
@@ -159,9 +158,9 @@ GUI-for-openEB/
 │   ├── algo_bridge/      # 算法注册表 + 滤波链
 │   ├── recorder/         # RAW 录制 & 回放
 │   ├── exporter/         # HDF5/CSV/AVI 导出
-│   ├── calibration/      # 内参向导
-│   └── widgets/          # 标题栏、ActivityBar、AlgoWindow、像素探针
-├── algo/              # 自研算法库（29 模块）
+│   ├── calibration/      # 内参向导（闪烁棋盘）+ 锐度计
+│   └── widgets/          # 标题栏、ActivityBar、AlgoWindow
+├── algo/              # 自研算法库（28 模块）
 ├── openeb/            # openEB SDK（Apache 2.0，v5.2.0）
 ├── models/            # E2VID PyTorch → ONNX 转换
 ├── run.sh             # 启动脚本（环境变量设置）

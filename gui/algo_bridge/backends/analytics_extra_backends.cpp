@@ -25,16 +25,25 @@ class ParticleCounterBackend final : public AlgoBackend {
     Metavision::timestamp last_t_{0};
     static constexpr Metavision::timestamp kMinDetectIntervalUs = 50000;
     Metavision::timestamp last_detect_t_{0};
+    // -1 = auto (algo default: sensor-height midpoint). Persisted separately
+    // because the algo clamps negative values to 0 — it cannot represent
+    // "auto" itself (audit §5-B4).
+    int line_y_{-1};
 public:
     ParticleCounterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
-        if (k == "line_y") algo_.set_counting_line_y(to_i(v));
+        if (k == "line_y") {
+            line_y_ = to_i(v, -1);
+            // -1 = auto: keep the algo's ctor default (height/2); only an
+            // explicit non-negative row is forwarded.
+            if (line_y_ >= 0) algo_.set_counting_line_y(line_y_);
+        }
         else if (k == "min_area") algo_.set_min_particle_size_px(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "line_y") return from_i(algo_.counting_line_y());
+        if (k == "line_y") return from_i(line_y_);
         if (k == "min_area") return from_i(algo_.min_particle_size_px());
         return {};
     }
@@ -63,6 +72,13 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_t_ = 0; last_detect_t_ = 0; }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::ParticleCounter(w, h);  // sensor-sized grid
+        // Re-apply an explicit counting line; -1 (auto) keeps the new
+        // sensor's height/2 ctor default.
+        if (line_y_ >= 0) algo_.set_counting_line_y(line_y_);
+    }
 };
 
 /// AutoBiasController backend — bias command as overlay text.
@@ -110,6 +126,11 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_t_ = 0; last_cmd_ = {}; }
+    void set_sensor_dimensions(int w, int h) override {
+        // The algo holds no sensor-sized state (rate controller) — only the
+        // ROI geometry needs updating (audit §5-D1).
+        roi_.set_sensor_dimensions(w, h);
+    }
 };
 
 // ===========================================================================
@@ -156,6 +177,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); last_out_.clear(); passthrough_.clear(); roi_buf_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::TriggerSyncedFilter(w, h);  // per-pixel timestamp grids
+    }
 };
 
 
@@ -214,7 +239,11 @@ public:
     }
     void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
-        roi_.init(w, h);
+        roi_.set_sensor_dimensions(w, h);
+        // The algo keeps sensor-sized internal buffers (audit §5-D2) —
+        // rebuild at the new dimensions (params revert to ctor defaults;
+        // MainWindow resets instances on source change anyway).
+        algo_ = gui_algo::FreqDetector(w, h);
     }
 };
 
@@ -275,6 +304,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_.clear(); last_analyze_t_ = 0; }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::ActiveMarker(w, h);  // sensor-sized cluster grid
+    }
 };
 
 

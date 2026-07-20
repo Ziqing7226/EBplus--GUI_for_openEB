@@ -56,10 +56,6 @@ public:
     /// if the algorithm was unknown).
     std::shared_ptr<AlgoInstance> instance() const { return instance_; }
 
-    /// @brief Returns the status QLabel (the default display widget).
-    /// @note Only valid when no custom display widget has been installed.
-    QLabel* status_label() const { return status_label_; }
-
     /// @brief Returns the frame display widget if one was installed, else
     /// nullptr. Used by MainWindow to route Standalone frame results.
     EventDisplayWidget* frame_display() const;

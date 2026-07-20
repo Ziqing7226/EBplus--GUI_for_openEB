@@ -60,7 +60,6 @@ public:
     void set_frame_rate(std::uint16_t fps);
     void set_multiplier(double m);
 
-    bool is_playing() const { return playing_; }
     bool loop() const { return loop_; }
 
     Metavision::timestamp time_window_us() const;
@@ -70,8 +69,6 @@ public:
     const QString& current_file() const { return path_; }
     Metavision::timestamp duration_us() const;
     Metavision::timestamp position_us() const;
-
-    bool available() const;
 
 signals:
     void opened(Metavision::timestamp duration_us);
@@ -83,6 +80,10 @@ signals:
     void error(const QString& msg);
 
 private:
+    /// True when a file source is connected and playback ops are meaningful.
+    /// Internal helper only — never called from outside this class.
+    bool available() const;
+
     /// @brief Called when the FileFrameGenerator reaches EOF (loop off).
     void on_file_eof();
     /// @brief Called when the FileFrameGenerator emits a position update.

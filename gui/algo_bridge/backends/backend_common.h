@@ -109,8 +109,9 @@ inline bool apply_noise_filter_param(gui_algo::NoiseFilter& nf,
     else if (k == "line_freq_hz") nf.set_line_freq(to_i(v) == 60 ? gui_algo::NoiseFilter::LineFreq::Hz60 : gui_algo::NoiseFilter::LineFreq::Hz50);
     else if (k == "notch_q") nf.set_notch_q(to_d(v));
     else if (k == "harmonic_threshold") nf.set_harmonic_threshold(to_d(v));
-    else if (k == "rep_period_us") nf.set_period_us(to_i(v));
-    else if (k == "rep_tolerance_us") nf.set_tolerance_us(to_i(v));
+    // rep_period_us / rep_tolerance_us are intentionally NOT forwarded: the
+    // algo stores them but never uses them (audit §7.3); the registration
+    // entries were removed.
     else if (k == "rep_ratio_shorter") nf.set_ratio_shorter(to_i(v));
     else if (k == "rep_ratio_longer") nf.set_ratio_longer(to_i(v));
     else if (k == "rep_min_dt_to_store_us") nf.set_min_dt_to_store_us(to_i(v));
@@ -143,8 +144,6 @@ inline std::string get_noise_filter_param(const gui_algo::NoiseFilter& nf,
     if (k == "line_freq_hz") return from_i(nf.line_freq_hz());
     if (k == "notch_q") return from_d(nf.notch_q());
     if (k == "harmonic_threshold") return from_d(nf.harmonic_threshold());
-    if (k == "rep_period_us") return from_i(nf.period_us());
-    if (k == "rep_tolerance_us") return from_i(nf.tolerance_us());
     if (k == "rep_ratio_shorter") return from_i(nf.ratio_shorter());
     if (k == "rep_ratio_longer") return from_i(nf.ratio_longer());
     if (k == "rep_min_dt_to_store_us") return from_i(nf.min_dt_to_store_us());
@@ -380,6 +379,11 @@ struct RoiFilter {
         region.compute(w, h);
         preproc.init(w, h);
     }
+
+    /// @brief Re-initialises the ROI/preproc geometry after a sensor change
+    /// (audit §5-D1). Every backend holding a RoiFilter should call this
+    /// from its set_sensor_dimensions() override.
+    void set_sensor_dimensions(int w, int h) { init(w, h); }
 
     bool set_param(const std::string& k, const std::string& v) {
         if (preproc.set_param(k, v)) return true;

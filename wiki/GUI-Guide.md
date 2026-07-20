@@ -71,7 +71,7 @@ The central `EventDisplayWidget` is an OpenGL 3.3 core-profile widget with a let
 
 Color palettes: Dark, Light, CoolWarm, Gray.
 
-The display also supports overlays drawn by algorithms (bounding boxes, trajectories, vectors, arrows) via `FrameAnnotator`, and a pixel probe (click to inspect an event sequence / ISI / polarity).
+The display also supports overlays drawn by algorithms (bounding boxes, trajectories, vectors, arrows) via `FrameAnnotator`. When an in-place event filter (e.g. Hot Pixel Filter) is enabled, the main display switches to rendering that algorithm's output event stream so the filtering effect is directly visible.
 
 ## Preprocessing Filter Chain
 

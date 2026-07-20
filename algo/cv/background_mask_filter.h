@@ -17,6 +17,10 @@
 // 参数语义变化：background_rate_threshold_hz 现为 jAER 风格的原始计数阈值 (默认 20，
 // 对应 jAER `threshold`)，不再是 Hz；learning_window_s 仍为学习窗口时长 (秒)。新增
 // erosion_size (默认 0=不腐蚀，对应 jAER `erosionSize`)。Header-only.
+//
+// 与 jAER 的其余差异：collect_ 初值 true（启动即自动学习并在窗口结束后
+// 冻结；jAER 默认 false，需手动触发学习）；setThreshold 仅在学习结束后
+// 重算 bitmap（jAER 在 collect 期间也重算）；jAER invertFiltering 未移植。
 
 #ifndef GUI_ALGO_CV_BACKGROUND_MASK_FILTER_H
 #define GUI_ALGO_CV_BACKGROUND_MASK_FILTER_H

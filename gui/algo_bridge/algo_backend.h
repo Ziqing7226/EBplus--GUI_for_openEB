@@ -117,9 +117,21 @@ public:
 
     /// @brief Updates the sensor dimensions and recomputes the ROI.
     /// Called when a new camera/file connects with different dimensions.
-    /// Backends that don't use sensor dimensions (overlay detectors, etc.)
-    /// can use the default no-op implementation.
+    /// This is effectively MANDATORY for every backend that filters by ROI
+    /// or holds sensor-sized buffers (audit §5-D1): the default no-op leaves
+    /// the backend computing its ROI at the stale construction dimensions,
+    /// which silently filters out most events on a smaller sensor.
+    /// Backends holding w×h algorithm state must additionally rebuild or
+    /// resize the algorithm here.
     virtual void set_sensor_dimensions(int /*width*/, int /*height*/) {}
+
+    /// @brief Releases heavyweight resources (ONNX sessions, large frame
+    /// buffers) while the instance is disabled. Called by
+    /// AlgoInstance::set_enabled(false). Backends that release resources
+    /// must rebuild them lazily on the next push/pull after re-enable.
+    /// Default: no-op (lightweight backends keep their state for
+    /// pause-resume).
+    virtual void release_resources() {}
 };
 
 /// @brief 工厂：按算法名字创建具体后端。

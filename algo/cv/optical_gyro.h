@@ -39,8 +39,8 @@ struct MotionEstimate {
 ///
 /// ✅ 移植自 jAER OpticalGyro (net.sf.jaer.eventprocessing.tracking).
 /// Maintains an internal cluster tracker, computes mass-weighted mean
-/// translation from cluster displacements (location - birthLocation
-/// + velocityPPt), solves a joint small-angle least-squares
+/// translation from cluster displacements (location - birthLocation,
+/// OpticalGyro.java:175-176), solves a joint small-angle least-squares
 /// rotation+translation (when rotation_enabled_), low-pass filters the
 /// estimates, and applies the inverse transform to events for EIS.
 class OpticalGyro {
@@ -125,11 +125,10 @@ private:
         float birth_y{0.0F};
         float x{0.0F};
         float y{0.0F};
-        float vx{0.0F};  ///< Per-cluster velocity x (px/us), jAER Cluster.velocity
-        float vy{0.0F};  ///< Per-cluster velocity y (px/us), jAER Cluster.velocity
         float mass{0.0F};
         Metavision::timestamp birth_t{0};
         Metavision::timestamp last_t{0};
+        bool became_visible{false};  ///< jAER: birth reset on first visibility
     };
 
     /// @brief Nearest-neighbour IIR cluster tracker (like jAER RCT mode).
@@ -157,20 +156,8 @@ private:
         } else {
             GyroCluster& c = clusters_[best];
             const float a = location_mixing_factor_;
-            const float old_x = c.x;
-            const float old_y = c.y;
             c.x = c.x * (1.0F - a) + static_cast<float>(e.x) * a;
             c.y = c.y * (1.0F - a) + static_cast<float>(e.y) * a;
-            // Track per-cluster velocity from location changes (jAER
-            // Cluster.velocity). Low-pass filter the instantaneous velocity
-            // (position delta / dt) so noisy events don't dominate.
-            const float dt = static_cast<float>(e.t - c.last_t);
-            if (dt > 0.0F) {
-                const float inst_vx = (c.x - old_x) / dt;
-                const float inst_vy = (c.y - old_y) / dt;
-                c.vx = c.vx * (1.0F - a) + inst_vx * a;
-                c.vy = c.vy * (1.0F - a) + inst_vy * a;
-            }
             c.mass += 1.0F;
             c.last_t = e.t;
         }
@@ -214,21 +201,22 @@ private:
         double px = 0.0, py = 0.0, pxqy = 0.0, pyqx = 0.0;
         int w_sum = 0;
         int n_visible = 0;
-        for (const auto& c : clusters_) {
+        for (auto& c : clusters_) {
             if (!is_visible(c, t)) continue;
+            // jAER RCT.java:2358-2361: 簇首次可见时把 birthLocation 重置为
+            // 当前位置（位移基线不含簇未成熟期的噪声）。
+            if (!c.became_visible) {
+                c.became_visible = true;
+                c.birth_x = c.x;
+                c.birth_y = c.y;
+            }
             const float w = mass_now(c, t);
             weight_sum += w;
-            // velocityPPt: predict the cluster's present position at the
-            // current packet time t from its velocity (jAER velocityPPt =
-            // velocity * (t - lastUpdateT)). Clusters that haven't received
-            // an event recently would otherwise underestimate the
-            // birth→present displacement; extrapolating by velocity * dt
-            // corrects this.
-            const float vpt_dt = static_cast<float>(t - c.last_t);
-            const float vpp_x = c.vx * vpt_dt;
-            const float vpp_y = c.vy * vpt_dt;
-            avgxloc += ((c.x - c.birth_x) + vpp_x) * w;
-            avgyloc += ((c.y - c.birth_y) + vpp_y) * w;
+            // 位移 = location − birthLocation（OpticalGyro.java:175-176）。
+            // jAER 的 velocityPPt 仅用于 transformEvent 的 gainVelocity 项，
+            // 不存在位移的速度外推——此前的自研外推已删除（§二-2.1）。
+            avgxloc += (c.x - c.birth_x) * w;
+            avgyloc += (c.y - c.birth_y) * w;
             // Small-angle LS accumulators (centered on sensor midpoint).
             const double ppx = static_cast<double>(c.birth_x - sx2_);
             const double ppy = static_cast<double>(c.birth_y - sy2_);
@@ -259,6 +247,8 @@ private:
         // Needs ≥3 visible clusters for a non-degenerate solve.
         // Gated by rotation_enabled_ (jAER opticalGyroRotationEnabled defaults
         // to false — pure-translation scenes do not benefit from rotation).
+        // 差异（§二-2.1）：rotation 开启但可见簇 <3（或 LS 近奇异）时，jAER
+        // 完全冻结估计；本实现仍用上方 mass-weighted 平移更新滤波器。
         if (rotation_enabled_ && n_visible >= 3) {
             const double aden = (qy2 + qx2)
                 - ((qy * qy + qx * qx) / static_cast<double>(w_sum));
@@ -320,12 +310,17 @@ private:
         }
     }
 
-    /// @brief IIR filter coefficient: alpha = 1 - exp(-dt / tau).
-    /// Equivalent to jAER LowpassFilter.filter(val, t).
+    /// @brief IIR filter coefficient, jAER LowpassFilter 线性式：
+    /// fac = min(1, dt_us / (tau_ms*1000))；dt <= 0 时 fac = 0 保持原值
+    /// （此前的 1-exp(-dt/tau) 指数式在 dt>=tau 时只走 63%，且时间回退时
+    /// 会跳变到新值——均与 jAER 不同，§二-2.1）。
     float compute_filter_alpha(Metavision::timestamp t) {
-        if (last_filter_t_ == 0 || t <= last_filter_t_) return 1.0F;
-        const float dt_ms = static_cast<float>(t - last_filter_t_) * 1e-3F;
-        return 1.0F - std::exp(-dt_ms / smoothing_ms_);
+        if (last_filter_t_ == 0) return 1.0F;  // first sample: initialise
+        if (t <= last_filter_t_) return 0.0F;  // jAER: dt<=0 → keep old value
+        const float dt_us = static_cast<float>(t - last_filter_t_);
+        const float tau_us = smoothing_ms_ * 1000.0F;
+        const float fac = dt_us / tau_us;
+        return fac > 1.0F ? 1.0F : fac;
     }
 
     int width_;
@@ -333,8 +328,10 @@ private:
     float strength_;
     float smoothing_ms_;
     bool rotation_enabled_{false};  // jAER opticalGyroRotationEnabled default
-    const float sx2_;  // sensor center x (for centering coordinates)
-    const float sy2_;  // sensor center y
+    float sx2_;  // sensor center x (for centering coordinates)
+    float sy2_;  // sensor center y
+    // NOTE: non-const so the class stays move-assignable (backends reconstruct
+    // it in place on sensor-dimension changes).
 
     // Filtered cumulative motion estimates (jAER translation / rotationAngle).
     float trans_x_filt_{0.0F};
@@ -346,7 +343,10 @@ private:
     float rot_for_transform_{0.0F};
     Metavision::timestamp last_filter_t_{0};
 
-    // Cluster tracker parameters (jAER RectangularClusterTracker defaults).
+    // Cluster tracker parameters — 自研默认值，与 jAER RectangularClusterTracker
+    // 不同（§二-2.1）：mixing 0.2 vs jAER 0.05（位置响应慢 4 倍）、
+    // mass_decay_tau 100000 vs 10000、min_visible_mass 2.0 vs 10~30、
+    // max_clusters 100 vs 10；cluster_time_us_ 在 jAER 中无对应物。
     int cluster_size_px_{15};
     int cluster_time_us_{10000};
     int mass_decay_tau_us_{100000};

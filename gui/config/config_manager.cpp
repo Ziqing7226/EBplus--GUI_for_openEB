@@ -467,7 +467,23 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
                 live->set_param(pit.key().toStdString(), pit.value().toString().toStdString());
             }
             if (entry.contains("enabled")) {
-                live->set_enabled(entry.value("enabled").toBool());
+                if (entry.value("enabled").toBool()) {
+                    // Enforce the algorithm mutex (audit §5-E4): enabling one
+                    // algorithm from a config must first disable every other
+                    // live instance, so two enabled=true entries can never
+                    // run simultaneously. Note: this path cannot sync the
+                    // sidebar checkbox (ConfigManager has no panel access) —
+                    // the panel sync is handled by the MainWindow/panel
+                    // integration layer.
+                    for (auto& other : bridge->list_live()) {
+                        if (other && other->info().name != name) {
+                            other->set_enabled(false);
+                        }
+                    }
+                    live->set_enabled(true);
+                } else {
+                    live->set_enabled(false);
+                }
             }
         } else {
             // No live instance — cache the params so create() can replay

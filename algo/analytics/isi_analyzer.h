@@ -83,13 +83,13 @@ public:
         const int pad = 30;
         const int w = img.cols - 2 * pad;
         const int hh = img.rows - 2 * pad;
-        const int bw = w / n;
+        const int bw = std::max(w / n, 1);  // §四-低14: bw-1 must stay > 0
         for (int i = 0; i < n; ++i) {
             const int bh = static_cast<int>(
                 static_cast<double>(counts[i]) / static_cast<double>(max_c) * hh);
             const int x = pad + i * bw;
             const int y = img.rows - pad - bh;
-            cv::rectangle(img, cv::Rect(x, y, bw - 1, bh),
+            cv::rectangle(img, cv::Rect(x, y, std::max(bw - 1, 1), bh),
                           cv::Scalar(100, 200, 255), cv::FILLED);
         }
         cv::putText(img, "ISI histogram", cv::Point(pad, pad / 2),

@@ -2,6 +2,7 @@
 
 #include "exporter_controller.h"
 
+#include <QFile>
 #include <QMetaObject>
 
 #include <algorithm>
@@ -41,6 +42,10 @@ bool ExporterController::start(const ExportParams& params) {
         } catch (const std::exception& e) {
             QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
                 emit failed(msg);
+            }, Qt::QueuedConnection);
+        } catch (...) {
+            QMetaObject::invokeMethod(this, [this]() {
+                emit failed(tr("Export failed with an unknown error."));
             }, Qt::QueuedConnection);
         }
         running_ = false;
@@ -128,8 +133,10 @@ void ExporterController::run_hdf5(const ExportParams& p) {
     }
 
     // Distinguish cancel from completion: a cancelled export must not emit
-    // completed (the output file is partial/truncated).
+    // completed (the output file is partial/truncated). Delete the partial
+    // file so the user can't mistake it for a valid recording (audit §六-E4).
     if (cancel_.load(std::memory_order_acquire)) {
+        QFile::remove(p.output_path);
         QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
             emit failed(msg.empty() ? tr("Export cancelled.")
                                     : QString::fromUtf8(msg.c_str()));
@@ -197,7 +204,18 @@ void ExporterController::run_avi(const ExportParams& p) {
         return;
     }
 
-    auto gen = std::make_unique<Metavision::CDFrameGenerator>(w, h);
+    // process_all_frames=true: with the default (false) the generator only
+    // encodes the LAST frame of each buffered batch — intermediate frames are
+    // skipped (video duration compressed) and stop() aborts with buffered
+    // events still unprocessed (video tail missing). See audit §六-E1.
+    //
+    // Caveat: with process_all_frames=true the generator's internal
+    // events_back_ queue grows whenever encoding is slower than reading
+    // (real_time_playback=false reads as fast as possible), so exporting
+    // very long files can grow memory significantly until a feed-throttling
+    // mechanism is added (out of scope for this fix round).
+    auto gen = std::make_unique<Metavision::CDFrameGenerator>(
+        w, h, /*process_all_frames=*/true);
     gen->set_color_palette(p.color ? Metavision::ColorPalette::Dark : Metavision::ColorPalette::Gray);
     gen->set_display_accumulation_time_us(
         static_cast<Metavision::timestamp>(p.accumulation_us));
@@ -286,6 +304,8 @@ void ExporterController::run_avi(const ExportParams& p) {
     recorder.stop();
 
     if (cancel_.load(std::memory_order_acquire)) {
+        // Partial/truncated AVI — delete it (audit §六-E4).
+        QFile::remove(p.output_path);
         QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
             emit failed(msg.empty() ? tr("Export cancelled.")
                                     : QString::fromUtf8(msg.c_str()));

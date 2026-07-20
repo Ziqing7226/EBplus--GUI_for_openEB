@@ -17,16 +17,20 @@
 //     (sx,sy-1)、(sx-1,sy)、(sx-1,sy-1)，带边界守卫（与 jAER blurring()
 //     一致）。每个被驱动的神经元按 LIF 积分：膜电位 +1.0 并按 tau 指数
 //     泄漏，越过阈值即发放并部分下降（保留残余电位）。
-//   - 初始膜电位 = initial_potential_percent * threshold / 100（jAER
-//     MPInitialPercnetTh，默认 50% → threshold=15 时为 7.5）。
+//   - 初始膜电位 = initial_potential_percent * threshold / 100（有意修正
+//     jAER LIFNeuron.reset 漏除 100 的上游 bug：jAER 实为
+//     MPInitialPercnetTh * MPThreshold，默认 50×15=750；本实现按百分数
+//     语义计算，默认 50% → 7.5）。
 //   - 发放后处理 = MP -= max(jump_after_firing_percent * threshold / 100,
 //     1.0)（jAER MPJumpAfterFiringPercentTh，默认 10% → 1.5，下限 1.0）。
 //   - 非单调时间戳：时间回退时 MP=0（与 jAER incrementMP 一致）。
 //
 // 在每个事件包处理完成后，把本包内所有发放神经元收集为二值掩码，对其做
-// 4-连通连通分量标记（迭代 BFS，与 jAER 的 4-邻接 inside/border 分组语义
-// 一致），每个连通分量即一个簇：质心按发放次数加权（神经元中心像素坐标，
-// 对应 jAER NeuronGroup 的 effectiveMP=numSpikes 加权 location）、记录
+// 4-连通连通分量标记（以 4-CC 近似 jAER 的 inside/border 全包围分组：jAER
+// 只在发放神经元的全部邻居也在发放时才成组，本实现稀疏发放时会产生
+// jAER 没有的小簇），每个连通分量即一个簇：质心按发放次数加权（神经元中心像素坐标，
+// 对应 jAER NeuronGroup 的 effectiveMP=numSpikes 加权 location；jAER 还有
+// 按 lastEventTimestamp 差的 exp(dt/tau) 时间折扣因子，未移植）、记录
 // 神经元数 (size)、总发放数 (mass)、外接框；再按最近邻匹配跨包跟踪并
 // 估计速度。输出: vector<LifCluster>，每个含
 // (track_id, cx, cy, size, mass, vx, vy)。Header-only.

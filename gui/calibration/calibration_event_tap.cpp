@@ -31,11 +31,15 @@ void CalibrationEventTap::attach(CameraController* camera) {
         // DirectConnection: on_events_ready() runs on the SDK streaming
         // thread (the emitter's thread), NOT the GUI thread. This avoids
         // posting batches to the GUI event queue, which would grow without
-        // bound when findChessboardCorners blocks the GUI thread and OOM-kill
-        // the process. The slot is thread-safe (mutex_ only, no GUI access).
+        // bound when the worker thread falls behind and the GUI thread stops
+        // draining, OOM-killing the process. The slot is thread-safe
+        // (mutex_ only, no GUI access).
+        // UniqueConnection (audit §六-B1): the wizard re-attaches on every
+        // set_camera() call; without it each wizard reopen would connect one
+        // more copy of the slot and inject every event batch N times.
         connect(camera_, &CameraController::cd_events_ready,
                 this, &CalibrationEventTap::on_events_ready,
-                Qt::DirectConnection);
+                Qt::ConnectionType(Qt::DirectConnection | Qt::UniqueConnection));
     }
 }
 
@@ -71,12 +75,19 @@ std::size_t CalibrationEventTap::drain_and_pick_max_window(
         local.swap(buffer_);
     }
 
-    // Events arrive SDK-sorted by timestamp. Slice [t0, t0+span_us) into
-    // span_us/window_us sub-windows and find the one with the most events.
+    // Events arrive SDK-sorted by timestamp. Instead of slicing
+    // [t0, t0+span_us) into fixed window_us-wide sub-windows (which anchors
+    // the grid to the buffer's first event and can permanently split the
+    // 20 Hz flip burst across a boundary — audit §9.2-F), count events into
+    // kBucketUs-wide fine buckets and take the maximum sliding sum of
+    // window_us/kBucketUs consecutive buckets. This lets the optimal 1 ms
+    // window start at any 100 µs offset, so a burst straddling any fixed
+    // boundary is still captured whole. Complexity is O(N) + O(buckets).
     const Metavision::timestamp t0 = local.front().t;
     const Metavision::timestamp t_end = t0 + span_us;
-    const int n_windows = static_cast<int>(span_us / window_us);
-    if (n_windows <= 0) return 0;
+    const int n_buckets = static_cast<int>(span_us / kBucketUs);
+    const int win_buckets = std::max(1, static_cast<int>(window_us / kBucketUs));
+    if (n_buckets <= 0) return 0;
 
     // Find the range of events within [t0, t_end).
     auto begin_it = local.begin();
@@ -85,27 +96,34 @@ std::size_t CalibrationEventTap::drain_and_pick_max_window(
             return e.t < t;
         });
 
-    // Single pass: for each event in [t0, t_end), increment its window's
-    // counter. Track the max-count window. Then copy that window's events.
-    std::vector<std::size_t> counts(static_cast<std::size_t>(n_windows), 0);
-    std::size_t best_idx = 0;
-    std::size_t best_count = 0;
+    // Single pass: bucket the events in [t0, t_end).
+    std::vector<std::size_t> buckets(static_cast<std::size_t>(n_buckets), 0);
     for (auto it = begin_it; it != end_it; ++it) {
         const Metavision::timestamp dt = it->t - t0;
         if (dt < 0) continue;
-        const int w = static_cast<int>(dt / window_us);
-        if (w < 0 || w >= n_windows) continue;
-        const std::size_t idx = static_cast<std::size_t>(w);
-        const std::size_t c = ++counts[idx];
-        if (c > best_count) {
-            best_count = c;
-            best_idx = idx;
+        const int b = static_cast<int>(dt / kBucketUs);
+        if (b < 0 || b >= n_buckets) continue;
+        ++buckets[static_cast<std::size_t>(b)];
+    }
+
+    // Sliding sum of win_buckets consecutive buckets; keep the max.
+    std::size_t run = 0;
+    for (int i = 0; i < std::min(win_buckets, n_buckets); ++i)
+        run += buckets[static_cast<std::size_t>(i)];
+    int best_start = 0;
+    std::size_t best_count = run;
+    for (int i = win_buckets; i < n_buckets; ++i) {
+        run += buckets[static_cast<std::size_t>(i)];
+        run -= buckets[static_cast<std::size_t>(i - win_buckets)];
+        if (run > best_count) {
+            best_count = run;
+            best_start = i - win_buckets + 1;
         }
     }
 
     // Copy the best window's events into out.
     if (best_count > 0) {
-        const Metavision::timestamp w_start = t0 + static_cast<Metavision::timestamp>(best_idx) * window_us;
+        const Metavision::timestamp w_start = t0 + static_cast<Metavision::timestamp>(best_start) * kBucketUs;
         const Metavision::timestamp w_end = w_start + window_us;
         auto w_begin = std::lower_bound(local.begin(), local.end(), w_start,
             [](const Metavision::EventCD& e, Metavision::timestamp t) {

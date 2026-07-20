@@ -94,6 +94,13 @@ bool PlaybackController::open_file(const QString& path) {
     if (!controller_->connect_file(path.toStdString())) {
         return false;
     }
+    // connect_file() tore down the previous source (and its
+    // FileFrameGenerator) via teardown(). Reset any stale playback state so
+    // the play() below is not short-circuited by a leftover playing_ flag
+    // from the previous file (switching files mid-playback otherwise left
+    // the new file loaded but never playing — audit §六-P1).
+    playing_ = false;
+    at_eof_ = false;
     // Start the camera so events flow into the FileFrameGenerator buffer.
     // With real_time_playback=false, all events arrive in ~10ms regardless
     // of file duration.

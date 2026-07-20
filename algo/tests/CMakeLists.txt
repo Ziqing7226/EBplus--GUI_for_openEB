@@ -39,7 +39,7 @@ gtest_discover_tests(test_phase7_cv)
 # Test executable for Phase 8-10 (algo/cv/ + algo/analytics/) modules.
 # Depends on algo/cv/ and algo/analytics/ headers (line_segment_detector,
 # hough_*, orientation_cluster, cluster_lif, background_mask_filter,
-# perspective_undistort, trigger_synced_filter, bandpass_filter, optical_gyro,
+# trigger_synced_filter, bandpass_filter, optical_gyro,
 # ultra_slow_motion, xyt_visualizer, overlay, time_surface, active_marker,
 # event_to_video, flow_statistics, isi_analyzer, particle_counter,
 # auto_bias_controller, freq_detector).

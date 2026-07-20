@@ -7,9 +7,20 @@
 // OpenCV corner detection — so the camera "sees" the chessboard for free,
 // without any APS frame grabber.
 //
-// The board geometry is computed from the target screen's pixel dimensions
-// and physical DPI so the reported square_size_mm is physically meaningful
-// for cv::calibrateCamera's object-point scale.
+// Board geometry is computed from the widget's own rect() (resizeEvent), so
+// fullscreen and windowed modes are both correct (audit §9.2-B / §六-B5 —
+// the previous code computed origin from the screen's availableGeometry but
+// painted in widget coordinates, misplacing the board in windowed mode).
+// Only the physical-DPI lookup for square_size_mm still uses the screen.
+//
+// HUD (audit §9.2-C): a narrow semi-transparent band below the board area
+// carries a progress bar, a status line, the board spec and a Start/Stop
+// button, so the full capture workflow is usable while the board covers the
+// wizard dialog in fullscreen. The HUD lives OUTSIDE the board rect so the
+// 20 Hz flip repaint (scoped to the board rect) never touches it; its
+// controls update only on state changes. Note the HUD is on the same screen
+// the camera watches — it is kept small and edge-hugging on purpose; users
+// should frame the camera on the board, not the band.
 //
 // Rendering: squares are drawn directly in paintEvent via fillRect — no
 // pre-rendered full-screen pixmaps. On each flip, update() is scoped to the
@@ -20,8 +31,12 @@
 #ifndef GUI_CALIBRATION_CHESSBOARD_DISPLAY_H
 #define GUI_CALIBRATION_CHESSBOARD_DISPLAY_H
 
+#include <QPointer>
 #include <QWidget>
 
+class QLabel;
+class QProgressBar;
+class QPushButton;
 class QScreen;
 class QTimer;
 
@@ -45,6 +60,11 @@ public:
     void start_flicker();
     void stop_flicker();
 
+    /// @brief HUD push interface (called by the wizard, GUI thread only).
+    void set_capturing(bool capturing);
+    void set_progress(int accepted, int target);
+    void set_status(const QString& text);
+
     /// @brief Inner-corner count the board was built for (OpenCV convention).
     int inner_cols() const { return inner_cols_; }
     int inner_rows() const { return inner_rows_; }
@@ -53,12 +73,20 @@ public:
     /// @brief Computed square side in pixels.
     int square_size_px() const { return square_size_px_; }
 
+signals:
+    /// @brief Emitted by the HUD Start/Stop button and the S shortcut.
+    /// The wizard connects these to its capture start/stop slots.
+    void startRequested();
+    void stopRequested();
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
 private:
     void recompute_geometry();
+    void update_spec_label();
 
     int inner_cols_{9};
     int inner_rows_{6};
@@ -70,10 +98,19 @@ private:
     int board_h_px_{0};
 
     bool inverted_{false};
+    bool capturing_{false};   ///< HUD Start/Stop toggle state (S shortcut).
     bool fullscreen_{true};  ///< Defaults to fullscreen — the board must fill
                               ///< the screen for the camera to see it whole.
     QTimer* timer_{nullptr};
-    QScreen* attached_screen_{nullptr};
+    QPointer<QScreen> attached_screen_;  ///< QPointer (audit §六-B6): a hot-
+                                         ///< unplugged screen must not dangle.
+
+    // HUD band (child widgets, positioned below the board area).
+    QWidget*      hud_{nullptr};
+    QProgressBar* hud_progress_{nullptr};
+    QLabel*       hud_status_{nullptr};
+    QLabel*       hud_spec_{nullptr};
+    QPushButton*  hud_toggle_btn_{nullptr};
 };
 
 } // namespace gui

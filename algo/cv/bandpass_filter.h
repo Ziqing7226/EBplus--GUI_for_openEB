@@ -56,9 +56,12 @@ public:
     /// @return The filtered event-rate sample.
     double add_events(std::size_t n_events, Metavision::timestamp t) {
         if (n_events == 0) return value_;
+        // 首批样本只初始化 last_t_ 后被丢弃（jAER 会用首样本初始化 LP；
+        // 此处首样本不产生输出，§一-1.8）。
         if (last_t_ < 0) { last_t_ = t; return value_; }
         const auto dt = t - last_t_;
         last_t_ = t;
+        // dt <= 0（同时间戳/时间回退）直接返回旧值，不更新滤波器状态。
         if (dt <= 0) return value_;
         const double instant =
             static_cast<double>(n_events) / (static_cast<double>(dt) * 1.0e-6);

@@ -61,6 +61,16 @@ void AlgorithmsPanel::build_ui() {
         return;
     }
 
+    // Flood-guard sync (audit §5-E2): when an instance auto-disables on a
+    // sustained event-rate spike, the bridge invokes this callback from the
+    // SDK data thread; the queued signal unchecks the sidebar checkbox on
+    // the GUI thread so the UI cannot claim the algo is still running.
+    bridge_->set_overload_callback([this](const std::string& name) {
+        emit algorithm_overloaded(QString::fromStdString(name));
+    });
+    connect(this, &AlgorithmsPanel::algorithm_overloaded, this,
+            &AlgorithmsPanel::on_algorithm_overloaded, Qt::QueuedConnection);
+
     // Group algorithms by category. Only self-developed algorithms are shown
     // here: OpenEB-wrapped filters have no real backend in AlgoBridge and are
     // controlled via the Preprocess menu / PreprocessingPanel instead.
@@ -74,7 +84,6 @@ void AlgorithmsPanel::build_ui() {
     const QMap<QString, QString> cat_titles = {
         {"cv",              tr("Computer Vision")},
         {"analytics",       tr("Analytics")},
-        {"calibration",     tr("Calibration")},
     };
 
     for (auto it = by_cat.constBegin(); it != by_cat.constEnd(); ++it) {
@@ -91,6 +100,11 @@ void AlgorithmsPanel::build_ui() {
             if (a->source != "self") continue;
 
             auto* cb = new QCheckBox(QString::fromStdString(a->display_name), gb);
+            // Surface registered caveats (e.g. trigger_synced: needs an
+            // external trigger source, output always empty — §5-G3).
+            if (!a->description.empty()) {
+                cb->setToolTip(QString::fromStdString(a->description));
+            }
             checkboxes_[a->name] = cb;
             form->addRow(cb);
 
@@ -173,8 +187,19 @@ void AlgorithmsPanel::build_ui() {
                             });
                 } else if (p.type == "float") {
                     auto* sp = new QDoubleSpinBox(params_host);
-                    sp->setRange(-1e9, 1e9);
+                    // Apply the registered min/max (audit §5-B1): clamping in
+                    // the GUI keeps the displayed value equal to the value
+                    // the algorithm actually runs with (previously the GUI
+                    // allowed ±1e9 and the algo clamped silently, so the two
+                    // diverged). Step is 1/100 of the registered range.
+                    bool oklo = false, okhi = false;
+                    const double lo = QString::fromStdString(p.min_value).toDouble(&oklo);
+                    const double hi = QString::fromStdString(p.max_value).toDouble(&okhi);
+                    const double rlo = oklo ? lo : -1e9;
+                    const double rhi = okhi ? hi : 1e9;
+                    sp->setRange(rlo, rhi);
                     sp->setDecimals(6);
+                    sp->setSingleStep((rhi - rlo) / 100.0);
                     sp->setValue(QString::fromStdString(p.default_value).toDouble());
                     w = sp;
                     connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -335,7 +360,7 @@ void AlgorithmsPanel::apply_global_roi() {
     const std::string w = std::to_string(roi_w_sp_->value());
     const std::string h = std::to_string(roi_h_sp_->value());
     // Delegate to the bridge, which iterates every live self-developed
-    // instance (skipping OpenEB wrappers and calibration algos) AND caches
+    // instance (skipping the OpenEB event-transform stages) AND caches
     // the values so future instances created via create() inherit the
     // current ROI (N3).
     bridge_->apply_global_roi(enabled, x, y, w, h);
@@ -360,10 +385,14 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_cb_->setChecked(false);
     form->addRow(preproc_filter_cb_);
 
-    // 1/4 downsample (default ON to preserve v1.0.0 behaviour where
-    // event_to_video had downsample=true).
+    // 1/4 downsample (default OFF — audit §5-F1): for most backends this
+    // only THINS events (coordinates unchanged, 3/4 of the input silently
+    // discarded); only the E2VID/ISI/TimeSurface/Hough backends actually
+    // halve coordinates. Default-ON was a silent 4× input loss.
     preproc_downsample_cb_ = new QCheckBox(tr("1/4 Downsample"), gb);
-    preproc_downsample_cb_->setChecked(true);
+    preproc_downsample_cb_->setChecked(false);
+    preproc_downsample_cb_->setToolTip(tr(
+        "对大多数算法仅抽稀事件（坐标不变）；仅 E2VID/ISI/TimeSurface/Hough 系做坐标减半"));
     form->addRow(preproc_downsample_cb_);
 
     // Undistort (default off). Applied AFTER filter + downsample. Loads the
@@ -411,6 +440,12 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
 
     // Parameter definitions: {key, display, type, def, lo, hi, mode}
     // type: "i"=int, "f"=float, "b"=bool
+    // SYNC (audit §5-F2): this table mirrors the preproc_params() registry in
+    // gui/algo_bridge/algo_bridge.cpp — the bridge registry is the single
+    // source of truth; any addition/removal/default change must be mirrored
+    // here. rep_period_us/rep_tolerance_us are intentionally absent (algo
+    // stores but never uses them); rep_averaging_samples is absent because
+    // the algo exposes no setter for it.
     struct PDef {
         const char* key;
         const char* disp;
@@ -432,7 +467,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         // Refractory (mode 2)
         {"preproc_filter_refractory_us", "Refractory (us)", 'i', "1000", "100", "100000", 2},
         // DWF (mode 3)
-        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "100", 3},
+        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "1024", 3},
         {"preproc_filter_dwf_dist_threshold", "DWF dist", 'i', "2", "1", "1024", 3},
         {"preproc_filter_dwf_min_correlated", "DWF min corr", 'i', "2", "1", "8", 3},
         {"preproc_filter_dwf_double_mode", "DWF double", 'b', "false", "", "", 3},
@@ -446,9 +481,8 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_line_freq_hz", "Harm Hz", 'e', "50", "50", "60", 5},
         {"preproc_filter_notch_q", "Harm Q", 'f', "5.0", "0.1", "100.0", 5},
         {"preproc_filter_harmonic_threshold", "Harm thresh", 'f', "0.1", "0.0", "1.0", 5},
-        // Repetitious (mode 6)
-        {"preproc_filter_rep_period_us", "Rep period (us)", 'i', "5000", "1000", "1000000", 6},
-        {"preproc_filter_rep_tolerance_us", "Rep tol (us)", 'i', "1000", "100", "10000", 6},
+        // Repetitious (mode 6). rep_period_us/rep_tolerance_us are omitted:
+        // the algo stores them but never uses them (audit §7.3).
         {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "10", "1", "100", 6},
         {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "10", "1", "100", 6},
         {"preproc_filter_rep_min_dt_to_store_us", "Rep min dt (us)", 'i', "1000", "0", "1000000", 6},
@@ -497,8 +531,12 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
                     });
         } else { // 'f'
             auto* sp = new QDoubleSpinBox(gb);
-            sp->setRange(-1e9, 1e9);
+            // Apply the registered min/max (audit §5-B1); step = range/100.
+            const double lo = std::string(p.lo).empty() ? -1e9 : std::stod(p.lo);
+            const double hi = std::string(p.hi).empty() ? 1e9 : std::stod(p.hi);
+            sp->setRange(lo, hi);
             sp->setDecimals(6);
+            sp->setSingleStep((hi - lo) / 100.0);
             sp->setValue(std::stod(p.def));
             w = sp;
             connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -599,7 +637,32 @@ void AlgorithmsPanel::apply_param(const std::string& algo_name,
                 }
             }
         }
+        // §5-H1: a failed ONNX load silently falls back to the heuristic
+        // path — warn once per panel session so the user does not mistake
+        // the heuristic output for "E2VID quality".
+        if (it->second->get_param("model_loaded") == "false" &&
+            !e2vid_model_error_shown_) {
+            e2vid_model_error_shown_ = true;
+            emit error_message(tr("E2VID model failed to load — using the "
+                                  "heuristic fallback reconstruction."));
+        }
     }
+}
+
+void AlgorithmsPanel::on_algorithm_overloaded(const QString& name) {
+    // Flood guard tripped (audit §5-E2): the instance already disabled
+    // itself. Clear the overload flag (so MainWindow's per-frame statusBar
+    // warning stops), uncheck the sidebar checkbox, and notify once.
+    const std::string n = name.toStdString();
+    if (bridge_) {
+        if (auto inst = bridge_->find_live(n)) {
+            inst->clear_overload();
+        }
+    }
+    set_algo_enabled(n, false);
+    emit algorithm_toggled(name, false);
+    emit error_message(tr("Algorithm auto-disabled (event rate too high): %1. "
+                          "Re-enable it to retry.").arg(name));
 }
 
 void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
@@ -629,11 +692,9 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
 
     // Auto-set mode-appropriate ROI and output_fps only during initial build
     // (design §4.4.2): all three event_to_video modes default to a 128×128
-    // center ROI with 1/4 downsample enabled (effective reconstruction at
-    // 64×64). E2VID runs NN inference at this resolution; BardowVariational
-    // and InteractingMaps also downsample for the same throughput benefit
-    // (the output is upsampled back to the ROI size for display). 24 fps is
-    // a comfortable target across all modes.
+    // center ROI. The shared 1/4 downsample now defaults to OFF (audit
+    // §5-F1) — enable it explicitly for E2VID to reconstruct at 64×64.
+    // 24 fps is a comfortable target across all modes.
     // Only event_to_video has a "mode" enum, so this code only runs for it.
     // BUG-14 fix: skip ROI/fps reset on user-driven mode switches so
     // user-customised values are preserved.

@@ -48,7 +48,6 @@ public:
     FileInfo info(const QString& src) const;
 
     void cancel();
-    bool is_running() const { return running_; }
 
 signals:
     void progress(double ratio);

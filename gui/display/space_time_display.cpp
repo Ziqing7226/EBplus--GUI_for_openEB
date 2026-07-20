@@ -153,8 +153,10 @@ SpaceTimeDisplay::SpaceTimeDisplay(QWidget* parent) : QOpenGLWidget(parent) {
 
 SpaceTimeDisplay::~SpaceTimeDisplay() {
     if (render_timer_) render_timer_->stop();
-    // GL resources must be freed with a current context.
-    if (gl_ready_) {
+    // GL resources must be freed with a current context. Check the resources
+    // themselves (not just gl_ready_) so a partial initializeGL — e.g. the
+    // shader link fallback — still cleans up what it created.
+    if (program_ || vao_ || vbo_ || line_program_ || axis_vao_ || axis_vbo_) {
         makeCurrent();
         axis_vbo_.reset();
         axis_vao_.reset();
@@ -224,11 +226,20 @@ void SpaceTimeDisplay::initializeGL() {
     glEnable(GL_PROGRAM_POINT_SIZE);
 
     program_ = std::make_unique<QOpenGLShaderProgram>();
-    program_->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertSrc);
-    program_->addShaderFromSourceCode(QOpenGLShader::Fragment, kFragSrc);
-    program_->bindAttributeLocation("aPos", 0);
-    program_->bindAttributeLocation("aColor", 1);
-    program_->link();
+    bool points_ok =
+        program_->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertSrc) &&
+        program_->addShaderFromSourceCode(QOpenGLShader::Fragment, kFragSrc);
+    if (points_ok) {
+        program_->bindAttributeLocation("aPos", 0);
+        program_->bindAttributeLocation("aColor", 1);
+        points_ok = program_->link();
+    }
+    if (!points_ok) {
+        // Shader failure should not happen on a sane GL driver; fall back to
+        // a plain clear + overlay notice (paintGL) instead of drawing with a
+        // broken program (audit §六-D3, matches EventDisplayWidget).
+        program_.reset();
+    }
 
     vao_ = std::make_unique<QOpenGLVertexArrayObject>();
     vao_->create();
@@ -243,23 +254,33 @@ void SpaceTimeDisplay::initializeGL() {
     vbo_->allocate(nullptr, kInitialVboBytes);
     vbo_capacity_bytes_ = kInitialVboBytes;
 
-    // stride = 6 floats (3 pos + 3 color)
-    const int stride = 6 * static_cast<int>(sizeof(float));
-    program_->enableAttributeArray(0);
-    program_->setAttributeBuffer(0, GL_FLOAT, 0, 3, stride);
-    program_->enableAttributeArray(1);
-    program_->setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, stride);
+    if (program_) {
+        // stride = 6 floats (3 pos + 3 color)
+        const int stride = 6 * static_cast<int>(sizeof(float));
+        program_->enableAttributeArray(0);
+        program_->setAttributeBuffer(0, GL_FLOAT, 0, 3, stride);
+        program_->enableAttributeArray(1);
+        program_->setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, stride);
+    }
 
     vao_->release();
     vbo_->release();
 
     // --- Line shader + bounding box VBO (jAER cuboid wireframe) ---
     line_program_ = std::make_unique<QOpenGLShaderProgram>();
-    line_program_->addShaderFromSourceCode(QOpenGLShader::Vertex, kLineVertSrc);
-    line_program_->addShaderFromSourceCode(QOpenGLShader::Fragment, kLineFragSrc);
-    line_program_->bindAttributeLocation("aPos", 0);
-    line_program_->bindAttributeLocation("aColor", 1);
-    line_program_->link();
+    bool lines_ok =
+        line_program_->addShaderFromSourceCode(QOpenGLShader::Vertex, kLineVertSrc) &&
+        line_program_->addShaderFromSourceCode(QOpenGLShader::Fragment, kLineFragSrc);
+    if (lines_ok) {
+        line_program_->bindAttributeLocation("aPos", 0);
+        line_program_->bindAttributeLocation("aColor", 1);
+        lines_ok = line_program_->link();
+    }
+    if (!lines_ok) {
+        // Bounding-box shader failed — points can still be drawn; skip the
+        // axes overlay only (draw_axes_overlay guards on line_program_).
+        line_program_.reset();
+    }
 
     // 12-edge bounding box in [0,1]^3 (24 vertices, 6 floats each).
     const auto box = make_bounding_box();
@@ -271,16 +292,20 @@ void SpaceTimeDisplay::initializeGL() {
     axis_vbo_->setUsagePattern(QOpenGLBuffer::StaticDraw);
     axis_vbo_->bind();
     axis_vbo_->allocate(box.data(), static_cast<int>(box.size() * sizeof(float)));
-    const int axis_stride = 6 * static_cast<int>(sizeof(float));
-    line_program_->enableAttributeArray(0);
-    line_program_->setAttributeBuffer(0, GL_FLOAT, 0, 3, axis_stride);
-    line_program_->enableAttributeArray(1);
-    line_program_->setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, axis_stride);
+    if (line_program_) {
+        const int axis_stride = 6 * static_cast<int>(sizeof(float));
+        line_program_->enableAttributeArray(0);
+        line_program_->setAttributeBuffer(0, GL_FLOAT, 0, 3, axis_stride);
+        line_program_->enableAttributeArray(1);
+        line_program_->setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, axis_stride);
+    }
     axis_vao_->release();
     axis_vbo_->release();
 
     glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
-    gl_ready_ = true;
+    // gl_ready_ requires the point shader — without it the 3D view cannot
+    // render at all and paintGL shows the fallback notice instead.
+    gl_ready_ = (program_ != nullptr);
 
     // Start a 60 FPS render timer. This decouples rendering from event push
     // timing, matching jAER's display-rate-driven rendering. Without this,
@@ -350,7 +375,15 @@ void SpaceTimeDisplay::rebuild_vbo() {
 
 void SpaceTimeDisplay::paintGL() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    if (!gl_ready_ || !program_) return;
+    if (!gl_ready_ || !program_) {
+        // Shader setup failed in initializeGL() — show an overlay notice
+        // instead of a silent black window (audit §六-D3).
+        QPainter painter(this);
+        painter.setPen(QPen(QColor(220, 130, 130)));
+        painter.drawText(rect(), Qt::AlignCenter,
+                         tr("3D view unavailable: OpenGL shader setup failed."));
+        return;
+    }
 
     if (auto_rotate_) {
         azimuth_ += 0.4f;
@@ -423,6 +456,10 @@ void SpaceTimeDisplay::draw_axes_overlay(const QMatrix4x4& mvp) {
     auto project = [&](float x, float y, float z) -> QPointF {
         QVector3D p(x - 0.5f, y - 0.5f, z - 0.5f);
         QVector3D clip = mvp.map(p);
+        // Guard against inf/NaN projections (degenerate MVP, w≈0) — skip the
+        // label instead of drawing at garbage coordinates (audit §六-D4).
+        if (!std::isfinite(clip.x()) || !std::isfinite(clip.y()) ||
+            !std::isfinite(clip.z())) return QPointF(-1, -1);
         if (clip.z() < -1.0f || clip.z() > 1.0f) return QPointF(-1, -1);
         return QPointF((clip.x() * 0.5f + 0.5f) * width(),
                        (1.0f - (clip.y() * 0.5f + 0.5f)) * height());

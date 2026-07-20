@@ -46,10 +46,6 @@ public slots:
     void on_fps_limit_changed(unsigned limit);
     void on_multiplier_changed(double m);
 
-signals:
-    /// @brief Emitted when the user drags a seek range to crop (design §3.3.3).
-    void crop_range_requested(Metavision::timestamp start_us, Metavision::timestamp end_us);
-
 private slots:
     void on_state_changed(bool playing);
     void on_position_changed(Metavision::timestamp pos, Metavision::timestamp dur);

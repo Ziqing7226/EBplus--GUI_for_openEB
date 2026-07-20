@@ -308,15 +308,24 @@ TEST_F(RawAlgoTest, ObjectTrackerPositionsAreFinite) {
         ot.process(batch.data(), batch.size());
     }
     for (const auto& o : ot.objects()) {
-        // The historical regression is NaN divergence (InteractingMaps-style).
-        // The RCT tracker legitimately extrapolates positions beyond sensor
-        // bounds via velocity prediction (e.g. x=-13849 on a 640-wide sensor),
-        // so in-bounds is NOT a valid invariant — only finiteness is.
+        // §四-S1 回归：旧实现（速度无低通 + 包级外推无 clamp）曾在本数据上
+        // 产生 x=-13849（640 宽传感器）的飞坐标，当时被误认为"合法速度外推"
+        // 而豁免断言。现已在 update_velocity 加 jAER 式一阶低通
+        // (velocityTauMs=100ms)，age() 外推位移 clamp 到 ±cluster_size_px，
+        // 跟踪位置不再漂移出传感器附近。不变量：位置有限且在传感器范围外扩
+        // 10×cluster_size_px 的余量内（静止目标不漂移）。
         EXPECT_TRUE(is_finite(o.x)) << "tracked object x NaN";
         EXPECT_TRUE(is_finite(o.y)) << "tracked object y NaN";
         EXPECT_TRUE(is_finite(o.vx));
         EXPECT_TRUE(is_finite(o.vy));
         EXPECT_TRUE(is_finite(o.age));
+        const float margin = 10.0F * static_cast<float>(ot.cluster_size_px());
+        EXPECT_GE(o.x, -margin) << "S1 regression: position drifted out of bounds";
+        EXPECT_LE(o.x, static_cast<float>(s.width()) + margin)
+            << "S1 regression: position drifted out of bounds";
+        EXPECT_GE(o.y, -margin) << "S1 regression: position drifted out of bounds";
+        EXPECT_LE(o.y, static_cast<float>(s.height()) + margin)
+            << "S1 regression: position drifted out of bounds";
     }
 }
 
@@ -378,7 +387,7 @@ TEST_F(RawAlgoTest, LineSegmentsAreFinite) {
 // =========================================================================
 TEST_F(RawAlgoTest, HoughCirclesAreFinite) {
     const auto& s = stream();
-    HoughCircleTracker hct(s.width(), s.height(), 5, 30, 30);
+    HoughCircleTracker hct(s.width(), s.height(), 30, 30);  // max_radius=30, threshold=30
     for (const auto& batch : s.batches(kBatchWindowUs)) {
         EventPacket pkt(batch.data(), batch.size());
         auto circles = hct.process(pkt);

@@ -4,7 +4,7 @@
 
 A polished, open-source Qt 6 desktop app for event cameras — built on [openEB](https://github.com/prophesee-ai/openeb) v5.2.0.
 
-Real-time visualization · camera control · recording & playback · calibration · 59 algorithms · customizable themes
+Real-time visualization · camera control · recording & playback · calibration · 36 algorithms · customizable themes
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
@@ -25,7 +25,7 @@ Real-time visualization · camera control · recording & playback · calibration
 - **Control** the camera — biases, ROI, anti-flicker, triggers
 - **Record & replay** RAW event files with speed control and seek
 - **Run algorithms** — noise filtering, optical flow, object tracking, event-to-video, and more
-- **Calibrate** the camera with a chessboard wizard
+- **Calibrate** the camera with a flashing-chessboard wizard + sharpness meter
 - **Export** to HDF5 / CSV / AVI
 
 The whole project is open source — feel free to fork it and adapt it to whatever you need.
@@ -77,21 +77,20 @@ All panels degrade gracefully when the device lacks the corresponding HAL facili
 ### Preprocessing Filter Chain
 8 stackable stages applied in a thread-safe pipeline: Polarity Filter, Polarity Invert, Flip X, Flip Y, Rotate, Transpose, Rescale, ROI Filter. Toggled from the sidebar.
 
-### Algorithms (59 total)
-EB plus ships **29 self-developed algorithms** plus **30 OpenEB-wrapped capabilities**, all registered in a single `AlgoBridge` registry.
+### Algorithms (36 total)
+EB plus ships **28 self-developed algorithms** plus **8 OpenEB-wrapped filter/transform stages**, all registered in a single `AlgoBridge` registry.
 
 | Category | Examples |
 |----------|----------|
 | **Filtering** | Hot Pixel Filter, Background Mask, Bandpass Filter, Trigger Synced |
 | **Motion** | Sparse Optical Flow (4 modes), Direction Selective, EIS / Optical Gyro |
-| **Detection** | Blob Detector, Corner Detector (Harris/FAST/AGAST), Line Segment (ELiSeD) |
+| **Detection** | Blob Detector, Corner Detector (EndStopped/TypeCoincidence/Harris), Line Segment (ELiSeD) |
 | **Tracking** | Object Tracker (RCT/Median/Kalman/MultiHypothesis), Hough Circle, Hough Line, Active Marker |
 | **Reconstruction** | Event-to-Video — **E2VID** (default, DL), BardowVariational, InteractingMaps |
 | **Analytics** | Frequency Detector, Flow Statistics, ISI Analyzer, Particle Counter, Auto Bias |
 | **Visualization** | Time Surface, XYT 3D Point Cloud, Ultra Slow Motion, Orientation Cluster |
-| **Calibration** | Intrinsic Calibration (chessboard / circle grid / aruco) |
 
-Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a **global ROI** (default: center 128×128) and a shared **"ROI → noise filter → 1/4 downsample"** preprocessing stage to bound computational cost. All algorithm parameters are adjusted exclusively in the **sidebar** (`AlgorithmsPanel`); algorithm display windows show only the title and output, preventing parameter drift between two independent control panels.
+Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a **global ROI** (default: center 128×128) and a shared **"ROI → noise filter → 1/4 downsample → undistort"** preprocessing stage to bound computational cost. The noise filter, downsample, and undistort stages all default to **OFF**. All algorithm parameters are adjusted exclusively in the **sidebar** (`AlgorithmsPanel`); algorithm display windows show only the title and output, preventing parameter drift between two independent control panels.
 
 #### Noise Filter (shared preprocessing)
 8 modes exposed in the sidebar based on the selected filter: BAF, STCF, Refractory, DWF, AgePolarity, Harmonic, Repetitious, SpatialBP.
@@ -125,7 +124,7 @@ wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.ta
 cmake --build build -- -j$(nproc)
 ```
 
-After setup, launch EB plus and enable **Algorithm → Event → Video** — it defaults to E2VID mode with 128×128 ROI, 30 fps, and 1/4 downsample (64×64 inference → upsampled to 128×128). The GUI exposes toggleable parameters (model path, auto-HDR, unsharp mask, bilateral filter).
+After setup, launch EB plus and enable **Algorithm → Event → Video** — it defaults to E2VID mode with 128×128 ROI and 24 fps. Enable the shared **1/4 Downsample** preprocessing stage (default OFF) to reconstruct at 64×64 → upsampled back to 128×128 (~4× less compute). E2VID inference runs on a **background worker thread**, so the UI stays responsive; when inference is slower than the event rate, the oldest queued batches are dropped and the status line shows `dropped=N`. The GUI exposes toggleable parameters (model path, auto-HDR, unsharp mask, bilateral filter).
 
 > **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps modes work without any setup — BardowVariational jointly estimates optical flow and intensity via Chambolle-Pock primal-dual optimization (all six λ terms), and InteractingMaps uses six interconnected maps (I/G/V/F/C/R) with rotation estimation via least squares.
 
@@ -157,9 +156,9 @@ GUI-for-openEB/
 │   ├── algo_bridge/      # Algorithm registry + filter chain
 │   ├── recorder/         # RAW recording & playback
 │   ├── exporter/         # HDF5/CSV/AVI export
-│   ├── calibration/      # Intrinsic wizard
-│   └── widgets/          # Title bar, ActivityBar, AlgoWindow, pixel probe
-├── algo/              # Self-developed algorithm library (29 modules)
+│   ├── calibration/      # Intrinsic wizard (flashing chessboard) + sharpness meter
+│   └── widgets/          # Title bar, ActivityBar, AlgoWindow
+├── algo/              # Self-developed algorithm library (28 modules)
 ├── openeb/            # openEB SDK (Apache 2.0, v5.2.0)
 ├── models/            # E2VID PyTorch → ONNX conversion
 ├── run.sh             # Launcher (sets env vars)

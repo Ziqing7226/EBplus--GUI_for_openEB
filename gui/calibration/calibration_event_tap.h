@@ -42,15 +42,17 @@ public:
     /// with nullptr (drain becomes a no-op).
     void attach(CameraController* camera);
 
-    /// @brief Drains the buffered events, slices the buffered prefix that
-    ///        falls in [t_first, t_first + span_us) into window_us-wide
-    ///        sub-windows, and copies the sub-window with the most events
-    ///        into @p out. Returns that sub-window's event count (0 if the
-    ///        buffer was empty or had fewer than one full sub-window).
-    ///        The consumed prefix is dropped from the buffer; events beyond
-    ///        t_first + span_us are retained for the next call.
-    ///        Complexity is O(N) over the drained events — just a linear
-    ///        scan with per-window counters, no image work.
+    /// @brief Drains the buffered events, and within the buffered prefix that
+    ///        falls in [t_first, t_first + span_us) finds the window_us-wide
+    ///        sliding window (any 100 µs-aligned offset) with the most events
+    ///        and copies it into @p out. Returns that window's event count
+    ///        (0 if the buffer was empty). The consumed prefix is dropped
+    ///        from the buffer; events beyond t_first + span_us are retained
+    ///        for the next call.
+    ///        Sliding-window max (audit §9.2-F): fixed window_us slicing
+    ///        anchors the grid to the first buffered event, so a flip burst
+    ///        straddling a slice boundary is permanently halved; the sliding
+    ///        window captures it whole. Complexity is O(N) + O(bucket count).
     std::size_t drain_and_pick_max_window(Metavision::timestamp window_us,
                                           Metavision::timestamp span_us,
                                           std::vector<Metavision::EventCD>& out);
@@ -73,6 +75,11 @@ private:
     /// EventCD — enough for one 50 ms cycle at 40 M events/s, the worst case
     /// for a 1280×720 sensor looking at a flashing chessboard.
     static constexpr std::size_t kMaxBufferEvents = 2'000'000;
+
+    /// Fine-bucket width for the sliding-window max search (audit §9.2-F):
+    /// 100 µs buckets → a 1 ms window is a sum of 10 consecutive buckets and
+    /// may start at any 100 µs offset within the span.
+    static constexpr Metavision::timestamp kBucketUs = 100;
 };
 
 } // namespace gui

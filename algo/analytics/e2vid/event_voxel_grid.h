@@ -37,9 +37,42 @@ public:
           grid_(static_cast<std::size_t>(num_bins_) * width * height, 0.0f) {}
 
     /// @brief Sets the hot-pixel mask (HxW, uint8, nonzero = hot pixel to zero out).
+    /// The size is validated against the grid resolution (§四-M3): an exact
+    /// HxW mask is used directly; a full-resolution (2H)x(2W) mask — e.g. a
+    /// sensor-wide mask passed while the grid runs at half resolution — is
+    /// downsampled by 2x2 majority vote. Any other size is rejected (masking
+    /// disabled) and recorded in hot_mask_rejected().
     void set_hot_pixel_mask(const std::vector<std::uint8_t>& mask) {
-        hot_mask_ = mask;
+        hot_mask_rejected_ = false;
+        const std::size_t expect =
+            static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_);
+        if (mask.size() == expect) {
+            hot_mask_ = mask;
+            return;
+        }
+        if (expect > 0 && mask.size() == expect * 4) {
+            // 2x2 majority-vote downsample from full to effective resolution.
+            const int fw = width_ * 2;
+            hot_mask_.assign(expect, 0);
+            for (int y = 0; y < height_; ++y) {
+                for (int x = 0; x < width_; ++x) {
+                    const std::size_t b =
+                        static_cast<std::size_t>(2 * y) * fw + 2 * x;
+                    const int cnt = (mask[b] != 0) + (mask[b + 1] != 0) +
+                                    (mask[b + fw] != 0) + (mask[b + fw + 1] != 0);
+                    hot_mask_[static_cast<std::size_t>(y) * width_ + x] =
+                        (cnt >= 2) ? 1 : 0;
+                }
+            }
+            return;
+        }
+        hot_mask_.clear();
+        hot_mask_rejected_ = true;
     }
+
+    /// @brief True if the last set_hot_pixel_mask() call was rejected due to
+    ///        a size mismatch (masking is disabled in that case).
+    bool hot_mask_rejected() const { return hot_mask_rejected_; }
 
     /// @brief Clears the hot-pixel mask (disables hot-pixel removal).
     void clear_hot_pixel_mask() { hot_mask_.clear(); }
@@ -176,6 +209,7 @@ private:
     int num_bins_;
     std::vector<float> grid_;
     std::vector<std::uint8_t> hot_mask_;
+    bool hot_mask_rejected_{false};  ///< Last mask rejected (size mismatch).
 };
 
 } // namespace gui_algo

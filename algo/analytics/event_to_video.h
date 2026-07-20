@@ -104,18 +104,10 @@ public:
         // the sliding-window formulation in both Bardow (2016) and Cook
         // (2011) — no exponential decay, old events are fully discarded.
         rebuild_log_intensity();
-        // Optional exponential decay (default off — the sliding window
-        // already provides temporal locality). Users can enable it for
-        // extra smoothing via the decay_tau_ms parameter.
-        if (current_t_ > last_frame_t_ && decay_tau_ms_ > 0.0f) {
-            const double dt_us =
-                static_cast<double>(current_t_ - last_frame_t_);
-            const double tau_us =
-                static_cast<double>(decay_tau_ms_) * 1000.0;
-            const double decay = std::exp(-dt_us / tau_us);
-            for (auto& v : log_intensity_) v *= decay;
-        }
-        last_frame_t_ = current_t_;
+        // NOTE: the old decay_tau_ms parameter was removed (§四-M7): the
+        // decay was applied right after a full window rebuild, so it never
+        // accumulated across frames — it only globally dimmed the current
+        // frame by the inter-frame interval, a no-op semantically.
         switch (mode_) {
             case Mode::BardowVariational:
                 frame = reconstruct_bardow();
@@ -168,13 +160,6 @@ public:
 
     void set_num_iterations(int n) { num_iterations_ = clamp_iter(n, 10, 500); }
     int num_iterations() const { return num_iterations_; }
-
-    /// @brief Sets the log-intensity decay time constant in ms.
-    /// Larger values = slower decay (longer memory); 0 disables decay.
-    void set_decay_tau_ms(float ms) {
-        decay_tau_ms_ = (ms < 0.0f) ? 0.0f : (ms > 5000.0f ? 5000.0f : ms);
-    }
-    float decay_tau_ms() const { return decay_tau_ms_; }
 
     // InteractingMaps parameters -----------------------------------------
     void set_relaxation_step(float s) {
@@ -248,7 +233,6 @@ public:
         e2vid_event_buffer_.clear();
         intensity_rescaler_.reset();
         current_t_ = 0;
-        last_frame_t_ = 0;
     }
 
     int width() const { return width_; }
@@ -887,11 +871,6 @@ private:
     std::vector<WindowedEvent> event_window_;  ///< Time-ordered event buffer.
     std::vector<double> log_intensity_;
     Metavision::timestamp current_t_{0};
-    Metavision::timestamp last_frame_t_{0};   ///< Last get_frame() timestamp
-    /// Optional exponential decay for log_intensity_ (ms). Default 0
-    /// (disabled) — the sliding window already provides temporal locality.
-    /// Users can enable it for extra temporal smoothing.
-    float decay_tau_ms_{0.0f};
 
     // --- BardowVariational optimization state ---
     std::vector<double> L_;         ///< Current log-intensity estimate.

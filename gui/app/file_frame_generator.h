@@ -50,7 +50,15 @@ public:
 
     /// @brief Thread-safe: buffers events from the SDK streaming thread.
     /// Events MUST be sorted by timestamp (the SDK guarantees this).
+    /// Stops appending once kMaxBufferedEvents is reached (OOM guard,
+    /// audit §六-C2): the buffer is truncated and buffer_truncated() is
+    /// emitted once. Playback of the buffered prefix continues normally.
     void add_events(const Metavision::EventCD* begin, const Metavision::EventCD* end);
+
+    /// @brief Hard cap on buffered events (OOM guard, audit §六-C2).
+    /// Each buffered Metavision::EventCD is 16 bytes, so 300M events is
+    /// ~4.8 GB resident — beyond this we drop incoming batches.
+    static constexpr std::size_t kMaxBufferedEvents = 300'000'000;
 
     /// @brief Sets the sensor geometry for frame rendering.
     void set_geometry(long width, long height);
@@ -98,12 +106,31 @@ public:
     std::uint16_t fps() const { return fps_; }
     Metavision::timestamp accumulation_time_us() const { return accumulation_us_; }
     bool loop() const { return loop_; }
-    bool has_events() const;
     std::size_t event_count() const;
 
     /// @brief Clears the event buffer and resets the cursor. Called when
-    /// opening a new file or stopping the pipeline.
+    /// opening a new file or stopping the pipeline. Also resets the
+    /// loading_complete_/truncated_ state: a new file is about to stream
+    /// in, so EOF handling is suspended until set_loading_complete(true).
     void clear();
+
+    /// @brief Marks whether the file loader has finished streaming the
+    /// whole file into the buffer (SDK file-camera EOF). EOF handling in
+    /// on_timer() (stop / loop wrap) only engages once this is true;
+    /// before that, a cursor that caught up with the read progress waits
+    /// instead of triggering a false EOF (audit §六-P2).
+    /// Defaults to true so standalone use (no loader attached) behaves as
+    /// before; clear() resets it to false for a fresh file load.
+    void set_loading_complete(bool complete) {
+        loading_complete_.store(complete, std::memory_order_release);
+    }
+    bool is_loading_complete() const {
+        return loading_complete_.load(std::memory_order_acquire);
+    }
+
+    /// @brief True once the buffer hit kMaxBufferedEvents and incoming
+    /// events were dropped (audit §六-C2). Reset by clear().
+    bool is_truncated() const;
 
 signals:
     /// @brief Emitted on each timer tick with the rendered frame.
@@ -140,6 +167,11 @@ signals:
     void events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
                              Metavision::timestamp ts);
 
+    /// @brief Emitted once when the event buffer reaches kMaxBufferedEvents
+    /// and further events are dropped (audit §六-C2). Emitted from the SDK
+    /// streaming thread (queued to listeners on the GUI thread).
+    void buffer_truncated();
+
 private:
     void on_timer();
     void render_frame(Metavision::timestamp start_us, Metavision::timestamp end_us);
@@ -147,6 +179,8 @@ private:
     // Event buffer — appended from SDK thread, read from GUI thread.
     std::vector<Metavision::EventCD> events_;
     mutable std::mutex mutex_;
+    // OOM guard state (audit §六-C2), guarded by mutex_.
+    bool truncated_{false};
 
     // Geometry
     long width_{0};
@@ -156,6 +190,10 @@ private:
     std::uint16_t fps_{30};
     Metavision::timestamp accumulation_us_{33000};
     std::atomic<Metavision::timestamp> duration_us_{0};
+    // True once the file loader has streamed the whole file (SDK file EOF).
+    // Default true: with no loader attached (standalone tests, pre-filled
+    // buffer) EOF handling works as before. clear() resets it to false.
+    std::atomic<bool> loading_complete_{true};
     bool loop_{false};
     Metavision::ColorPalette palette_{Metavision::ColorPalette::Dark};
 

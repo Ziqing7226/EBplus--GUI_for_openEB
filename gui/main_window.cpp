@@ -24,10 +24,13 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
 #include <metavision/sdk/core/utils/colors.h>
+
+#include <opencv2/core.hpp>
 
 #include "panels/algorithms_panel.h"
 #include "panels/biases_panel.h"
@@ -147,6 +150,16 @@ MainWindow::MainWindow(QWidget* parent)
         auto* grip = new ResizeGrip(p, this);
         resize_grips_.push_back(grip);
     }
+    // Position the grips immediately: resizeEvent() is the only other place
+    // that repositions them, and if the WM delivers no resize event after
+    // show() the grips would keep their default geometry (0,0,100,30) —
+    // raised above the title bar's File menu (audit §六-M1).
+    {
+        const QRect r = rect();
+        for (auto* grip : resize_grips_) {
+            if (grip) grip->reposition(r);
+        }
+    }
 
     // Capture the factory layout (all docks in their default positions) so
     // reset_layout() can restore it. Must be called before load_default()
@@ -194,6 +207,11 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (layout_manager_) layout_manager_->save_default();
+
+    // Mark shutdown in progress: the AlgoWindow `closing` handlers below
+    // consult this to skip modal report dialogs that would block the close
+    // sequence (audit §六-M3).
+    closing_app_ = true;
 
     // ---- Phase 1: stop all data sources BEFORE deleting child widgets. ----
     // The CD callback and frame pipeline run on the camera's data thread.
@@ -418,9 +436,10 @@ void MainWindow::build_menus() {
     // Connect/Disconnect/Refresh already live in the DevicesPanel.
 
     // Preprocess menu and Frame Mode menu have been removed — all
-    // preprocessing stage toggles live in the PreprocessingPanel and all
-    // frame mode selection lives in the DisplayPanel (both in the sidebar's
-    // 算法模块 / 显示与统计 sections). This eliminates duplication with the sidebar.
+    // preprocessing stage toggles live in the PreprocessingPanel (sidebar).
+    // The old OpenEB frame-mode backends were removed in the audit cleanup
+    // (they had no UI entry left); frame generation is fixed to the
+    // CDFrameGenerator accumulation pipeline.
 
     // The Algorithm menu has been removed — all algorithm configuration
     // (enable, ROI, parameters, configure) lives in the sidebar's "算法模块"
@@ -432,11 +451,11 @@ void MainWindow::build_menus() {
     // management functions irrelevant to the current dock-based GUI.
     // Algorithm-specific windows are opened from the sidebar's Algorithms
     // section, not duplicated here.
-    m_tools_ = mb->addMenu(tr("&Tools"));
+    auto* m_tools = mb->addMenu(tr("&Tools"));
     // Calibration (Phase 9) — launches the wizard lazily.
-    m_tools_->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
+    m_tools->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
     // Sharpness meter — live variance-of-Laplacian of the current event frame.
-    m_tools_->addAction(tr("&Sharpness..."), this, &MainWindow::on_sharpness);
+    m_tools->addAction(tr("&Sharpness..."), this, &MainWindow::on_sharpness);
 
     // Help
     auto* m_help = mb->addMenu(tr("&Help"));
@@ -776,6 +795,7 @@ void MainWindow::wire_signals() {
         // members are destroyed.
         remove_algo_callback();
         prev_frame_ts_ = 0;
+        prev_frame_wall_ = {};
         perf_meter_.reset();
         last_rate_eps_ = 0.0;
         settings_->information_panel()->clear();
@@ -809,6 +829,10 @@ void MainWindow::wire_signals() {
         stop_rec_blink();
     });
     connect(&camera_, &CameraController::stopped, this, [this]() {
+        // File source: the SDK camera stopping after buffering all events is
+        // NOT playback stopping — the FileFrameGenerator keeps playing from
+        // its buffer (same exemption as PlaybackController, audit §六-P3).
+        if (camera_.is_file_source()) return;
         // Auto-stop the recorder when the camera stops (user stop, file EOF,
         // runtime error). Without this, the recorder keeps running with a
         // dead camera — the flush timer ticks but get_latest_raw_data()
@@ -842,7 +866,21 @@ void MainWindow::wire_signals() {
                 display_->set_frame(frame);
                 settings_->statistics_panel()->set_timestamp(ts);
                 status_ts_->setText(QStringLiteral("t: %1 s").arg(ts / 1.0e6, 0, 'f', 3));
-                if (prev_frame_ts_ > 0 && ts > prev_frame_ts_) {
+                if (camera_.is_file_source()) {
+                    // File mode: ts is the FILE's timestamp, so ts-delta FPS
+                    // is distorted by the playback rate (slow motion shows
+                    // absurd values like 10000 fps). Use the wall-clock
+                    // interval between displayed frames instead (audit §六-P6).
+                    const auto now = std::chrono::steady_clock::now();
+                    if (prev_frame_wall_.time_since_epoch().count() > 0) {
+                        const double dt =
+                            std::chrono::duration<double>(now - prev_frame_wall_).count();
+                        if (dt > 0.0) {
+                            settings_->statistics_panel()->set_fps(1.0 / dt);
+                        }
+                    }
+                    prev_frame_wall_ = now;
+                } else if (prev_frame_ts_ > 0 && ts > prev_frame_ts_) {
                     const double fps = 1.0e6 / static_cast<double>(ts - prev_frame_ts_);
                     settings_->statistics_panel()->set_fps(fps);
                 }
@@ -1074,6 +1112,8 @@ void MainWindow::update_palettes(int index) {
         case 3: p = Metavision::ColorPalette::Gray; break;
         default: break;
     }
+    // Track the palette for the §五-G1 filtered-events re-render.
+    display_palette_ = p;
     camera_.frame_pipeline()->set_color_palette(p);
 }
 
@@ -1100,8 +1140,9 @@ void MainWindow::on_file_opened_for_playback(const QString& path) {
     // Route through the playback controller so it can capture duration and
     // start the position probe timer.
     if (!playback_.open_file(path)) {
-        QMessageBox::warning(this, tr("Open file"),
-                             tr("Failed to open event file:\n%1").arg(path));
+        // The failure was already reported via CameraController::error /
+        // PlaybackController::error (message box / status bar) — showing a
+        // second dialog here would duplicate it (audit §六-C3).
         return;
     }
     add_recent_file(path);
@@ -1409,8 +1450,13 @@ void MainWindow::install_algo_callback() {
                                 if (xyt_algo_) {
                                     const auto tw = xyt_algo_->get_param("time_window_us");
                                     if (!tw.empty()) {
-                                        xyt_display_->set_time_window_ms(
-                                            static_cast<float>(std::stoi(tw)) / 1000.0f);
+                                        // Malformed param (hand-edited JSON)
+                                        // must not throw out of the slot —
+                                        // keep the current window (audit §六-U5).
+                                        try {
+                                            xyt_display_->set_time_window_ms(
+                                                static_cast<float>(std::stoi(tw)) / 1000.0f);
+                                        } catch (const std::exception&) {}
                                     }
                                 }
                                 xyt_display_->push_events(copy->data(),
@@ -1543,8 +1589,12 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
         if (xyt_algo_) {
             const auto tw = xyt_algo_->get_param("time_window_us");
             if (!tw.empty()) {
-                xyt_display_->set_time_window_ms(
-                    static_cast<float>(std::stoi(tw)) / 1000.0f);
+                // Malformed param (hand-edited JSON) must not throw out of
+                // the slot — keep the current window (audit §六-U5).
+                try {
+                    xyt_display_->set_time_window_ms(
+                        static_cast<float>(std::stoi(tw)) / 1000.0f);
+                } catch (const std::exception&) {}
             }
         }
         xyt_display_->push_events(copy->data(), copy->data() + copy->size());
@@ -1559,6 +1609,33 @@ void MainWindow::remove_algo_callback() {
     algo_cd_cb_id_.reset();
 }
 
+void MainWindow::render_filtered_events_frame(
+    QImage& frame, const std::vector<Metavision::EventCD>& events) {
+    // Re-render the whole frame from the algorithm's output events (audit
+    // §五-G1). Render at the DISPLAYED frame's size (sensor scale for both
+    // the live CDFrameGenerator path and the file FileFrameGenerator path),
+    // using the same Metavision palette and background as
+    // FileFrameGenerator::render_frame so the re-injected stream is visually
+    // indistinguishable from the normal display.
+    const int w = frame.width(), h = frame.height();
+    if (w <= 0 || h <= 0) return;
+    const cv::Vec3b bg  = Metavision::get_bgr_color(display_palette_, Metavision::ColorType::Background);
+    const cv::Vec3b on  = Metavision::get_bgr_color(display_palette_, Metavision::ColorType::Positive);
+    const cv::Vec3b off = Metavision::get_bgr_color(display_palette_, Metavision::ColorType::Negative);
+    cv::Mat img(h, w, CV_8UC3, cv::Scalar(bg[0], bg[1], bg[2]));
+    // Rendering is O(events) and runs at most once per displayed frame.
+    // Cap the count defensively — the bridge is expected to keep
+    // filtered_events at or below ~50k events per pull.
+    constexpr std::size_t kMaxRenderEvents = 50000;
+    const std::size_t n = std::min(events.size(), kMaxRenderEvents);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& ev = events[i];
+        if (ev.x < 0 || ev.x >= w || ev.y < 0 || ev.y >= h) continue;
+        img.ptr<cv::Vec3b>(static_cast<int>(ev.y))[ev.x] = ev.p ? on : off;
+    }
+    frame = mat_to_qimage(img);
+}
+
 void MainWindow::process_algo_results(QImage& frame) {
     // Iterate a snapshot of live instances and pull each one's latest result,
     // then dispatch to the instance's display strategy (design §3.5.4). The
@@ -1569,6 +1646,17 @@ void MainWindow::process_algo_results(QImage& frame) {
     // Snapshot once and reuse for draw_roi_overlays to avoid a redundant
     // list_live() call (N7).
     auto instances = algo_bridge_.list_live();
+
+    // Phase 1: pull every enabled instance's result. The results are kept
+    // (moved — AlgoResult's cv::Mat is refcounted, so this is cheap) so that
+    // the §五-G1 filtered-events re-render can run BEFORE any strategy draws
+    // overlays onto the frame.
+    struct PulledResult {
+        std::shared_ptr<AlgoInstance> inst;
+        AlgoResult result;
+    };
+    std::vector<PulledResult> pulled;
+    pulled.reserve(instances.size());
     for (auto& inst : instances) {
         // Surface the flood-guard auto-disable so the user knows why an algo
         // stopped producing output (design §5.6.7). Re-enabling it from the
@@ -1592,7 +1680,63 @@ void MainWindow::process_algo_results(QImage& frame) {
         } catch (...) {
             continue;
         }
-        inst->apply_strategy(frame, r, ctx);
+        pulled.push_back({inst, std::move(r)});
+    }
+
+    // Phase 2 (audit §五-G1): filtering/transform algorithms
+    // (hot_pixel_filter, ultra_slow_motion, trigger_synced, overlay,
+    // optical_gyro, ...) produce an event stream as their ONLY output — it
+    // used to have no consumer, so enabling them left the main display
+    // unchanged. Re-inject that stream: if an enabled instance returned
+    // non-empty filtered_events, re-render the main frame from those events
+    // before any strategy draws. Algorithms are mutually exclusive, so at
+    // most one should produce an event stream; if several do, the first wins
+    // and the user is notified once.
+    const std::vector<Metavision::EventCD>* reinject = nullptr;
+    std::string reinject_name;
+    bool multiple = false;
+    for (auto& pr : pulled) {
+        if (!pr.result.filtered_events.empty()) {
+            if (reinject == nullptr) {
+                reinject = &pr.result.filtered_events;
+                reinject_name = pr.inst->info().name;
+            } else {
+                multiple = true;
+            }
+        }
+    }
+    // "Once per occurrence": warn only on the rising edge, re-arm when the
+    // condition clears (it should never occur — algorithms are exclusive).
+    static bool reinject_warned = false;
+    if (multiple && !reinject_warned) {
+        reinject_warned = true;
+        statusBar()->showMessage(
+            tr("Multiple algorithms output filtered events; showing %1")
+                .arg(QString::fromStdString(reinject_name)), 5000);
+    } else if (!multiple) {
+        reinject_warned = false;
+    }
+    if (reinject != nullptr) {
+        // Re-render replaces the frame content; cost is bounded (one render
+        // per displayed frame, events capped in render_filtered_events_frame).
+        try {
+            render_filtered_events_frame(frame, *reinject);
+        } catch (...) {
+            // A cv::Exception must not escape this Qt slot (audit §五-H2);
+            // skip the re-render for one frame instead.
+        }
+    }
+
+    // Phase 3: dispatch each pulled result to its display strategy.
+    for (auto& pr : pulled) {
+        // apply_strategy runs mat_to_qimage / frame.copy etc. — a
+        // cv::Exception escaping this Qt slot would terminate the app
+        // (audit §五-H2). Skip this algorithm's output for one frame instead.
+        try {
+            pr.inst->apply_strategy(frame, pr.result, ctx);
+        } catch (...) {
+            continue;
+        }
     }
 
     // Draw the ROI rectangle of any enabled self-developed algorithm so the
@@ -1671,7 +1815,7 @@ void MainWindow::on_sharpness() {
             sharpness_dialog_ = nullptr;
         });
     }
-    sharpness_dialog_->set_display(display_);
+    sharpness_dialog_->set_camera(&camera_);
     sharpness_dialog_->show();
     sharpness_dialog_->raise();
     sharpness_dialog_->activateWindow();
@@ -1804,8 +1948,7 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     const auto* info = algo_bridge_.find(algo_name);
     if (info && info->display_mode == AlgoDisplayMode::Standalone) {
         if (algo_name == "time_surface" || algo_name == "event_to_video" ||
-            algo_name == "isi_analyzer" || algo_name == "background_mask" ||
-            algo_name == "sensor_self_test") {
+            algo_name == "isi_analyzer" || algo_name == "sensor_self_test") {
             auto* disp = new EventDisplayWidget(nullptr);
             w->set_display_widget(disp);
         }
@@ -1863,8 +2006,12 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
             inst->set_param("__final_report", "1");
             auto r = inst->pull_result();
             inst->set_enabled(false);
-            QMessageBox::information(this, tr("Sensor Self-Test Report"),
-                QString::fromStdString(r.status));
+            // During application shutdown the modal report would block the
+            // close sequence — skip it (the window is going away anyway).
+            if (!closing_app_) {
+                QMessageBox::information(this, tr("Sensor Self-Test Report"),
+                    QString::fromStdString(r.status));
+            }
         } else {
             if (inst) inst->set_enabled(false);
         }
@@ -1906,8 +2053,12 @@ void MainWindow::on_open_xyt_view() {
         if (xyt_algo_) {
             const auto tw_us = xyt_algo_->get_param("time_window_us");
             if (!tw_us.empty()) {
-                xyt_display_->set_time_window_ms(
-                    static_cast<float>(std::stoi(tw_us)) / 1000.0f);
+                // Malformed param (hand-edited JSON) must not throw out of
+                // the slot — keep the display's default window (audit §六-U5).
+                try {
+                    xyt_display_->set_time_window_ms(
+                        static_cast<float>(std::stoi(tw_us)) / 1000.0f);
+                } catch (const std::exception&) {}
             }
         }
         // Sync the sidebar checkbox (blocked, no re-entry).

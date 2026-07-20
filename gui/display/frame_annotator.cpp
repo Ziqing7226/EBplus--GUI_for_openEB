@@ -20,16 +20,8 @@ FrameAnnotator::FrameAnnotator() {
                        QStringLiteral("Monospace")});
 }
 
-void FrameAnnotator::set_pen_width(double w) {
-    pen_width_ = (w > 0.0) ? w : 1.0;
-}
-
 void FrameAnnotator::set_font(const QFont& font) {
     font_ = font;
-}
-
-void FrameAnnotator::set_default_color(const QColor& c) {
-    if (c.isValid()) default_color_ = c;
 }
 
 QColor FrameAnnotator::resolve(const QColor& c) const {

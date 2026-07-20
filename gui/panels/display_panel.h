@@ -27,7 +27,6 @@ public:
     QString panel_group() const override { return QStringLiteral("Display & Stats"); }
 
     int accumulation_time_us() const;
-    int color_palette_index() const;
     int fps() const;
     int fps_limit() const;
 

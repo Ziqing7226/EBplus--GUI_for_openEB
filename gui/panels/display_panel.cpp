@@ -126,10 +126,6 @@ int DisplayPanel::accumulation_time_us() const {
     return accum_spin_->value();
 }
 
-int DisplayPanel::color_palette_index() const {
-    return palette_combo_->currentIndex();
-}
-
 int DisplayPanel::fps() const {
     return fps_spin_->value();
 }

@@ -11,7 +11,6 @@
 
 #include "algo/cv/hot_pixel_filter.h"
 #include "algo/cv/optical_gyro.h"
-#include "algo/cv/perspective_undistort.h"
 #include "algo/cv/object_tracker.h"
 #include "algo/cv/corner_detector.h"
 #include "algo/cv/blob_detector.h"
@@ -37,14 +36,12 @@ public:
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
         if (k == "learning_window_s") algo_.set_learning_window_s(to_d(v));
-        else if (k == "n_sigma") algo_.set_n_sigma(to_d(v));
         else if (k == "enable_fpn_correction") algo_.set_enable_fpn_correction(to_b(v));
         else if (k == "fpn_target_rate_hz") algo_.set_fpn_target_rate_hz(to_d(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "learning_window_s") return from_d(algo_.learning_window_s());
-        if (k == "n_sigma") return from_d(algo_.n_sigma());
         if (k == "enable_fpn_correction") return from_b(algo_.enable_fpn_correction());
         if (k == "fpn_target_rate_hz") return from_d(algo_.fpn_target_rate_hz());
         return {};
@@ -73,6 +70,13 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); last_kept_ = 0; }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        // The algo holds a sensor-sized hot-pixel mask — rebuild it at the
+        // new dimensions (params revert to ctor defaults; MainWindow resets
+        // instances on source change anyway).
+        algo_ = gui_algo::HotPixelFilter(w, h);
+    }
 };
 
 /// OpticalGyro (EIS) backend — modifies event coordinates in place.
@@ -150,50 +154,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); }
-};
-
-/// PerspectiveUndistort backend — remaps event coordinates in place.
-class PerspectiveUndistortBackend final : public AlgoBackend {
-    gui_algo::PerspectiveUndistort algo_;
-    std::vector<Metavision::EventCD> buf_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
-public:
-    PerspectiveUndistortBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
-    void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "enable") algo_.set_undistort(to_b(v));
-        else if (k == "zoom") algo_.set_zoom(static_cast<float>(to_d(v)));
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::OpticalGyro(w, h);  // sensor-sized motion maps
     }
-    std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "enable") return from_b(algo_.undistort());
-        if (k == "zoom") return from_d(algo_.zoom());
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        buf_.assign(b, e);
-        auto [ev_c, n] = roi_.apply(as_events(buf_.data()), buf_.size(), roi_buf_);
-        auto* ev = const_cast<gui_algo::Event*>(ev_c);
-        gui_algo::MutableEventPacket pkt(ev, n);
-        algo_.process(pkt);
-        // pull_result reads from buf_: if roi_.apply() filtered into another
-        // buffer, copy the processed events back; otherwise they are in buf_.
-        if (ev_c != as_events(buf_.data())) {
-            buf_.assign(reinterpret_cast<const Metavision::EventCD*>(ev_c),
-                        reinterpret_cast<const Metavision::EventCD*>(ev_c + n));
-        } else {
-            buf_.resize(n);
-        }
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = buf_;
-        r.status = std::string("undistort: ") + (algo_.undistort() ? "on" : "off") +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
-        return r;
-    }
-    void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); }
 };
 
 // ===========================================================================
@@ -289,6 +253,12 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        // Rebuild sensor-sized internal state, preserving the current mode
+        // (other params revert to ctor defaults).
+        algo_ = gui_algo::ObjectTracker(w, h, algo_.mode());
+    }
 };
 
 /// CornerDetector backend — corners as overlay points.
@@ -332,6 +302,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::CornerDetector(w, h, algo_.mode());
+    }
 };
 
 /// BlobDetector backend — blobs as overlay boxes.
@@ -372,6 +346,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::BlobDetector(w, h);  // sensor-sized background map
+    }
 };
 
 /// SparseOpticalFlow backend — flow vectors as overlay lines.
@@ -440,6 +418,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); flows_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::SparseOpticalFlow(w, h, algo_.mode());
+    }
 private:
     /// HSV (h,s,v in [0,1]) -> RGB (r,g,b in [0,255]).
     static void hsv_to_rgb(float h, float s, float v,
@@ -467,7 +449,6 @@ std::unique_ptr<AlgoBackend> create_cv_backend(const std::string& name,
                                           int width, int height) {
     if (name == "hot_pixel_filter")            return std::make_unique<HotPixelFilterBackend>(width, height);
     if (name == "optical_gyro")                return std::make_unique<OpticalGyroBackend>(width, height);
-    if (name == "perspective_undistort")       return std::make_unique<PerspectiveUndistortBackend>(width, height);
     if (name == "object_tracker")              return std::make_unique<ObjectTrackerBackend>(width, height);
     if (name == "corner_detector")             return std::make_unique<CornerDetectorBackend>(width, height);
     if (name == "blob_detector")               return std::make_unique<BlobDetectorBackend>(width, height);

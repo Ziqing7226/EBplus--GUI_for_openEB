@@ -10,6 +10,7 @@
 #ifndef GUI_PANELS_BIASES_PANEL_H
 #define GUI_PANELS_BIASES_PANEL_H
 
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <memory>
@@ -70,6 +71,13 @@ private:
 
     std::vector<BiasRow> rows_;
     bool populated_{false};
+
+    // Debounce for wheel/keyboard slider edits (audit §六-U1): those never
+    // emit sliderReleased, so without this they updated the UI but never
+    // wrote to the hardware. ~300 ms after the last change the pending bias
+    // is applied once — no USB-write flooding during continuous adjustments.
+    QTimer apply_debounce_;
+    std::string pending_apply_;
 };
 
 } // namespace gui

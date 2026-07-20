@@ -20,6 +20,8 @@ FramePipeline::FramePipeline(QObject* parent) : QObject(parent) {
             this, &FramePipeline::file_seeked);
     connect(&file_generator_, &FileFrameGenerator::events_window_ready,
             this, &FramePipeline::events_window_ready);
+    connect(&file_generator_, &FileFrameGenerator::buffer_truncated,
+            this, &FramePipeline::file_buffer_truncated);
 }
 
 FramePipeline::~FramePipeline() {
@@ -199,6 +201,10 @@ void FramePipeline::set_file_duration_us(Metavision::timestamp us) {
     if (file_mode_) file_generator_.set_duration_us(us);
 }
 
+void FramePipeline::set_file_loading_complete(bool complete) {
+    if (file_mode_) file_generator_.set_loading_complete(complete);
+}
+
 Metavision::timestamp FramePipeline::file_position_us() const {
     if (file_mode_) return file_generator_.position_us();
     return 0;
@@ -207,11 +213,6 @@ Metavision::timestamp FramePipeline::file_position_us() const {
 Metavision::timestamp FramePipeline::file_duration_us() const {
     if (file_mode_) return file_generator_.duration_us();
     return 0;
-}
-
-bool FramePipeline::file_is_playing() const {
-    if (file_mode_) return file_generator_.is_playing();
-    return false;
 }
 
 } // namespace gui

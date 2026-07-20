@@ -95,7 +95,6 @@ int main(int argc, char** argv) {
         EventToVideo v(128, 128, mode);
         v.set_downsample(true);
         v.set_output_fps(30);
-        v.set_decay_tau_ms(500.0f);
         v.reset();  // Simulate the reset-on-connect fix.
 
         std::printf("\n=== %s (reset, scaled timestamps, small batches) ===\n",

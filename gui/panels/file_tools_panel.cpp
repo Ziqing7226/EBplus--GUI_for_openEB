@@ -2,11 +2,15 @@
 
 #include "file_tools_panel.h"
 
+#include <QCursor>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
@@ -19,6 +23,25 @@
 #include "app/file_converter.h"
 
 namespace gui {
+
+namespace {
+// True when src and dst resolve to the same file (audit §六-E2: converting/
+// cutting onto the source would overwrite the very file being read).
+bool same_file(const QString& src, const QString& dst) {
+    const QFileInfo s(src);
+    const QString s_canon = s.canonicalFilePath();
+    if (s_canon.isEmpty()) return false;
+    const QFileInfo d(dst);
+    QString d_canon = d.canonicalFilePath();
+    if (d_canon.isEmpty()) {
+        // dst doesn't exist yet — canonicalize its directory instead.
+        const QString cdir = d.dir().canonicalPath();
+        if (cdir.isEmpty()) return false;
+        d_canon = cdir + QLatin1Char('/') + d.fileName();
+    }
+    return s_canon == d_canon;
+}
+} // namespace
 
 FileToolsPanel::FileToolsPanel(FileConverter* converter, QWidget* parent)
     : AbstractPanel(parent), converter_(converter) {
@@ -109,6 +132,11 @@ void FileToolsPanel::on_convert_hdf5() {
     QString final_dst = dst;
     if (!final_dst.endsWith(".h5", Qt::CaseInsensitive))
         final_dst += ".h5";
+    if (same_file(src, final_dst)) {
+        QMessageBox::warning(this, tr("Convert to HDF5"),
+            tr("Output path must differ from the source file (it would be overwritten)."));
+        return;
+    }
     progress_->setVisible(true);
     progress_->setValue(0);
     lbl_status_->setText(tr("Converting to HDF5..."));
@@ -128,6 +156,11 @@ void FileToolsPanel::on_convert_csv() {
     QString final_dst = dst;
     if (!final_dst.endsWith(".csv", Qt::CaseInsensitive))
         final_dst += ".csv";
+    if (same_file(src, final_dst)) {
+        QMessageBox::warning(this, tr("Convert to CSV"),
+            tr("Output path must differ from the source file (it would be overwritten)."));
+        return;
+    }
     progress_->setVisible(true);
     progress_->setValue(0);
     lbl_status_->setText(tr("Converting to CSV..."));
@@ -165,6 +198,11 @@ void FileToolsPanel::on_cutter() {
     QString final_dst = dst;
     if (!final_dst.endsWith(".raw", Qt::CaseInsensitive))
         final_dst += ".raw";
+    if (same_file(src, final_dst)) {
+        QMessageBox::warning(this, tr("File Cutter"),
+            tr("Output path must differ from the source file (it would be overwritten)."));
+        return;
+    }
     const auto start_us = static_cast<Metavision::timestamp>(spStart->value() * 1e6);
     const auto end_us = static_cast<Metavision::timestamp>(spEnd->value() * 1e6);
     progress_->setVisible(true);
@@ -180,20 +218,32 @@ void FileToolsPanel::on_info() {
         this, tr("Source file"), QString(),
         tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
     if (src.isEmpty()) return;
+    // info() opens the file synchronously on the GUI thread — for a large
+    // file without a .tmp_index this can take seconds. Show a busy cursor
+    // and disable the button so the stall is visible and can't be
+    // re-triggered (audit §六-U6; not moving threads this round).
+    btn_info_->setEnabled(false);
+    QGuiApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+    QString text;
+    QString err;
     try {
         const auto fi = converter_->info(src);
-        QMessageBox::information(this, tr("File Info"),
-            tr("Path: %1\nIntegrator: %2\nSerial: %3\nPlugin: %4\nEncoding: %5\n"
-               "Geometry: %6 x %7\nDuration: %8 s")
-                .arg(fi.path, fi.integrator, fi.serial, fi.plugin, fi.encoding)
-                .arg(fi.width).arg(fi.height)
-                .arg(fi.duration_us / 1.0e6, 0, 'f', 3));
+        text = tr("Path: %1\nIntegrator: %2\nSerial: %3\nPlugin: %4\nEncoding: %5\n"
+                  "Geometry: %6 x %7\nDuration: %8 s")
+                   .arg(fi.path, fi.integrator, fi.serial, fi.plugin, fi.encoding)
+                   .arg(fi.width).arg(fi.height)
+                   .arg(fi.duration_us / 1.0e6, 0, 'f', 3);
     } catch (const std::exception& e) {
-        QMessageBox::warning(this, tr("File Info"),
-            tr("Failed to read file info:\n%1").arg(QString::fromUtf8(e.what())));
+        err = tr("Failed to read file info:\n%1").arg(QString::fromUtf8(e.what()));
     } catch (...) {
-        QMessageBox::warning(this, tr("File Info"),
-            tr("Failed to read file info."));
+        err = tr("Failed to read file info.");
+    }
+    QGuiApplication::restoreOverrideCursor();
+    btn_info_->setEnabled(true);
+    if (err.isEmpty()) {
+        QMessageBox::information(this, tr("File Info"), text);
+    } else {
+        QMessageBox::warning(this, tr("File Info"), err);
     }
 }
 

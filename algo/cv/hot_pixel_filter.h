@@ -9,6 +9,13 @@
 // each pixel toward a target event rate via per-pixel ISI adaptation; when
 // FPN correction is enabled it is applied to ALL events (not just hot-mask
 // pixels). Header-only.
+//
+// 与 jAER 的差异（有意）：
+//   * 热像素集合每个学习窗重算、不跨窗累积（jAER hotPixelSet 只增不清）。
+//   * 学习窗默认 5s（jAER 为 500ms 且为手动触发学习）。
+//   * 按像素滤除（两路极性全滤），等价 jAER use2DBooleanArray=true 变体；
+//     jAER 默认按键控地址（含极性）粒度。
+//   * reset() 连热像素掩码一起清除（jAER resetFilter 保留热像素集）。
 
 #ifndef GUI_ALGO_CV_HOT_PIXEL_FILTER_H
 #define GUI_ALGO_CV_HOT_PIXEL_FILTER_H
@@ -43,13 +50,11 @@ public:
 
     // Parameter setters with range clamping -------------------------------
     void set_learning_window_s(double v) { learning_window_s_ = clamp(v, 1.0, 60.0); }
-    void set_n_sigma(double v) { n_sigma_ = clamp(v, 2.0, 10.0); } // deprecated, unused
     void set_num_hot_pixels_max(int v) { num_hot_pixels_max_ = clamp_i(v, 1, 1000000); }
     void set_enable_fpn_correction(bool v) { enable_fpn_correction_ = v; }
     void set_fpn_target_rate_hz(double v) { fpn_target_rate_hz_ = clamp(v, 1.0, 1000.0); }
 
     double learning_window_s() const { return learning_window_s_; }
-    double n_sigma() const { return n_sigma_; } // deprecated, unused
     int num_hot_pixels_max() const { return num_hot_pixels_max_; }
     bool enable_fpn_correction() const { return enable_fpn_correction_; }
     double fpn_target_rate_hz() const { return fpn_target_rate_hz_; }
@@ -59,6 +64,13 @@ public:
     /// @brief Feeds events into the learner and refreshes the hot-pixel mask
     ///        when the learning window elapses.
     void learn(const Event* events, std::size_t count) {
+        // Anchor the learning window to the first event seen (§四-低1 /
+        // §一-1.4): with a 0-initialised anchor and large-timestamp sources
+        // (live camera t≈1e9us) the first window closed immediately and
+        // recomputed the mask from a handful of events.
+        if (learn_start_s_ < 0.0 && count > 0) {
+            learn_start_s_ = static_cast<double>(events[0].t) * 1e-6;
+        }
         for (std::size_t i = 0; i < count; ++i) {
             const Event& e = events[i];
             if (e.x >= width_ || e.y >= height_) continue;
@@ -67,6 +79,7 @@ public:
             if (e.t > last_learn_t_) last_learn_t_ = e.t;
             ++total_events_;
         }
+        if (learn_start_s_ < 0.0) return;  // no events seen yet
         const double elapsed_s =
             static_cast<double>(last_learn_t_) * 1e-6 - learn_start_s_;
         if (elapsed_s >= learning_window_s_ && total_events_ > 0) {
@@ -108,7 +121,9 @@ public:
                 last_ts_[idx] = e.t;
                 if (prev == kSentinel) { events[out++] = e; continue; }
                 const double isi_d = static_cast<double>(e.t - prev);
-                // C1: probability proportional to ISI (jAER prob = alpha*isi/avgIsi).
+                // C1: transmission probability proportional to ISI
+                // (re-designed; only loosely follows jAER's alpha*isi/avgIsi,
+                // which uses an IIR-smoothed ISI and adaptive avgIsi).
                 const double p = isi_d / target_isi_us;
                 if (p >= 1.0 || u01_(rng_) < p) events[out++] = e;
             } else {
@@ -125,7 +140,7 @@ public:
         std::fill(hot_mask_.begin(), hot_mask_.end(), 0);
         total_events_ = 0;
         last_learn_t_ = 0;
-        learn_start_s_ = 0.0;
+        learn_start_s_ = -1.0;  // re-anchor on the next first event
     }
 
 private:
@@ -165,7 +180,6 @@ private:
     int width_;
     int height_;
     double learning_window_s_{5.0};
-    double n_sigma_{3.0}; // deprecated, retained for API compatibility
     int num_hot_pixels_max_{1000}; // jAER numHotPixelsMax default
     bool enable_fpn_correction_{false};
     double fpn_target_rate_hz_{50.0};
@@ -174,7 +188,7 @@ private:
     std::vector<std::uint8_t> hot_mask_;
     std::uint64_t total_events_{0};
     Metavision::timestamp last_learn_t_{0};
-    double learn_start_s_{0.0};
+    double learn_start_s_{-1.0};  // -1 = anchored on the first event seen
     std::mt19937_64 rng_;
     std::uniform_real_distribution<double> u01_{0.0, 1.0};
 };

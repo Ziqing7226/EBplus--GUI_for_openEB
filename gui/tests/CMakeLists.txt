@@ -75,3 +75,15 @@ target_compile_options(test_display_strategy PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_display_strategy
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# --- test_sharpness_metrics: pure-metric checks (no Qt, links gui_core). ---
+add_executable(test_sharpness_metrics
+    test_sharpness_metrics.cpp
+)
+target_link_libraries(test_sharpness_metrics PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_sharpness_metrics PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_sharpness_metrics)

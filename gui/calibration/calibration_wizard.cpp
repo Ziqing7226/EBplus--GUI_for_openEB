@@ -2,11 +2,12 @@
 
 #include "calibration_wizard.h"
 
-#include <QApplication>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -23,7 +24,10 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
+
+#include <algorithm>
 
 #include "app/camera_controller.h"
 #include "chessboard_display.h"
@@ -33,17 +37,25 @@ namespace gui {
 
 namespace {
 
-// 1 ms accumulation window, 50 ms capture cycle → 50 candidate windows per
-// cycle. The chessboard flips at 20 Hz (one flip per cycle), so the
-// max-event window is the one aligned with the flip burst.
+// 1 ms accumulation window, 50 ms capture cycle → the tap searches the best
+// 1 ms sliding window inside each 50 ms span (audit §9.2-F). The chessboard
+// flips at 20 Hz (one flip per cycle), so the max-event window is the one
+// aligned with the flip burst.
 constexpr Metavision::timestamp kWindowUs = 1000;
 constexpr Metavision::timestamp kSpanUs   = 50000;
 constexpr int kCaptureTimerMs = 50;
 
-// Default MSE below which two frames are considered duplicates (same pose).
-// 0-255 grayscale scale; 50 is conservative — different poses typically
-// produce MSE > 100.
-constexpr double kDefaultMseThreshold = 50.0;
+// Default corner-displacement threshold (audit §9.2-D): if the mean
+// displacement of corresponding corners vs. the last accepted frame is below
+// this, the pose is considered unchanged and the frame is rejected as a
+// duplicate. Immune to the 20 Hz inversion (corner positions are identical
+// in both phases), unlike the old MSE check.
+constexpr double kDefaultMinMovePx = 2.0;
+
+// Max queued capture jobs. If the worker falls behind (slow detection on a
+// noisy 1280×720 frame), whole cycles are dropped rather than letting the
+// queue grow unbounded — the flip burst repeats every 50 ms anyway.
+constexpr std::size_t kMaxQueuedJobs = 3;
 
 } // namespace
 
@@ -71,6 +83,7 @@ CalibrationWizard::CalibrationWizard(QWidget* parent) : QDialog(parent) {
 
 CalibrationWizard::~CalibrationWizard() {
     if (capturing_) on_stop_capture();
+    stop_and_join_worker();  // covers the "calibration running" phase too
 }
 
 void CalibrationWizard::set_camera(CameraController* controller) {
@@ -127,13 +140,28 @@ void CalibrationWizard::build_intrinsic_tab() {
     in_target_frames_->setValue(30);
     form->addRow(tr("Target frames"), in_target_frames_);
 
-    in_mse_threshold_ = new QDoubleSpinBox(page);
-    in_mse_threshold_->setRange(0.0, 10000.0);
-    in_mse_threshold_->setDecimals(1);
-    in_mse_threshold_->setValue(kDefaultMseThreshold);
-    in_mse_threshold_->setToolTip(tr("Frames with MSE below this vs. the last "
-        "accepted frame are rejected as duplicates (same pose)."));
-    form->addRow(tr("Duplicate MSE"), in_mse_threshold_);
+    // §9.2-D: corner-displacement duplicate check (replaces the MSE check,
+    // which was defeated by the 20 Hz board inversion).
+    in_min_move_px_ = new QDoubleSpinBox(page);
+    in_min_move_px_->setRange(0.0, 100.0);
+    in_min_move_px_->setDecimals(1);
+    in_min_move_px_->setValue(kDefaultMinMovePx);
+    in_min_move_px_->setToolTip(tr("Frames whose mean corner displacement vs. the "
+        "last accepted frame is below this are rejected as duplicates (same pose)."));
+    form->addRow(tr("Min corner movement (px)"), in_min_move_px_);
+
+    // §9.2-G: editable physical square size. The default is the DPI-derived
+    // value from the chessboard window (refreshed each time the board is
+    // shown); the user can measure one square with a ruler and correct it.
+    // Only the metric scale of the translation vectors depends on it.
+    in_square_mm_ = new QDoubleSpinBox(page);
+    in_square_mm_->setRange(0.1, 1000.0);
+    in_square_mm_->setDecimals(2);
+    in_square_mm_->setValue(25.0);
+    in_square_mm_->setToolTip(tr("Physical side length of one chessboard square. "
+        "Defaults to the screen-DPI estimate — measure a square with a ruler "
+        "and correct it for accurate metric translations."));
+    form->addRow(tr("Square size (mm)"), in_square_mm_);
 
     outer->addLayout(form);
 
@@ -179,7 +207,10 @@ void CalibrationWizard::build_intrinsic_tab() {
     connect(in_reset_btn_, &QPushButton::clicked, this, &CalibrationWizard::on_intrinsic_reset);
     connect(in_save_btn_, &QPushButton::clicked, this, &CalibrationWizard::on_intrinsic_save);
     connect(in_target_frames_, QOverload<int>::of(&QSpinBox::valueChanged), this,
-        [this](int v) { in_progress_->setRange(0, v); });
+        [this](int v) {
+            in_progress_->setRange(0, v);
+            if (chessboard_) chessboard_->set_progress(in_progress_->value(), v);
+        });
 
     // Apply initial configuration.
     on_intrinsic_reset();
@@ -211,7 +242,19 @@ void CalibrationWizard::on_show_chessboard() {
         // 'this' and just show/hide.
         connect(chessboard_, &ChessboardDisplay::destroyed, this, [this]() {
             chessboard_ = nullptr;
+            if (capturing_) {
+                // §9.4 收尾: don't auto-stop — the user may just reopen the
+                // board — but make it obvious why no frames are accepted.
+                set_status(tr("Chessboard closed — capture paused. "
+                              "Click 'Show Chessboard' to resume."));
+            }
         });
+        // HUD controls drive the same slots as the dialog buttons, so the
+        // full workflow is usable in fullscreen (audit §9.2-C).
+        connect(chessboard_, &ChessboardDisplay::startRequested,
+                this, &CalibrationWizard::on_start_capture);
+        connect(chessboard_, &ChessboardDisplay::stopRequested,
+                this, &CalibrationWizard::on_stop_capture);
     }
     chessboard_->set_pattern(in_cols_->value(), in_rows_->value());
     chessboard_->attach_to_screen(target);
@@ -220,6 +263,14 @@ void CalibrationWizard::on_show_chessboard() {
     chessboard_->showFullScreen();
     chessboard_->raise();
     chessboard_->start_flicker();
+    // §9.2-G: refresh the editable square-size default from the board's DPI
+    // estimate. Note this overwrites a manually entered value each time the
+    // board is (re)shown.
+    in_square_mm_->setValue(static_cast<double>(chessboard_->square_size_mm()));
+    // Sync HUD with current session state.
+    chessboard_->set_capturing(capturing_);
+    chessboard_->set_progress(in_progress_->value(), in_target_frames_->value());
+    if (in_status_) chessboard_->set_status(in_status_->text());
 }
 
 void CalibrationWizard::on_start_capture() {
@@ -239,27 +290,56 @@ void CalibrationWizard::on_start_capture() {
             return;
         }
     }
-    // Refresh detector config from current controls.
-    intrinsic_->set_pattern(gui_algo::CalibrationPattern::Chessboard,
-                            in_cols_->value(), in_rows_->value(),
-                            chessboard_->square_size_mm());
-    intrinsic_->reset();
-    intrinsic_result_ = {};
-    last_accepted_gray_ = cv::Mat();
-    in_last_preview_ = QImage();
-    in_preview_label_->clear();
-    in_preview_label_->setText(tr("Capturing..."));
-    in_progress_->setRange(0, in_target_frames_->value());
-    in_progress_->setValue(0);
+
+    // Sensor geometry: prefer the camera's sensor_info.
+    int sensor_w = 0, sensor_h = 0;
+    sensor_w = camera_->sensor_info().width;
+    sensor_h = camera_->sensor_info().height;
+    if (sensor_w <= 0 || sensor_h <= 0) {
+        QMessageBox::warning(this, tr("Calibration"), tr("Sensor geometry unknown."));
+        return;
+    }
+
+    // Reap any previous worker FIRST, so the config snapshot below can't be
+    // read concurrently by a still-running worker.
+    join_worker();
+    {
+        std::lock_guard<std::mutex> lk(work_mutex_);
+        work_queue_.clear();
+    }
+
+    // Snapshot the configuration for the worker thread (plain data, handed
+    // over before std::thread construction → no locking needed).
+    capture_cfg_.cols          = in_cols_->value();
+    capture_cfg_.rows          = in_rows_->value();
+    capture_cfg_.square_mm     = static_cast<float>(in_square_mm_->value());
+    capture_cfg_.target_frames = in_target_frames_->value();
+    capture_cfg_.min_move_px   = in_min_move_px_->value();
+    capture_cfg_.sensor_w      = sensor_w;
+    capture_cfg_.sensor_h      = sensor_h;
+
+    worker_stop_ = false;
+    worker_ = std::thread([this]() { worker_loop(); });
 
     // Enable CD broadcast so the tap receives batches.
     tap_.clear();
     camera_->set_cd_broadcast(true);
     capturing_ = true;
     capture_timer_->start();
+
+    in_last_preview_ = QImage();
+    in_preview_label_->clear();
+    in_preview_label_->setText(tr("Capturing..."));
+    in_progress_->setRange(0, in_target_frames_->value());
+    in_progress_->setValue(0);
     in_start_btn_->setEnabled(false);
     in_stop_btn_->setEnabled(true);
+    in_reset_btn_->setEnabled(true);
     in_save_btn_->setEnabled(false);
+    if (chessboard_) {
+        chessboard_->set_capturing(true);
+        chessboard_->set_progress(0, in_target_frames_->value());
+    }
     set_status(tr("Capturing — point the camera at the chessboard from multiple angles..."));
 }
 
@@ -268,95 +348,212 @@ void CalibrationWizard::on_stop_capture() {
     capture_timer_->stop();
     capturing_ = false;
     if (camera_) camera_->set_cd_broadcast(false);
-    in_start_btn_->setEnabled(true);
+    stop_and_join_worker();
+    in_start_btn_->setEnabled(camera_ && camera_->is_connected());
     in_stop_btn_->setEnabled(false);
+    in_reset_btn_->setEnabled(true);
+    if (chessboard_) chessboard_->set_capturing(false);
+    // intrinsic_ is safe to read here: the worker is joined.
     set_status(tr("Capture stopped. Captured %1 frames.")
         .arg(intrinsic_->frame_count()));
 }
 
 void CalibrationWizard::on_capture_tick() {
     if (!capturing_) return;
-    std::vector<Metavision::EventCD> best;
-    const std::size_t n = tap_.drain_and_pick_max_window(kWindowUs, kSpanUs, best);
-    if (n == 0 || best.empty()) {
-        set_status(tr("No events in this cycle. Point the camera at the chessboard."));
-        return;
-    }
-
-    // Determine sensor dimensions: prefer the camera's sensor_info, fall
-    // back to the display's current frame size.
-    int sensor_w = 0, sensor_h = 0;
-    if (camera_) {
-        sensor_w = camera_->sensor_info().width;
-        sensor_h = camera_->sensor_info().height;
-    }
-    if (sensor_w <= 0 || sensor_h <= 0) {
-        set_status(tr("Sensor geometry unknown."));
-        return;
-    }
-
-    // Render the 1 ms window to a grayscale frame.
-    cv::Mat gray = render_event_window(best, sensor_w, sensor_h);
-    auto res = intrinsic_->add_frame(gray, true);
-
-    if (!res.found) {
-        set_status(tr("Rejected — chessboard not detected (%1 events).").arg(n));
-        return;
-    }
-
-    // Duplicate check via MSE vs last accepted frame.
-    if (!last_accepted_gray_.empty()) {
-        const double m = mse_gray(gray, last_accepted_gray_);
-        if (m < in_mse_threshold_->value()) {
-            set_status(tr("Rejected — duplicate pose (MSE=%1 < %2). Move the camera.")
-                .arg(m, 0, 'f', 1).arg(in_mse_threshold_->value(), 0, 'f', 1));
-            return;
-        }
-    }
-
-    // Accept: store the grayscale for future MSE comparison, update preview.
-    last_accepted_gray_ = gray.clone();
-    in_last_preview_ = cv_to_qimage(res.image);
-    update_intrinsic_preview(in_last_preview_);
-    const std::size_t got = intrinsic_->frame_count();
-    in_progress_->setValue(static_cast<int>(got));
-    set_status(tr("Captured %1 / %2 frames (last: %3 events).")
-        .arg(got).arg(in_target_frames_->value()).arg(n));
-
-    if (static_cast<int>(got) >= in_target_frames_->value()) {
-        // Auto-end: stop capture and run calibration.
-        on_stop_capture();
-        set_status(tr("Capture complete. Running calibration..."));
-        QApplication::processEvents();
-        intrinsic_result_ = intrinsic_->run();
-        if (intrinsic_result_.ok) {
-            set_status(tr("Calibration OK. RMS = %1 px (%2 frames). Click Export to save.")
-                .arg(intrinsic_result_.rms, 0, 'f', 3)
-                .arg(intrinsic_result_.frames_used));
-            in_save_btn_->setEnabled(true);
+    // GUI thread does only the cheap part: drain the tap and hand the 1 ms
+    // window to the worker. Rendering + detection run off-thread (§9.2-B).
+    auto best = std::make_shared<std::vector<Metavision::EventCD>>();
+    const std::size_t n = tap_.drain_and_pick_max_window(kWindowUs, kSpanUs, *best);
+    if (n == 0 || best->empty()) {
+        if (!chessboard_) {
+            set_status(tr("Chessboard closed — capture paused. "
+                          "Click 'Show Chessboard' to resume."));
         } else {
-            QMessageBox::warning(this, tr("Calibration failed"),
-                QString::fromStdString(intrinsic_result_.error));
-            set_status(tr("Calibration failed: %1")
-                .arg(QString::fromStdString(intrinsic_result_.error)));
+            set_status(tr("No events in this cycle. Point the camera at the chessboard."));
+        }
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(work_mutex_);
+        if (work_queue_.size() >= kMaxQueuedJobs) return;  // worker behind: drop cycle
+        work_queue_.push_back(std::move(best));
+    }
+    work_cv_.notify_one();
+}
+
+// ---------------------------------------------------------------------------
+// Worker thread (audit §9.2-B / §六-B3)
+// ---------------------------------------------------------------------------
+
+void CalibrationWizard::worker_loop() {
+    // intrinsic_ is touched ONLY on this thread (and by on_intrinsic_save()
+    // after the worker is joined). set_pattern + reset here replace the old
+    // GUI-thread configuration in on_start_capture().
+    intrinsic_->set_pattern(gui_algo::CalibrationPattern::Chessboard,
+                            capture_cfg_.cols, capture_cfg_.rows,
+                            capture_cfg_.square_mm);
+    intrinsic_->reset();
+
+    // Board size for the duplicate pre-detection. IntrinsicCalibration no
+    // longer exposes board_size() publicly, so mirror its chessboard
+    // convention here: (cols, rows) IS the OpenCV inner-corner count. Must
+    // match set_pattern() above, otherwise the pre-check and add_frame()
+    // would look for different patterns.
+    const cv::Size board(std::max(capture_cfg_.cols, 1),
+                         std::max(capture_cfg_.rows, 1));
+    const int detect_flags = cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE;
+
+    // Corners of the last accepted frame, for the §9.2-D displacement check.
+    std::vector<cv::Point2f> last_corners;
+
+    for (;;) {
+        std::shared_ptr<std::vector<Metavision::EventCD>> job;
+        {
+            std::unique_lock<std::mutex> lk(work_mutex_);
+            work_cv_.wait(lk, [this]() {
+                return worker_stop_.load() || !work_queue_.empty();
+            });
+            if (worker_stop_.load()) return;
+            job = std::move(work_queue_.front());
+            work_queue_.pop_front();
+        }
+
+        const std::size_t n_events = job->size();
+        cv::Mat gray = render_event_window(*job, capture_cfg_.sensor_w,
+                                           capture_cfg_.sensor_h);
+        // §9.2-E: denoise before detection — hot pixels / BA noise punch
+        // black/white holes into the rendered squares. 3×3 median is cheap.
+        cv::medianBlur(gray, gray, 3);
+
+        // §9.2-D duplicate check (corner displacement). add_frame() already
+        // accumulates on success, so a rejected duplicate must be caught
+        // BEFORE calling it — IntrinsicCalibration has no "un-add" API, so
+        // we pre-detect corners here (worker thread, cost acceptable) and
+        // only forward non-duplicates to add_frame(). Skipped for the very
+        // first frame (no reference yet).
+        if (!last_corners.empty()) {
+            std::vector<cv::Point2f> corners;
+            const bool found = cv::findChessboardCorners(gray, board, corners,
+                                                         detect_flags);
+            if (!found) {
+                post_to_gui([this, n_events]() {
+                    set_status(tr("Rejected — chessboard not detected (%1 events).")
+                        .arg(n_events));
+                });
+                continue;
+            }
+            cv::cornerSubPix(gray, corners, cv::Size(5, 5), cv::Size(-1, -1),
+                cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT,
+                                 30, 0.01));
+            if (corners.size() == last_corners.size()) {
+                double mean_disp = 0.0;
+                for (std::size_t i = 0; i < corners.size(); ++i)
+                    mean_disp += cv::norm(corners[i] - last_corners[i]);
+                mean_disp /= static_cast<double>(corners.size());
+                if (mean_disp < capture_cfg_.min_move_px) {
+                    const double thr = capture_cfg_.min_move_px;
+                    post_to_gui([this, mean_disp, thr]() {
+                        set_status(tr("Rejected — duplicate pose (corner shift %1 px < %2 px). Move the camera.")
+                            .arg(mean_disp, 0, 'f', 2).arg(thr, 0, 'f', 1));
+                    });
+                    continue;
+                }
+            }
+        }
+
+        auto res = intrinsic_->add_frame(gray, true);
+        if (!res.found) {
+            post_to_gui([this, n_events]() {
+                set_status(tr("Rejected — chessboard not detected (%1 events).")
+                    .arg(n_events));
+            });
+            continue;
+        }
+
+        // Accept: reuse the detected corners from the result as the new
+        // duplicate reference (OpenCV returns a stable corner order for the
+        // same board, so index-wise comparison is valid).
+        last_corners = res.points;
+        const int got = static_cast<int>(intrinsic_->frame_count());
+        const int target = capture_cfg_.target_frames;
+        const QImage preview = cv_to_qimage(res.image);
+        post_to_gui([this, got, target, n_events, preview]() {
+            in_last_preview_ = preview;
+            update_intrinsic_preview(preview);
+            in_progress_->setValue(got);
+            if (chessboard_) chessboard_->set_progress(got, target);
+            set_status(tr("Captured %1 / %2 frames (last: %3 events).")
+                .arg(got).arg(target).arg(n_events));
+        });
+
+        if (got >= target) {
+            // Auto-end: run calibration on the worker thread (§六-B3 — the
+            // old code ran cv::calibrateCamera on the GUI thread and even
+            // called processEvents(), §六-B4). Freeze the capture controls
+            // while it runs.
+            post_to_gui([this]() {
+                capture_timer_->stop();
+                in_start_btn_->setEnabled(false);
+                in_stop_btn_->setEnabled(false);
+                in_reset_btn_->setEnabled(false);
+                in_save_btn_->setEnabled(false);
+                set_status(tr("Capture complete. Running calibration..."));
+            });
+            auto result = std::make_shared<gui_algo::IntrinsicResult>(intrinsic_->run());
+            post_to_gui([this, result]() {
+                join_worker();  // reap this worker (it is about to return)
+                capturing_ = false;
+                if (camera_) camera_->set_cd_broadcast(false);
+                if (chessboard_) chessboard_->set_capturing(false);
+                intrinsic_result_ = *result;
+                in_start_btn_->setEnabled(camera_ && camera_->is_connected());
+                in_stop_btn_->setEnabled(false);
+                in_reset_btn_->setEnabled(true);
+                if (intrinsic_result_.ok) {
+                    set_status(tr("Calibration OK. RMS = %1 px (%2 frames). Click Export to save.")
+                        .arg(intrinsic_result_.rms, 0, 'f', 3)
+                        .arg(intrinsic_result_.frames_used));
+                    in_save_btn_->setEnabled(true);
+                } else {
+                    QMessageBox::warning(this, tr("Calibration failed"),
+                        QString::fromStdString(intrinsic_result_.error));
+                    set_status(tr("Calibration failed: %1")
+                        .arg(QString::fromStdString(intrinsic_result_.error)));
+                }
+            });
+            return;
         }
     }
 }
 
+void CalibrationWizard::stop_and_join_worker() {
+    worker_stop_ = true;
+    work_cv_.notify_all();
+    join_worker();
+    std::lock_guard<std::mutex> lk(work_mutex_);
+    work_queue_.clear();
+}
+
+void CalibrationWizard::join_worker() {
+    if (worker_.joinable()) worker_.join();
+}
+
+// ---------------------------------------------------------------------------
+// Reset / export
+// ---------------------------------------------------------------------------
+
 void CalibrationWizard::on_intrinsic_reset() {
     if (capturing_) on_stop_capture();
-    intrinsic_->set_pattern(gui_algo::CalibrationPattern::Chessboard,
-                            in_cols_->value(), in_rows_->value(),
-                            chessboard_ ? chessboard_->square_size_mm() : 25.0f);
-    intrinsic_->reset();
+    join_worker();  // intrinsic_ must not be mid-use; the next capture
+                    // reconfigures it in the worker anyway.
     intrinsic_result_ = {};
-    last_accepted_gray_ = cv::Mat();
     in_last_preview_ = QImage();
     in_preview_label_->clear();
     in_preview_label_->setText(tr("No frames captured yet."));
     in_progress_->setRange(0, in_target_frames_->value());
     in_progress_->setValue(0);
     in_save_btn_->setEnabled(false);
+    if (chessboard_) chessboard_->set_progress(0, in_target_frames_->value());
     set_status(tr("Idle. Click 'Show Chessboard' then 'Start Auto-Capture'."));
 }
 
@@ -370,12 +567,16 @@ QString CalibrationWizard::default_export_path() const {
 }
 
 void CalibrationWizard::on_intrinsic_save() {
+    join_worker();  // intrinsic_ (image_size) is read below.
     if (!intrinsic_result_.ok) return;
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Save Intrinsic Calibration"),
         default_export_path(),
         tr("YAML (*.yml *.yaml);;All Files (*)"));
     if (path.isEmpty()) return;
+    // §六-B2: the default path's directory doesn't exist on first use —
+    // create it, otherwise the export always fails.
+    QDir().mkpath(QFileInfo(path).absolutePath());
     try {
         cv::FileStorage fs(path.toStdString(), cv::FileStorage::WRITE);
         if (!fs.isOpened()) throw std::runtime_error("Cannot open file");
@@ -391,6 +592,10 @@ void CalibrationWizard::on_intrinsic_save() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 void CalibrationWizard::update_intrinsic_preview(const QImage& img) {
     if (img.isNull()) return;
     in_preview_label_->setPixmap(QPixmap::fromImage(img).scaledToWidth(
@@ -400,6 +605,9 @@ void CalibrationWizard::update_intrinsic_preview(const QImage& img) {
 
 void CalibrationWizard::set_status(const QString& text) {
     if (in_status_) in_status_->setText(text);
+    // Mirror onto the chessboard HUD so the status is visible in fullscreen
+    // (audit §9.2-C). HUD updates are state-change driven, never per flip.
+    if (chessboard_) chessboard_->set_status(text);
 }
 
 QImage CalibrationWizard::cv_to_qimage(const cv::Mat& mat) {
@@ -419,21 +627,13 @@ cv::Mat CalibrationWizard::render_event_window(
     cv::Mat gray(sensor_h, sensor_w, CV_8UC1, cv::Scalar(128));
     // ON (p=1) → white (255), OFF (p=0) → black (0). Background grey (128)
     // so the chessboard pattern stands out for cv::findChessboardCorners.
+    // Polarity-separated rendering is load-bearing (audit §9.2-A): the board
+    // only exists as "which pixels went ON vs OFF" during one flip.
     for (const auto& ev : evs) {
         if (ev.x < 0 || ev.x >= sensor_w || ev.y < 0 || ev.y >= sensor_h) continue;
         gray.ptr<uchar>(ev.y)[ev.x] = ev.p ? 255 : 0;
     }
     return gray;
-}
-
-double CalibrationWizard::mse_gray(const cv::Mat& a, const cv::Mat& b) {
-    if (a.size() != b.size() || a.type() != b.type()) return 1e9;
-    cv::Mat diff;
-    cv::absdiff(a, b, diff);
-    diff.convertTo(diff, CV_64F);
-    diff = diff.mul(diff);
-    cv::Scalar s = cv::sum(diff);
-    return s[0] / static_cast<double>(a.total());
 }
 
 } // namespace gui

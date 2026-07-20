@@ -42,17 +42,9 @@ public:
 
     FrameAnnotator();
 
-    /// @brief Sets the pen width used for outline primitives.
-    void set_pen_width(double w);
-    double pen_width() const { return pen_width_; }
-
     /// @brief Sets the font used by draw_text().
     void set_font(const QFont& font);
     const QFont& font() const { return font_; }
-
-    /// @brief Sets the default color (used when a primitive has no color).
-    void set_default_color(const QColor& c);
-    QColor default_color() const { return default_color_; }
 
     /// @brief Draws a set of plain bounding boxes.
     void draw_bboxes(QImage& img, const std::vector<QRect>& boxes,

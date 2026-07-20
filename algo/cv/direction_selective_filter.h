@@ -45,8 +45,9 @@ public:
         : width_(width), height_(height),
           cx_(static_cast<double>(width) / 2.0),
           cy_(static_cast<double>(height) / 2.0),
-          surface_(static_cast<std::size_t>(width) * height, 0),
-          ori_surface_(static_cast<std::size_t>(kNumDirections) * width * height, 0) {
+          // -1 = "never seen" sentinel (0 is a legal timestamp, §四-低8)
+          surface_(static_cast<std::size_t>(width) * height, -1),
+          ori_surface_(static_cast<std::size_t>(kNumDirections) * width * height, -1) {
         global_hist_.fill(0);
     }
 
@@ -91,8 +92,10 @@ public:
     }
 
     /// @brief Orientation-aware classify: searches only the two directions
-    /// @p unitDirs[ori] and @p unitDirs[(ori+4)%8] (per spec) out to
-    /// search_distance_, restricted to the same orientation+polarity channel.
+    /// perpendicular to the edge orientation (jAER unitDirs[o]/unitDirs[(o+4)%8]
+    /// with unitDirs starting at down; in this class's E-based table that maps
+    /// to {(ori+2)%8, (ori+6)%8}) out to search_distance_, restricted to the
+    /// same orientation+polarity channel.
     /// If @p ori is not in [0,3], falls back to the raw 8-neighbour path.
     int classify(const Event& e, int ori) {
         if (ori < 0 || ori >= kNumOrientations) return classify(e);
@@ -183,8 +186,8 @@ public:
     }
 
     void reset() {
-        std::fill(surface_.begin(), surface_.end(), 0);
-        std::fill(ori_surface_.begin(), ori_surface_.end(), 0);
+        std::fill(surface_.begin(), surface_.end(), -1);
+        std::fill(ori_surface_.begin(), ori_surface_.end(), -1);
         global_hist_.fill(0);
         tx_.reset(); ty_.reset(); rot_.reset(); exp_.reset();
         last_delay_us_ = 0;
@@ -230,7 +233,7 @@ private:
             const int ny = e.y + kDirDy[d];
             if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) continue;
             const Metavision::timestamp lt = surface_[idx_of(nx, ny)];
-            if (lt == 0) continue;
+            if (lt < 0) continue;  // -1 = never seen
             const Metavision::timestamp rec = e.t - lt;
             if (rec <= min_dt_us_ || rec > win) continue;
             if (rec < best.delay) {
@@ -243,12 +246,17 @@ private:
         return best;
     }
 
-    /// Orientation-aware: search only directions ori and (ori+4)%8 out to
-    /// search_distance_ pixels, restricted to the same orientation+polarity
-    /// channel (per spec).
+    /// Orientation-aware: search only the two directions perpendicular to the
+    /// edge orientation out to search_distance_ pixels, restricted to the same
+    /// orientation+polarity channel (per spec).
+    /// 方向表换算（§一-1.2，修正 90° 错位）：jAER unitDirs 从 down 起
+    /// (unitDirs[0]=(0,-1))，朝向通道 o 搜 unitDirs[o] 与 unitDirs[(o+4)%8]，
+    /// 即 o=0（水平边缘）搜 down/up —— 垂直于边缘。本表 0=E（kDirDx/kDirDy），
+    /// 同一搜索对应 {(ori+2)%8, (ori+6)%8}（ori=0 → N/S）。
     DirResult compute_direction_ori(const Event& e, int ori, int pol) const {
         const Metavision::timestamp win = time_window_us_;
-        const int dirs[2] = {ori, (ori + 4) % kNumDirections};
+        const int dirs[2] = {(ori + 2) % kNumDirections,
+                             (ori + 6) % kNumDirections};
         DirResult best;
         best.delay = win;
         for (int dd = 0; dd < 2; ++dd) {
@@ -260,7 +268,7 @@ private:
                 const int ny = e.y + s * ddy;
                 if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) break;
                 const Metavision::timestamp lt = ori_surface_[idx_of_ori(nx, ny, ori, pol)];
-                if (lt == 0) continue;
+                if (lt < 0) continue;  // -1 = never seen
                 const Metavision::timestamp rec = e.t - lt;
                 if (rec <= min_dt_us_ || rec > win) continue;
                 if (rec < best.delay) {
@@ -336,10 +344,11 @@ private:
                 const double a = 1.0 - std::exp(-dt / tau_us);
                 value += (input - value) * a;
                 last_t = t;
-            } else {
-                // Same / out-of-order timestamp: take the new sample.
-                value = input;
             }
+            // dt <= 0 (same / out-of-order timestamp): keep the old value,
+            // matching jAER LowpassFilter (fac=0) — do NOT adopt the new
+            // sample (§一-1.2; same-timestamp packets would otherwise let the
+            // last sample overwrite the estimate repeatedly).
         }
         void reset() {
             value = 0.0;
@@ -352,7 +361,10 @@ private:
     int height_;
     double cx_{0.0};  // sensor center x (OPT-32)
     double cy_{0.0};  // sensor center y (OPT-32)
-    int time_window_us_{10000};
+    int time_window_us_{10000};  // jAER maxDtThreshold 默认 100000us（此处
+                                 // 10000 为有意收紧，10× 差异）；jAER
+                                 // useAvgDtEnabled（默认 true，用平均 dt
+                                 // 而非最小 recency）未移植
     bool enable_global_mode_{true};
     int min_dt_us_{100};       // jAER minDtThreshold
     int search_distance_{3};   // jAER searchDistance

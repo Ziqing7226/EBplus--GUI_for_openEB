@@ -1,10 +1,21 @@
-// gui/calibration/sharpness_dialog.h — live sharpness meter with rolling chart.
+// gui/calibration/sharpness_dialog.h — live sharpness meter (count-image
+// based, systematic_audit §9.3 rewrite).
 //
-// Polls EventDisplayWidget::current_frame() at ~10 Hz and plots the
-// variance-of-Laplacian (standard focus measure) as a rolling 2-second line
-// chart. Higher = sharper. Useful for bias tuning and lens focus: point the
-// camera at a high-contrast static scene and watch the line climb as focus
-// improves.
+// Primary data source (S1): CameraController::cd_events_ready. The dialog
+// accumulates raw CD events in a rolling 50/100/200 ms window, builds a
+// per-pixel count image (polarity ignored, no palette / overlay / 8-bit
+// saturation contamination — fixes R3), and computes normalized contrast
+// (S3, higher = sharper) and mean line width (S4, lower = sharper) via
+// sharpness_metrics.h. This replaces the old 10 Hz poll of
+// EventDisplayWidget::current_frame() + variance-of-Laplacian, which measured
+// noise density and event density rather than sharpness (R1/R2).
+//
+// Threading: the cd_events_ready connection is Qt::DirectConnection (same
+// pattern as CalibrationEventTap), so on_events_ready() runs on the SDK
+// streaming thread and only appends to a mutex-protected buffer — never
+// touches the GUI. The 10 Hz QTimer (GUI thread) trims the buffer to the
+// window, builds the count image under the lock, and runs the metric
+// computation after unlocking.
 
 #ifndef GUI_CALIBRATION_SHARPNESS_DIALOG_H
 #define GUI_CALIBRATION_SHARPNESS_DIALOG_H
@@ -12,33 +23,40 @@
 #include <QDialog>
 #include <QWidget>
 
+#include <memory>
+#include <mutex>
 #include <vector>
 
+#include <metavision/sdk/base/events/event_cd.h>
+#include <metavision/sdk/base/utils/timestamp.h>
+
+class QComboBox;
 class QLabel;
 class QTimer;
 
 namespace gui {
 
+class CameraController;
 class EventDisplayWidget;
 
-/// @brief Line chart that plots sharpness values over the last 2 seconds.
+/// @brief Rolling line chart with an adaptive Y-axis (95th percentile of the
+/// visible samples + 10 % headroom; audit §9.3 S6 — no fixed/theoretical
+/// ceiling). One chart per metric; the dialog stacks two of them.
 class SharpnessChart : public QWidget {
     Q_OBJECT
 public:
-    explicit SharpnessChart(QWidget* parent = nullptr);
+    explicit SharpnessChart(const QString& title, const QColor& color,
+                            QWidget* parent = nullptr);
 
     /// @brief Appends a sample tagged with the current wall-clock time.
-    /// Samples older than 2 s are pruned. Pass a negative value to indicate
-    /// "no data" (the chart shows a placeholder).
+    /// Samples older than the rolling window are pruned.
     void add_value(double value);
 
     /// @brief Clears all samples.
     void clear();
 
-    /// @brief Sets a fixed Y-axis upper bound. The chart no longer auto-scales
-    /// to the data range — the line stays at a stable scale so the user can
-    /// compare readings across time. Pass 0 to revert to auto-scaling.
-    void set_y_max(double max);
+    /// @brief Number format for the current-value readout.
+    void set_format(char fmt, int precision);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -48,30 +66,65 @@ private:
         qint64 t_ms;
         double value;
     };
+    QString title_;
+    QColor color_;
     std::vector<Sample> samples_;
-    static constexpr qint64 kWindowMs = 2000;  ///< Rolling window width.
-    double y_max_{0.0};  ///< Fixed Y-axis upper bound; 0 = auto-scale.
+    char fmt_{'f'};
+    int precision_{2};
+    static constexpr qint64 kWindowMs = 5000;  ///< Rolling window width.
 };
 
-/// @brief Live sharpness meter dialog for the current event visualization frame.
+/// @brief Live sharpness meter on the raw CD event stream.
 class SharpnessDialog : public QDialog {
     Q_OBJECT
 public:
     explicit SharpnessDialog(QWidget* parent = nullptr);
     ~SharpnessDialog();
 
-    /// @brief Sets the display to poll. Safe to call with nullptr (the timer
-    /// keeps running but the chart stays empty until a display is set).
+    /// @brief Sets the camera as the data source: subscribes to
+    /// cd_events_ready (DirectConnection) and reads sensor dimensions.
+    /// Safe to call with nullptr. Repeated calls re-connect (UniqueConnection).
+    void set_camera(CameraController* camera);
+
+    /// @brief Degraded path kept for callers without a camera: the dialog
+    /// shows a "no data source" placeholder instead of metrics.
     void set_display(EventDisplayWidget* display);
+
+protected:
+    void showEvent(QShowEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     void on_tick();
+    void on_events_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events);
 
 private:
-    EventDisplayWidget* display_{nullptr};
+    int window_ms() const;
+    void reset_accumulation();
+    void show_no_data(const QString& reason);
+
+    CameraController* camera_{nullptr};
+    EventDisplayWidget* display_{nullptr};  // fallback marker only, never polled
     QTimer* timer_{nullptr};
-    SharpnessChart* chart_{nullptr};
+    QComboBox* window_combo_{nullptr};
+    SharpnessChart* contrast_chart_{nullptr};
+    SharpnessChart* width_chart_{nullptr};
+    QLabel* contrast_value_{nullptr};
+    QLabel* width_value_{nullptr};
+    QLabel* rate_label_{nullptr};
     QLabel* hint_label_{nullptr};
+
+    // --- Accumulation state, shared between the SDK callback thread
+    // (on_events_ready, DirectConnection) and the GUI thread (on_tick).
+    // Guarded by mutex_; never touch GUI objects under this lock. ---
+    std::mutex mutex_;
+    std::vector<Metavision::EventCD> buffer_;
+    int sensor_width_{0};
+    int sensor_height_{0};
+
+    /// Cap on buffer_.size() in case the GUI thread stalls (same rationale
+    /// and scale as CalibrationEventTap::kMaxBufferEvents).
+    static constexpr std::size_t kMaxBufferEvents = 2'000'000;
 };
 
 } // namespace gui

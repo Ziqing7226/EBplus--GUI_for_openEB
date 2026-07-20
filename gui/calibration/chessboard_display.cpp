@@ -3,10 +3,16 @@
 #include "chessboard_display.h"
 
 #include <QGuiApplication>
+#include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QResizeEvent>
 #include <QScreen>
+#include <QSizePolicy>
 #include <QTimer>
 
 namespace gui {
@@ -16,6 +22,11 @@ namespace {
 // the CalibrationWizard's capture cycle so every cycle contains exactly one
 // edge burst from the flip.
 constexpr int kFlipIntervalMs = 50;
+
+// Height of the HUD band at the bottom of the window. The board geometry
+// excludes this band, so the 20 Hz flip repaint (scoped to the board rect)
+// never intersects the HUD and the HUD doesn't flicker at 20 Hz.
+constexpr int kHudHeightPx = 46;
 } // namespace
 
 ChessboardDisplay::ChessboardDisplay(QWidget* parent) : QWidget(parent, Qt::Window) {
@@ -26,21 +37,62 @@ ChessboardDisplay::ChessboardDisplay(QWidget* parent) : QWidget(parent, Qt::Wind
     // so Qt can skip the background fill — saves a full-screen memset on each
     // repaint of a 4K surface.
     setAttribute(Qt::WA_OpaquePaintEvent);
+    // StrongFocus so the S/F/Esc shortcuts work in fullscreen; the HUD
+    // button is NoFocus so clicking it doesn't steal key events.
+    setFocusPolicy(Qt::StrongFocus);
     // Black background so the area outside the board doesn't generate
     // spurious edge events during flips.
     setPalette(Qt::black);
+
+    // --- HUD band (audit §9.2-C) -------------------------------------------
+    // Semi-transparent child widget pinned to the bottom edge, outside the
+    // board rect. It lets the user run the whole capture flow (progress,
+    // status, Start/Stop) while the fullscreen board covers the wizard
+    // dialog. Kept deliberately small: it sits on the same screen the camera
+    // is watching, so large or frequently-redrawing overlays would inject
+    // spurious events into the capture. It updates only on state changes.
+    hud_ = new QWidget(this);
+    hud_->setAttribute(Qt::WA_StyledBackground, true);
+    hud_->setStyleSheet(
+        "QWidget { background: rgba(0, 0, 0, 170); }"
+        "QLabel { color: #dddddd; }"
+        "QProgressBar { color: #dddddd; }");
+    auto* hud_layout = new QHBoxLayout(hud_);
+    hud_layout->setContentsMargins(10, 4, 10, 4);
+    hud_layout->setSpacing(10);
+
+    hud_progress_ = new QProgressBar(hud_);
+    hud_progress_->setFixedWidth(200);
+    hud_progress_->setMaximumHeight(18);
+    hud_progress_->setRange(0, 30);
+    hud_progress_->setValue(0);
+    hud_layout->addWidget(hud_progress_);
+
+    hud_status_ = new QLabel(tr("Idle. Press S or Start to capture."), hud_);
+    hud_status_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    hud_layout->addWidget(hud_status_, 1);
+
+    hud_spec_ = new QLabel(hud_);
+    hud_layout->addWidget(hud_spec_);
+
+    hud_toggle_btn_ = new QPushButton(tr("Start"), hud_);
+    hud_toggle_btn_->setFocusPolicy(Qt::NoFocus);
+    hud_layout->addWidget(hud_toggle_btn_);
+    connect(hud_toggle_btn_, &QPushButton::clicked, this, [this]() {
+        if (capturing_) emit stopRequested();
+        else            emit startRequested();
+    });
 
     timer_ = new QTimer(this);
     timer_->setTimerType(Qt::PreciseTimer);
     timer_->setInterval(kFlipIntervalMs);
     connect(timer_, &QTimer::timeout, this, [this]() {
         inverted_ = !inverted_;
-        // Only repaint the board area — the hint overlay doesn't change
-        // between flips, and the screen area outside the board stays black.
-        // This is the critical performance win: a full-screen update() on a
-        // 4K surface at 20 Hz forces ~660 MB/s of backing-store compositing;
-        // scoping the update to the board rect cuts that by the screen-to-board
-        // area ratio.
+        // Only repaint the board area — the HUD band and the black margin
+        // don't change between flips. This is the critical performance win:
+        // a full-screen update() on a 4K surface at 20 Hz forces ~660 MB/s
+        // of backing-store compositing; scoping the update to the board rect
+        // cuts that by the screen-to-board area ratio.
         update(QRect(board_origin_x_, board_origin_y_, board_w_px_, board_h_px_));
     });
 
@@ -56,10 +108,9 @@ void ChessboardDisplay::attach_to_screen(QScreen* screen) {
     attached_screen_ = screen ? screen : QGuiApplication::primaryScreen();
     recompute_geometry();
     if (attached_screen_) {
-        // Park the window at the screen's top-left; user can fullscreen from
-        // there with F.
-        const QRect g = attached_screen_->availableGeometry();
-        move(g.topLeft());
+        // Park the window at the screen's top-left so showFullScreen() lands
+        // on the right monitor; user can toggle windowed mode with F.
+        move(attached_screen_->geometry().topLeft());
     }
     update();  // full repaint — geometry changed
 }
@@ -71,11 +122,21 @@ void ChessboardDisplay::set_pattern(int inner_cols, int inner_rows) {
     update();  // full repaint — pattern changed
 }
 
+void ChessboardDisplay::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    if (hud_) hud_->setGeometry(0, height() - kHudHeightPx, width(), kHudHeightPx);
+    // Geometry follows the widget's own rect (audit §9.2-B / §六-B5), so
+    // fullscreen↔windowed transitions recompute automatically. The resize
+    // itself already schedules a repaint — no explicit update() needed.
+    recompute_geometry();
+}
+
 void ChessboardDisplay::recompute_geometry() {
-    if (!attached_screen_) return;
-    const QRect g = attached_screen_->availableGeometry();
-    const int avail_w = g.width();
-    const int avail_h = g.height();
+    // Available drawing area: the widget's rect minus the HUD band. This is
+    // the widget coordinate system that paintEvent uses, so the board is
+    // always exactly where it is drawn, in both fullscreen and windowed mode.
+    const int avail_w = width();
+    const int avail_h = height() - (hud_ ? kHudHeightPx : 0);
     if (avail_w <= 0 || avail_h <= 0) return;
 
     // The board has (inner_cols+1) × (inner_rows+1) squares. Choose a square
@@ -91,14 +152,22 @@ void ChessboardDisplay::recompute_geometry() {
     board_origin_y_ = (avail_h - board_h_px_) / 2;
 
     // Physical size from screen DPI. QScreen::physicalDotsPerInch() reports
-    // the panel's physical DPI; square_mm = pixels / dpi * 25.4.
-    const qreal dpi = attached_screen_->physicalDotsPerInch();
-    if (dpi > 0.0) {
-        square_size_mm_ = static_cast<float>(square_size_px_ / dpi * 25.4);
-    } else {
-        // Fallback: assume 96 DPI (typical desktop).
-        square_size_mm_ = static_cast<float>(square_size_px_ / 96.0 * 25.4);
-    }
+    // the panel's physical DPI; square_mm = pixels / dpi * 25.4. This value
+    // is only a default — the wizard shows it in an editable spinbox (audit
+    // §9.2-G) because X11 DPI is often unreliable.
+    qreal dpi = 0.0;
+    if (attached_screen_) dpi = attached_screen_->physicalDotsPerInch();
+    if (dpi <= 0.0) dpi = 96.0;  // Fallback: typical desktop DPI.
+    square_size_mm_ = static_cast<float>(square_size_px_ / dpi * 25.4);
+
+    update_spec_label();
+}
+
+void ChessboardDisplay::update_spec_label() {
+    if (!hud_spec_) return;
+    hud_spec_->setText(tr("%1×%2 corners  |  square ≈ %3 mm  |  S: start/stop  F: fullscreen  Esc: close")
+        .arg(inner_cols_).arg(inner_rows_)
+        .arg(static_cast<double>(square_size_mm_), 0, 'f', 1));
 }
 
 void ChessboardDisplay::start_flicker() {
@@ -107,6 +176,21 @@ void ChessboardDisplay::start_flicker() {
 
 void ChessboardDisplay::stop_flicker() {
     timer_->stop();
+}
+
+void ChessboardDisplay::set_capturing(bool capturing) {
+    capturing_ = capturing;
+    if (hud_toggle_btn_) hud_toggle_btn_->setText(capturing ? tr("Stop") : tr("Start"));
+}
+
+void ChessboardDisplay::set_progress(int accepted, int target) {
+    if (!hud_progress_) return;
+    hud_progress_->setRange(0, target);
+    hud_progress_->setValue(accepted);
+}
+
+void ChessboardDisplay::set_status(const QString& text) {
+    if (hud_status_) hud_status_->setText(text);
 }
 
 void ChessboardDisplay::paintEvent(QPaintEvent* event) {
@@ -140,28 +224,17 @@ void ChessboardDisplay::paintEvent(QPaintEvent* event) {
             }
         }
     }
-
-    // Hint overlay (small, top-left). Only redraw if the hint area is in the
-    // dirty region — on a flip the dirty region is the board rect, which
-    // normally doesn't overlap the top-left hint, so this is skipped.
-    const QRect hint_rect(12, 8, width() - 24, 28);
-    if (hint_rect.intersects(dirty)) {
-        p.setPen(QPen(QColor(255, 200, 0)));
-        QFont f = p.font();
-        f.setPointSize(10);
-        p.setFont(f);
-        QString hint = tr("F: fullscreen  |  Esc: close  |  %1×%2 inner corners  |  square = %3 mm")
-                           .arg(inner_cols_).arg(inner_rows_)
-                           .arg(square_size_mm_, 0, 'f', 1);
-        if (fullscreen_) hint = tr("F: windowed  |  Esc: close  |  %1×%2  |  square = %3 mm")
-                                     .arg(inner_cols_).arg(inner_rows_)
-                                     .arg(square_size_mm_, 0, 'f', 1);
-        p.drawText(hint_rect, Qt::AlignLeft | Qt::AlignTop, hint);
-    }
+    // No painted hint overlay: the HUD band below the board shows the spec
+    // and shortcuts, and being child widgets it never intersects the board
+    // rect's 20 Hz partial repaint.
 }
 
 void ChessboardDisplay::keyPressEvent(QKeyEvent* event) {
     switch (event->key()) {
+        case Qt::Key_S:
+            if (capturing_) emit stopRequested();
+            else            emit startRequested();
+            break;
         case Qt::Key_F:
             fullscreen_ = !fullscreen_;
             if (fullscreen_) {

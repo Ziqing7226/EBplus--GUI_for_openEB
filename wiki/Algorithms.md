@@ -1,9 +1,9 @@
 # Algorithms
 
-EB plus ships **59 algorithms** registered in a single `AlgoBridge` registry (`gui/algo_bridge/algo_bridge.cpp`):
+EB plus ships **36 algorithms** registered in a single `AlgoBridge` registry (`gui/algo_bridge/algo_bridge.cpp`):
 
-- **29 self-developed** algorithms under `algo/` (21 Computer Vision + 8 Analytics). `intrinsic_calibration` was removed from the registry — it is now a **Tools → Intrinsic Wizard** dialog. Undistortion is available as a stackable preprocessing checkbox in the Algorithms panel (`preproc_undistort_enabled` / `preproc_undistort_path`).
-- **30 OpenEB-wrapped** capabilities (10 filters + 7 frame modes + 7 preprocessors + 6 utilities)
+- **28 self-developed** algorithms under `algo/` (20 Computer Vision + 8 Analytics, including `sensor_self_test`). `intrinsic_calibration` was removed from the registry — it is now a **Tools → Intrinsic Wizard** dialog. `perspective_undistort` was also removed — undistortion is available as a stackable preprocessing checkbox in the Algorithms panel (`preproc_undistort_enabled` / `preproc_undistort_path`).
+- **8 OpenEB-wrapped** filter/transform stages (`polarity_filter`, `polarity_invert`, `flip_x`, `flip_y`, `rotate`, `transpose`, `rescale`, `roi_filter`) — the actual processing lives in the `FilterChain` driven by the Preprocessing panel; the registry entries keep a stable namespace for config capture. The former `frame_*` / `preproc_*` / `util_*` registrations were removed: they had no GUI entry point and were unreachable dead code.
 
 Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a global ROI (default: center 128×128) and a shared preprocessing stage. All parameters are adjusted exclusively in the sidebar's **Algorithms** panel; algorithm display windows show only the title and output.
 
@@ -13,7 +13,7 @@ Each algorithm declares a display mode that controls how its output reaches the 
 
 | Mode | Behavior |
 |------|----------|
-| **Passive** | No direct display output (e.g. filters, analytics that log only) |
+| **Passive** | No overlay; for in-place event filters (e.g. Hot Pixel Filter) the main display switches to rendering the algorithm's **output event stream** so the filtering effect is directly visible |
 | **Overlay** | Draws annotations on top of the live event display (trajectories, vectors, boxes) |
 | **Replace** | Replaces the event display with the algorithm's own frame |
 | **Standalone** | Opens a separate `AlgoWindow` with its own output canvas |
@@ -23,12 +23,13 @@ Each algorithm declares a display mode that controls how its output reaches the 
 Every self-developed algorithm runs events through a stackable preprocessing stage, configured in the Algorithms panel:
 
 ```
-ROI (default 128×128 center)  →  Noise Filter  →  1/4 Downsample
+ROI (default 128×128 center)  →  Noise Filter  →  1/4 Downsample  →  Undistort
 ```
 
 - **ROI** — bounds computational cost; default center 128×128.
-- **Noise Filter** — 8 modes (see below), exposed based on the selected mode.
-- **1/4 Downsample** — halves both dimensions (e.g. 128×128 → 64×64) before the algorithm runs; output is upsampled back.
+- **Noise Filter** — 8 modes (see below), exposed based on the selected mode; default OFF.
+- **1/4 Downsample** — default **OFF**. Only the E2VID/ISI/TimeSurface/Hough backends halve coordinates (128×128 → 64×64, output upsampled back); for the other backends it merely *thins* events (coordinates unchanged, 3/4 of the input discarded), which is why it is opt-in.
+- **Undistort** — default OFF; loads the calibration YAML written by the Intrinsic Wizard and remaps event coordinates (see [GUI Guide](GUI-Guide.md#undistort-preprocessing)).
 
 These stages are **not** mutually exclusive with algorithms — they stack on top.
 
@@ -49,25 +50,24 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 
 ## Self-Developed Algorithms
 
-### Computer Vision (21)
+### Computer Vision (20)
 
 | Algorithm | Display | Notes |
 |-----------|---------|-------|
-| Hot Pixel Filter | Passive | FPN correction option |
+| Hot Pixel Filter | Passive | FPN correction option; main display renders the filtered stream |
 | Orientation Filter | Overlay | jAER SimpleOrientationFilter (min-dt WTA) |
 | Direction Selective Filter | Overlay | jAER DirectionSelectiveFilter |
 | Sparse Optical Flow | Overlay | 4 modes: LocalPlanes / LucasKanade / BlockMatch / ClusterOF |
 | Blob Detector | Overlay | |
 | Object Tracker | Overlay | 4 modes: RCT / Median / Kalman / MultiHypothesis |
-| Corner Detector | Overlay | 3 modes: Harris / FAST / AGAST |
+| Corner Detector | Overlay | 3 modes: EndStopped / TypeCoincidence / Harris |
 | Line Segment (ELiSeD) | Overlay | |
 | Hough Line Tracker | Overlay | jAER HoughLineTracker |
 | Hough Circle Tracker | Overlay | jAER HoughCircleTracker |
-| Orientation Cluster | Overlay | |
+| Orientation Cluster | Overlay | jAER OrientationCluster (per-event orientation filter) |
 | Cluster LIF | Overlay | LIF neuron clustering |
 | Background Mask Filter | Replace | 2D histogram background modeling |
-| Perspective Undistort | Passive | |
-| Trigger Synced Filter | Passive | |
+| Trigger Synced Filter | Passive | Requires an external trigger source (none wired — output empty) |
 | Bandpass Filter | Overlay | |
 | EIS (Optical Gyro) | Overlay | Electronic image stabilization |
 | Ultra Slow Motion | Passive | Time dilation |
@@ -87,11 +87,11 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 | Auto Bias Controller | Overlay | Closed-loop bias tuning |
 | Frequency Detector | Standalone | Blinking frequency detection |
 
-### Calibration (1)
+> An 8th analytics registration, **Sensor Self-Test**, is a full-sensor diagnostic triggered from the Devices panel (no ROI/preprocessing, no tunable params) — it does not appear in the algorithm list.
 
-| Algorithm | Display | Notes |
-|-----------|---------|-------|
-| Intrinsic Calibration | Standalone | chessboard / circle_grid / aruco |
+### Calibration
+
+Not a registered algorithm: intrinsic calibration runs as the **Tools → Intrinsic Wizard** dialog (event-only flickering chessboard), and undistortion is a shared preprocessing stage. See [GUI Guide](GUI-Guide.md#tools-menu).
 
 ## Event-to-Video (E2VID)
 
@@ -103,7 +103,7 @@ The Event-to-Video algorithm reconstructs grayscale intensity images from raw ev
 | `1 = InteractingMaps` | | Non-DL; six interconnected maps (I/G/V/F/C/R) with rotation estimation |
 | `2 = E2VID` | ✅ | DL; ONNX Runtime neural-network inference |
 
-**Common parameters** (modes 0, 1): `output_fps` (1–120, default 30), `window_ms`, `decay_tau_ms` (0–5000, default 500).
+**Common parameters**: `output_fps` (1–120, default 30); `window_ms` (modes 0, 1). The per-algorithm `downsample` and `decay_tau_ms` parameters were removed — downsampling is now the shared `preproc_downsample` stage (default OFF), and the decay semantics were ineffective.
 
 ### E2VID Setup
 
@@ -132,7 +132,9 @@ wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.ta
 cmake --build build -- -j$(nproc)
 ```
 
-E2VID defaults to 128×128 ROI + 30 fps + 1/4 downsample (64×64 inference → upsampled to 128×128). `num_bins` is auto-determined by the ONNX model's input channel count when a model is loaded.
+On first build the GUI auto-sets a 128×128 center ROI + 24 fps for all three modes. Enable the shared **1/4 Downsample** preprocessing stage (default OFF) to reconstruct at 64×64 → upsampled back to 128×128 (~4× less compute). `num_bins` is auto-determined by the ONNX model's input channel count when a model is loaded.
+
+E2VID inference runs on a **background worker thread** — the UI no longer freezes during reconstruction. When inference is slower than the event rate, the oldest queued batches are dropped; the status line shows `dropped=N` and `model=loaded` / `model=heuristic`.
 
 E2VID parameters exposed in the GUI: model path, `num_bins`, auto-HDR, unsharp amount/sigma, bilateral sigma.
 
@@ -153,16 +155,21 @@ Six interconnected maps updated by alternating relaxation:
 
 V values are clamped to [-1, 1] to prevent NaN divergence. `I_map_` is reinitialized from Vc every frame to prevent ghosting.
 
-## OpenEB-Wrapped Capabilities (30)
+## OpenEB-Wrapped Stages (8)
 
-Registered in `AlgoBridge` under four categories — these wrap existing openEB SDK algorithms without reimplementation:
+Registered in `AlgoBridge` under the `openeb_filter` category — these wrap existing openEB SDK event filters/transforms without reimplementation. The actual processing lives in the thread-safe `FilterChain` and is toggled from the **Preprocessing** panel (see [GUI Guide](GUI-Guide.md#preprocessing-filter-chain)); the registry entries exist so the stages appear in config capture and keep a stable namespace:
 
-| Category | Count | Examples |
-|----------|-------|----------|
-| `openeb_filter` | 10 | FlipX, FlipY, ROI, Polarity, Event Rate Filter, … |
-| `openeb_frame` | 7 | Integration, Diff, Histogram, Time Decay, Contrast Map, Periodic, On-Demand |
-| `openeb_preproc` | 7 | Diff, Histo, Hardware Diff/Histo, Time Surface, Event Cube, Preprocessor Factory |
-| `openeb_util` | 6 | Rate Estimator, Frame Composer, Rolling Buffer, Video Writer, Data Synchronizer, Timing Profiler |
+| Stage | Notes |
+|-------|-------|
+| Polarity Filter | ON / OFF only |
+| Polarity Invert | |
+| Flip X / Flip Y | |
+| Rotate | 0 / 90 / 180 / 270 |
+| Transpose | |
+| Rescale | Scale X / Scale Y |
+| ROI Filter | X0, Y0, X1, Y1, relative-coords option |
+
+The former `openeb_frame` (7), `openeb_preproc` (7) and `openeb_util` (6) registrations were removed together with their backends — they had no GUI entry point and were unreachable dead code. Some of those SDK capabilities are still used internally (e.g. `CDFrameGenerator` for display/AVI export, `TimeSurfaceProcessor` for Time Surface, `CvVideoRecorder` for AVI export).
 
 ## Adding a New Algorithm
 

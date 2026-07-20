@@ -114,10 +114,12 @@ public:
                 }
             }
         }
-        // Record size distribution.
+        // Record size distribution (bounded history, §四-M5: ids are never
+        // reused and detections accrue every round, so cap the deque).
         for (const Particle& d : detections) {
             size_hist_.push_back(static_cast<double>(d.area));
         }
+        while (size_hist_.size() > kMaxSizeHist) size_hist_.pop_front();
         ++frame_count_;
     }
 
@@ -150,6 +152,7 @@ public:
     cv::Mat render_size_hist(int img_w = 512, int img_h = 256,
                              int bins = 32) const {
         cv::Mat img(img_h, img_w, CV_8UC3, cv::Scalar(20, 20, 20));
+        if (bins < 1) bins = 1;  // §四-低14: avoid division by zero below
         if (size_hist_.empty()) return img;
         const double lo = static_cast<double>(min_size_);
         const double hi = static_cast<double>(max_size_);
@@ -167,13 +170,13 @@ public:
         const int pad = 30;
         const int w = img.cols - 2 * pad;
         const int hh = img.rows - 2 * pad;
-        const int bw = w / bins;
+        const int bw = std::max(w / bins, 1);
         for (int i = 0; i < bins; ++i) {
             const int bh = static_cast<int>(
                 static_cast<double>(counts[i]) / static_cast<double>(max_c) * hh);
             const int x = pad + i * bw;
             const int y = img.rows - pad - bh;
-            cv::rectangle(img, cv::Rect(x, y, bw - 1, bh),
+            cv::rectangle(img, cv::Rect(x, y, std::max(bw - 1, 1), bh),
                           cv::Scalar(255, 200, 100), cv::FILLED);
         }
         cv::putText(img, "particle size", cv::Point(pad, pad / 2),
@@ -262,11 +265,16 @@ private:
             prev_cy_[p.id] = p.cy;
             tracks_.push_back(p);
         }
-        // Drop stale tracks.
+        // Drop stale tracks (and their prev_cy_ entries — ids are never
+        // reused, so the map would otherwise grow unbounded, §四-M5).
         tracks_.erase(
             std::remove_if(tracks_.begin(), tracks_.end(),
-                           [kMaxMissed](const Particle& t) {
-                               return t.missed > kMaxMissed;
+                           [this, kMaxMissed](const Particle& t) {
+                               if (t.missed > kMaxMissed) {
+                                   prev_cy_.erase(t.id);
+                                   return true;
+                               }
+                               return false;
                            }),
             tracks_.end());
     }
@@ -307,6 +315,7 @@ private:
     std::vector<Particle> tracks_;
     std::unordered_map<int, float> prev_cy_;  ///< previous centroid Y per track
     std::deque<double> size_hist_;
+    static constexpr std::size_t kMaxSizeHist = 100000;  ///< size_hist_ cap
     std::deque<Metavision::timestamp> count_times_;
     std::uint64_t cumulative_count_{0};
     int next_id_{1};

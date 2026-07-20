@@ -47,7 +47,14 @@ public:
             if (k == "preproc_downsample") rebuild();
             return;
         }
+        // Only rebuild when the effective dimensions actually change
+        // (audit §5-D4): apply_global_roi fires 5 set_param calls, and a
+        // rebuild discards the per-pixel timestamp surface each time.
+        const bool prev_roi_enabled = roi_.enabled;
+        const int prev_roi_rw = roi_.rw;
+        const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
+        bool roi_changed = false;
         if (k == "decay_time_us") {
             decay_time_us_ = to_i(v);
             if (algo_) algo_->set_decay_time_us(decay_time_us_);
@@ -62,12 +69,20 @@ public:
             channels_ = (c == 2) ? gui_algo::TimeSurface::Channels::Split
                                   : gui_algo::TimeSurface::Channels::Merged;
             if (algo_) algo_->set_channels(channels_);
-        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); roi_changed = true; }
+        else if (k == "roi_x") { roi_.x = to_i(v); roi_changed = true; }
+        else if (k == "roi_y") { roi_.y = to_i(v); roi_changed = true; }
+        else if (k == "roi_w") { roi_.w = to_i(v); roi_changed = true; }
+        else if (k == "roi_h") { roi_.h = to_i(v); roi_changed = true; }
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
+        else if (roi_changed) {
+            const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
+            const int old_ah = prev_roi_enabled ? prev_roi_rh : sensor_h_;
+            roi_.compute(sensor_w_, sensor_h_);
+            const int new_aw = roi_.enabled ? roi_.rw : sensor_w_;
+            const int new_ah = roi_.enabled ? roi_.rh : sensor_h_;
+            if (new_aw != old_aw || new_ah != old_ah) rebuild();
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
@@ -156,6 +171,11 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); last_out_.clear(); passthrough_.clear(); roi_buf_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        // The algo holds no sensor-sized state (timestamp dilator) — only
+        // the ROI geometry needs updating (audit §5-D1).
+        roi_.set_sensor_dimensions(w, h);
+    }
 };
 
 
@@ -174,7 +194,6 @@ public:
 /// reflect the buffer state in its status label.
 class XYTVisualizerBackend final : public AlgoBackend {
     gui_algo::XYTVisualizer algo_;
-    int max_points_{50000};
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
@@ -190,12 +209,10 @@ public:
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
         if (k == "time_window_us") algo_.set_time_window_ms(static_cast<float>(to_i(v)) / 1000.0F);
-        else if (k == "max_points") max_points_ = to_i(v);
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "time_window_us") return from_i(static_cast<int>(algo_.time_window_ms() * 1000.0F));
-        if (k == "max_points") return from_i(max_points_);
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -219,7 +236,9 @@ public:
     }
     void reset() override { algo_.clear(); passthrough_.clear(); roi_buf_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
-        roi_.init(w, h);
+        // XYTVisualizer holds no sensor-sized state (a rolling event deque);
+        // only the ROI geometry needs updating (audit §5-D2).
+        roi_.set_sensor_dimensions(w, h);
     }
 };
 
@@ -258,6 +277,9 @@ public:
         return r;
     }
     void reset() override { passthrough_.clear(); roi_buf_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+    }
 };
 
 

@@ -597,8 +597,13 @@ TEST(LifIntegratorTest, LeakDecays) {
     LifIntegrator lif(10, 10, 1000, 100.0);  // tau=1ms, threshold=100
     lif.add_event(0, 0, 1, 0);  // pot = 1
     // Leak 1000us with tau=1000us → decay = e^(-1) ≈ 0.368
-    lif.leak_global(1000);
+    lif.leak_global(1000, 1000);
     EXPECT_NEAR(lif.potential(0, 0), 0.367879, 0.01);
+    // leak_global synchronises last_ts_ to `now`, so the next event decays
+    // only the interval after the global leak (no double decay, §四-低3):
+    // at t=2000, dt=1000 → 0.368*e^(-1)+1 ≈ 1.135 (not 0.368*e^(-2)+1).
+    lif.add_event(0, 0, 1, 2000);
+    EXPECT_NEAR(lif.potential(0, 0), 1.135335, 0.01);
 }
 
 TEST(LifIntegratorTest, PerPixelLeakOnEvent) {

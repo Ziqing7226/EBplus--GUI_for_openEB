@@ -18,10 +18,6 @@ set(GUI_LIB_SOURCES
     algo_bridge/backends/analytics_extra_backends.cpp
     algo_bridge/backends/display_backends.cpp
     algo_bridge/backends/filter_backends.cpp
-    algo_bridge/backends/openeb_filter_backends.cpp
-    algo_bridge/backends/openeb_frame_backends.cpp
-    algo_bridge/backends/openeb_preproc_backends.cpp
-    algo_bridge/backends/openeb_util_backends.cpp
     algo_bridge/backends/backend_factory.cpp
     algo_bridge/backends/backend_common.cpp
     algo_bridge/filter_chain.cpp
@@ -55,6 +51,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_wizard.cpp")
         calibration/chessboard_display.cpp
         calibration/calibration_event_tap.cpp
         calibration/sharpness_dialog.cpp
+        calibration/sharpness_metrics.cpp
     )
 endif()
 
@@ -66,12 +63,8 @@ list(APPEND GUI_LIB_SOURCES
 )
 
 # Phase 11 — jAER-inspired display / widgets (design §1.6).
-# Header-only utility multiline_text.h needs no source entry.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/display/space_time_display.cpp")
     list(APPEND GUI_LIB_SOURCES
-        widgets/target_labeler.cpp
-        widgets/pixel_probe.cpp
-        widgets/mouse_adaptor.cpp
         widgets/algo_window.cpp
         display/frame_annotator.cpp
         display/space_time_display.cpp

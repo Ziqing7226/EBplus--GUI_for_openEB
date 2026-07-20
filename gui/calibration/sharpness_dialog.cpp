@@ -2,77 +2,54 @@
 
 #include "sharpness_dialog.h"
 
+#include <algorithm>
+
+#include <QCloseEvent>
+#include <QComboBox>
 #include <QDateTime>
+#include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QPen>
+#include <QShowEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 
-#include <opencv2/imgproc.hpp>
+#include <opencv2/core.hpp>
 
-#include "display/event_display_widget.h"
+#include "app/camera_controller.h"
+#include "calibration/sharpness_metrics.h"
 
 namespace gui {
 
 namespace {
-// Poll interval — 10 Hz. Fast enough to feel live during bias / focus tuning,
-// cheap enough to not compete with the rendering loop.
+// Poll interval — 10 Hz. The timer only re-builds the count image and
+// recomputes metrics; event accumulation happens continuously in the SDK
+// callback thread, so a slower timer never loses events.
 constexpr int kPollIntervalMs = 100;
-
-/// @brief Theoretical upper bound for the variance-of-Laplacian sharpness
-///        metric on a W×H 8-bit grayscale frame, assuming an ideal
-///        single-pixel checkerboard (the sharpest possible pattern).
-///
-/// cv::Laplacian ksize=3, scale=1, delta=0, BORDER_REPLICATE. The kernel is
-///   [0  1  0]
-///   [1 -4  1]
-///   [0  1  0]
-/// so L(x,y) = I(x-1,y) + I(x+1,y) + I(x,y-1) + I(x,y+1) - 4·I(x,y).
-///
-/// For a checkerboard, half the pixels have L = +|L| and half have L = -|L|,
-/// so the mean is 0 and σ² = E[L²]. The |L| depends on how many of the 4
-/// neighbors are the opposite color (BORDER_REPLICATE copies the center into
-/// out-of-bounds positions):
-///   interior (4 opposite neighbors):           |L| = 4·255 = 1020
-///   edge      (3 opposite, 1 replicated same): |L| = 3·255 = 765
-///   corner    (2 opposite, 2 replicated same): |L| = 2·255 = 510
-///
-/// σ²_max = [n_int·1020² + n_edge·765² + n_corner·510²] / (W·H)
-///
-/// The result is slightly resolution-dependent (boundary effects) and
-/// converges to 1020² = 1 040 400 for large sensors. Real event frames never
-/// reach this bound, but it gives the chart a stable, principled Y-axis
-/// ceiling instead of auto-scaling jitter.
-double compute_theoretical_max_variance(int W, int H) {
-    if (W < 2 || H < 2) return 1040400.0;  // fallback: interior-only bound
-    const double li = 4.0 * 255.0;   // 1020 — interior pixel |L|
-    const double le = 3.0 * 255.0;   // 765  — edge pixel |L|
-    const double lc = 2.0 * 255.0;   // 510  — corner pixel |L|
-    const long n_int    = static_cast<long>(W - 2) * (H - 2);
-    const long n_edge   = 2L * (W - 2) + 2L * (H - 2);
-    const long n_corner = 4L;
-    const long N = static_cast<long>(W) * H;
-    const double sum_sq = static_cast<double>(n_int) * li * li
-                        + static_cast<double>(n_edge) * le * le
-                        + static_cast<double>(n_corner) * lc * lc;
-    return sum_sq / static_cast<double>(N);
-}
 } // namespace
 
 // ---------------------------------------------------------------------------
 // SharpnessChart
 // ---------------------------------------------------------------------------
 
-SharpnessChart::SharpnessChart(QWidget* parent) : QWidget(parent) {
-    setMinimumSize(300, 140);
+SharpnessChart::SharpnessChart(const QString& title, const QColor& color,
+                               QWidget* parent)
+    : QWidget(parent), title_(title), color_(color) {
+    setMinimumSize(300, 120);
     setAutoFillBackground(true);
     // Dark background like an oscilloscope screen.
     QPalette pal = palette();
     pal.setColor(QPalette::Window, QColor(24, 24, 28));
     setPalette(pal);
+}
+
+void SharpnessChart::set_format(char fmt, int precision) {
+    fmt_ = fmt;
+    precision_ = precision;
 }
 
 void SharpnessChart::add_value(double value) {
@@ -91,12 +68,6 @@ void SharpnessChart::clear() {
     update();
 }
 
-void SharpnessChart::set_y_max(double max) {
-    y_max_ = max;
-    // No update() here — the caller (on_tick) follows with add_value(), which
-    // triggers a repaint. Calling update() here would double-repaint.
-}
-
 void SharpnessChart::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -107,9 +78,17 @@ void SharpnessChart::paintEvent(QPaintEvent*) {
     p.fillRect(r, QColor(24, 24, 28));
 
     // Chart area with margins for labels.
-    const int ml = 8, mt = 10, mr = 8, mb = 8;
+    const int ml = 8, mt = 18, mr = 8, mb = 8;
     const QRectF chart_r(r.left() + ml, r.top() + mt,
                          r.width() - ml - mr, r.height() - mt - mb);
+
+    // Title (top-left).
+    p.setPen(QColor(180, 180, 185));
+    QFont tf = p.font();
+    tf.setPointSize(9);
+    p.setFont(tf);
+    p.drawText(QRectF(chart_r.left(), r.top(), chart_r.width() * 0.5, mt),
+               Qt::AlignLeft | Qt::AlignVCenter, title_);
 
     // Grid — 4 horizontal lines.
     p.setPen(QPen(QColor(50, 50, 55), 1, Qt::DotLine));
@@ -127,50 +106,35 @@ void SharpnessChart::paintEvent(QPaintEvent*) {
         return;
     }
 
-    // Y-axis range: use the fixed theoretical upper bound if set (stable
-    // scale — no auto-scaling jitter), else fall back to auto-scaling from
-    // the visible samples.
-    double y_min, y_max, label_max;
-    if (y_max_ > 0.0) {
-        // Fixed ceiling: [0, theoretical_max]. Sharpness is always ≥ 0.
-        y_min = 0.0;
-        y_max = y_max_;
-        label_max = y_max_;
-    } else {
-        // Auto-scale from data.
-        y_min = samples_.front().value;
-        y_max = samples_.front().value;
-        for (const auto& s : samples_) {
-            if (s.value < y_min) y_min = s.value;
-            if (s.value > y_max) y_max = s.value;
-        }
-        if (y_max - y_min < 1.0) {
-            // Avoid degenerate range — pad around the midpoint.
-            const double mid = 0.5 * (y_max + y_min);
-            y_min = mid - 0.5;
-            y_max = mid + 0.5;
-        }
-        // Add 10 % headroom top and bottom.
-        const double y_range = y_max - y_min;
-        y_min -= y_range * 0.1;
-        y_max += y_range * 0.1;
-        label_max = y_max - y_range * 0.1;  // data max without headroom
-    }
+    // Adaptive Y-axis (audit §9.3 S6): both metrics are >= 0, so pin the
+    // bottom at 0 and set the ceiling to the 95th percentile of the visible
+    // samples + 10 % headroom. The percentile (not the max) keeps single
+    // spikes from collapsing the scale.
+    std::vector<double> values;
+    values.reserve(samples_.size());
+    for (const auto& s : samples_) values.push_back(s.value);
+    std::sort(values.begin(), values.end());
+    const double q95 = values[static_cast<std::size_t>(
+        0.95 * static_cast<double>(values.size() - 1))];
+    const double y_min = 0.0;
+    const double y_max = (q95 > 0.0) ? q95 * 1.1 : 1.0;
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 t_min = now - 2000;  // 2-second window
+    const qint64 t_min = now - kWindowMs;
 
-    // Map (t, value) → (x, y) in chart coordinates.
+    // Map (t, value) -> (x, y) in chart coordinates.
     auto map_pt = [&](const Sample& s) -> QPointF {
-        const double x_frac = static_cast<double>(s.t_ms - t_min) / 2000.0;
-        const double y_frac = (s.value - y_min) / (y_max - y_min);
+        const double x_frac = static_cast<double>(s.t_ms - t_min) /
+                              static_cast<double>(kWindowMs);
+        double y_frac = (s.value - y_min) / (y_max - y_min);
+        if (y_frac > 1.0) y_frac = 1.0;  // clip spikes above the ceiling
         const qreal x = chart_r.left() + x_frac * chart_r.width();
         const qreal y = chart_r.bottom() - y_frac * chart_r.height();
         return QPointF(x, y);
     };
 
     // Draw the polyline.
-    p.setPen(QPen(QColor(76, 200, 130), 2));
+    p.setPen(QPen(color_, 2));
     QPainterPath path;
     bool first = true;
     for (const auto& s : samples_) {
@@ -181,31 +145,23 @@ void SharpnessChart::paintEvent(QPaintEvent*) {
     p.drawPath(path);
 
     // Draw sample dots.
-    p.setBrush(QColor(76, 200, 130));
+    p.setBrush(color_);
     p.setPen(Qt::NoPen);
     for (const auto& s : samples_) {
         p.drawEllipse(map_pt(s), 2.5, 2.5);
     }
 
-    // Current value (top-left) and Y range (top-right).
+    // Current value (top-right).
     const double current = samples_.back().value;
     p.setPen(QColor(235, 235, 240));
     QFont f = p.font();
     f.setPointSize(11);
     f.setBold(true);
     p.setFont(f);
-    p.drawText(QRectF(chart_r.left(), r.top(), chart_r.width() * 0.6, mt + 2),
-               Qt::AlignLeft | Qt::AlignVCenter,
-               tr("σ² = %1").arg(current, 0, 'f', 1));
-
-    f.setBold(false);
-    f.setPointSize(9);
-    p.setFont(f);
-    p.setPen(QColor(140, 140, 145));
-    p.drawText(QRectF(chart_r.right() - chart_r.width() * 0.4, r.top(),
-                      chart_r.width() * 0.4, mt + 2),
+    p.drawText(QRectF(chart_r.right() - chart_r.width() * 0.5, r.top(),
+                      chart_r.width() * 0.5, mt),
                Qt::AlignRight | Qt::AlignVCenter,
-               tr("max %1").arg(label_max, 0, 'f', 0));
+               QString::number(current, fmt_, precision_));
 }
 
 // ---------------------------------------------------------------------------
@@ -214,18 +170,55 @@ void SharpnessChart::paintEvent(QPaintEvent*) {
 
 SharpnessDialog::SharpnessDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Sharpness Meter"));
-    setMinimumSize(320, 200);
+    setMinimumSize(360, 420);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
 
-    chart_ = new SharpnessChart(this);
-    layout->addWidget(chart_, 1);
+    // Top row: accumulation window selector + event rate (reference only).
+    auto* top_row = new QHBoxLayout();
+    top_row->addWidget(new QLabel(tr("Window:"), this));
+    window_combo_ = new QComboBox(this);
+    window_combo_->addItem(tr("50 ms"), 50);
+    window_combo_->addItem(tr("100 ms"), 100);
+    window_combo_->addItem(tr("200 ms"), 200);
+    window_combo_->setCurrentIndex(1);  // default 100 ms
+    connect(window_combo_, QOverload<int>::of(&QComboBox::activated),
+            this, &SharpnessDialog::reset_accumulation);
+    top_row->addWidget(window_combo_);
+    top_row->addStretch(1);
+    rate_label_ = new QLabel(tr("Event rate: —"), this);
+    top_row->addWidget(rate_label_);
+    layout->addLayout(top_row);
+
+    // Big current-value readouts.
+    auto* values = new QFormLayout();
+    contrast_value_ = new QLabel(tr("—"), this);
+    width_value_ = new QLabel(tr("—"), this);
+    QFont big = font();
+    big.setPointSize(14);
+    big.setBold(true);
+    contrast_value_->setFont(big);
+    width_value_->setFont(big);
+    values->addRow(tr("Contrast (higher = sharper):"), contrast_value_);
+    values->addRow(tr("Line width px (lower = sharper):"), width_value_);
+    layout->addLayout(values);
+
+    contrast_chart_ = new SharpnessChart(tr("Contrast σ²/μ²"),
+                                         QColor(76, 200, 130), this);
+    contrast_chart_->set_format('f', 1);
+    layout->addWidget(contrast_chart_, 1);
+
+    width_chart_ = new SharpnessChart(tr("Mean line width (px)"),
+                                      QColor(90, 160, 240), this);
+    width_chart_->set_format('f', 2);
+    layout->addWidget(width_chart_, 1);
 
     hint_label_ = new QLabel(
-        tr("Variance of Laplacian of the current event frame.\n"
-           "Higher = sharper. Point at a high-contrast scene."),
+        tr("Focus: smaller line width is better. "
+           "Bias tuning: higher contrast is better. "
+           "If noise is high, reduce noise first."),
         this);
     hint_label_->setWordWrap(true);
     hint_label_->setAlignment(Qt::AlignCenter);
@@ -241,85 +234,182 @@ SharpnessDialog::SharpnessDialog(QWidget* parent) : QDialog(parent) {
 
 SharpnessDialog::~SharpnessDialog() {
     if (timer_) timer_->stop();
+    // Note: cd_broadcast is a single boolean shared with the calibration
+    // wizard. Like the wizard, this dialog flips it off on teardown without
+    // tracking which consumer enabled it — if both tools are open at once,
+    // closing one stops the other's broadcast until it is reopened. This is
+    // a known, accepted limitation of the shared-flag design.
+    if (camera_) {
+        disconnect(camera_, &CameraController::cd_events_ready,
+                   this, &SharpnessDialog::on_events_ready);
+        camera_->set_cd_broadcast(false);
+    }
+    // Lock once so any in-progress on_events_ready() call (running on the
+    // SDK thread via DirectConnection) finishes before buffer_ is destroyed.
+    std::lock_guard<std::mutex> lk(mutex_);
+    buffer_.clear();
+}
+
+void SharpnessDialog::set_camera(CameraController* camera) {
+    if (camera_ == camera) return;
+    if (camera_) {
+        disconnect(camera_, &CameraController::cd_events_ready,
+                   this, &SharpnessDialog::on_events_ready);
+    }
+    camera_ = camera;
+    reset_accumulation();
+    if (!camera_) return;
+
+    {
+        const SensorInfo& info = camera_->sensor_info();
+        std::lock_guard<std::mutex> lk(mutex_);
+        sensor_width_ = info.width;
+        sensor_height_ = info.height;
+    }
+
+    // DirectConnection: on_events_ready() runs on the SDK streaming thread,
+    // NOT the GUI thread (same rationale as CalibrationEventTap — a queued
+    // connection would pile batches into the GUI event queue). The slot only
+    // appends under mutex_. UniqueConnection guards against duplicate
+    // connections if set_camera() is called repeatedly with the same camera.
+    connect(camera_, &CameraController::cd_events_ready,
+            this, &SharpnessDialog::on_events_ready,
+            static_cast<Qt::ConnectionType>(Qt::DirectConnection |
+                                            Qt::UniqueConnection));
+
+    // If the dialog is already visible, start the broadcast immediately;
+    // otherwise showEvent() will.
+    if (isVisible()) camera_->set_cd_broadcast(true);
 }
 
 void SharpnessDialog::set_display(EventDisplayWidget* display) {
+    // Kept for source compatibility with callers that have no camera handle.
+    // The display frame is never polled anymore (audit §9.3 R3); without a
+    // camera the dialog shows a "no data source" placeholder.
     display_ = display;
 }
 
+void SharpnessDialog::showEvent(QShowEvent* event) {
+    QDialog::showEvent(event);
+    // Enable the CD broadcast only while the dialog is shown so the SDK
+    // thread pays the per-batch copy cost only when a consumer is listening.
+    if (camera_) camera_->set_cd_broadcast(true);
+}
+
+void SharpnessDialog::closeEvent(QCloseEvent* event) {
+    if (camera_) camera_->set_cd_broadcast(false);
+    QDialog::closeEvent(event);
+}
+
+int SharpnessDialog::window_ms() const {
+    return window_combo_->currentData().toInt();
+}
+
+void SharpnessDialog::reset_accumulation() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    buffer_.clear();
+}
+
+void SharpnessDialog::show_no_data(const QString& reason) {
+    contrast_value_->setText(tr("—"));
+    width_value_->setText(tr("—"));
+    rate_label_->setText(tr("Event rate: —"));
+    hint_label_->setText(reason);
+}
+
+void SharpnessDialog::on_events_ready(
+    std::shared_ptr<std::vector<Metavision::EventCD>> events) {
+    // Runs on the SDK streaming thread (DirectConnection). Mutex only, no GUI.
+    if (!events || events->empty()) return;
+    std::lock_guard<std::mutex> lk(mutex_);
+    buffer_.insert(buffer_.end(), events->begin(), events->end());
+    // Cap: if the GUI thread stalls, keep only the most recent events.
+    if (buffer_.size() > kMaxBufferEvents) {
+        std::vector<Metavision::EventCD> trimmed(
+            buffer_.end() - kMaxBufferEvents, buffer_.end());
+        buffer_ = std::move(trimmed);
+    }
+}
+
 void SharpnessDialog::on_tick() {
-    if (!display_) {
-        chart_->clear();
+    if (!camera_) {
+        contrast_chart_->clear();
+        width_chart_->clear();
+        show_no_data(tr("No data source — connect a camera."));
         return;
     }
-    const QImage img = display_->current_frame();
-    if (img.isNull() || img.width() <= 0 || img.height() <= 0) {
-        chart_->clear();
+    hint_label_->setText(
+        tr("Focus: smaller line width is better. "
+           "Bias tuning: higher contrast is better. "
+           "If noise is high, reduce noise first."));
+
+    // Build the count image under the lock (copy-swap pattern: the lock only
+    // covers buffer trimming + image construction; the expensive metrics run
+    // after unlocking). Events arrive SDK-sorted by timestamp, so the window
+    // is the newest window_ms() of the buffer.
+    cv::Mat count_image;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (buffer_.empty()) {
+            show_no_data(tr("No events in window — point the camera at a "
+                            "textured scene."));
+            return;
+        }
+        const Metavision::timestamp t_end = buffer_.back().t;
+        const Metavision::timestamp cutoff =
+            t_end - static_cast<Metavision::timestamp>(window_ms()) * 1000;
+        auto first = std::lower_bound(
+            buffer_.begin(), buffer_.end(), cutoff,
+            [](const Metavision::EventCD& e, Metavision::timestamp t) {
+                return e.t < t;
+            });
+        buffer_.erase(buffer_.begin(), first);
+
+        // Sensor dimensions come from SensorInfo; fall back to the max event
+        // coordinates if they are unavailable.
+        int w = sensor_width_;
+        int h = sensor_height_;
+        if (w <= 0 || h <= 0) {
+            for (const auto& e : buffer_) {
+                if (e.x + 1 > w) w = e.x + 1;
+                if (e.y + 1 > h) h = e.y + 1;
+            }
+            if (w <= 0 || h <= 0) return;
+        }
+
+        count_image = cv::Mat::zeros(h, w, CV_32F);
+        for (const auto& e : buffer_) {
+            if (e.x < w && e.y < h) {
+                count_image.at<float>(e.y, e.x) += 1.0f;
+            }
+        }
+    }
+
+    // Metrics run on the GUI thread, outside the lock. A 100 ms window on a
+    // 640×480 CV_32F image makes the distance transform cheap enough here.
+    const SharpnessMetrics m =
+        compute_sharpness_metrics(count_image, window_ms() / 1000.0);
+    if (!m.valid) {
+        show_no_data(tr("No events in window — point the camera at a "
+                        "textured scene."));
         return;
     }
 
-    // Convert the QImage to a single-channel cv::Mat. The event display widget
-    // hands out whatever format the frame pipeline produced (typically
-    // Format_RGB888 for annotated frames, Format_Grayscale8 / Format_Indexed8
-    // for raw event frames). Handle the common cases.
-    cv::Mat gray;
-    switch (img.format()) {
-        case QImage::Format_Grayscale8:
-            gray = cv::Mat(img.height(), img.width(), CV_8UC1,
-                           const_cast<uchar*>(img.bits()),
-                           static_cast<std::size_t>(img.bytesPerLine())).clone();
-            break;
-        case QImage::Format_RGB888: {
-            cv::Mat rgb(img.height(), img.width(), CV_8UC3,
-                        const_cast<uchar*>(img.bits()),
-                        static_cast<std::size_t>(img.bytesPerLine()));
-            cv::cvtColor(rgb, gray, cv::COLOR_RGB2GRAY);
-            break;
-        }
-        case QImage::Format_BGR888: {
-            cv::Mat bgr(img.height(), img.width(), CV_8UC3,
-                        const_cast<uchar*>(img.bits()),
-                        static_cast<std::size_t>(img.bytesPerLine()));
-            cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
-            break;
-        }
-        case QImage::Format_ARGB32:
-        case QImage::Format_RGBA8888: {
-            cv::Mat rgba(img.height(), img.width(), CV_8UC4,
-                         const_cast<uchar*>(img.bits()),
-                         static_cast<std::size_t>(img.bytesPerLine()));
-            cv::cvtColor(rgba, gray, cv::COLOR_RGBA2GRAY);
-            break;
-        }
-        default: {
-            // Fallback: convert to Format_RGB888 first, then to gray.
-            const QImage rgb = img.convertToFormat(QImage::Format_RGB888);
-            cv::Mat m(rgb.height(), rgb.width(), CV_8UC3,
-                      const_cast<uchar*>(rgb.bits()),
-                      static_cast<std::size_t>(rgb.bytesPerLine()));
-            cv::cvtColor(m, gray, cv::COLOR_RGB2GRAY);
-            break;
-        }
+    contrast_value_->setText(QString::number(m.contrast, 'f', 1));
+    width_value_->setText(QString::number(m.mean_line_width, 'f', 2));
+
+    QString rate_text;
+    if (m.event_rate >= 1.0e6) {
+        rate_text = tr("Event rate: %1 Mev/s").arg(m.event_rate / 1.0e6, 0, 'f', 2);
+    } else if (m.event_rate >= 1.0e3) {
+        rate_text = tr("Event rate: %1 kev/s").arg(m.event_rate / 1.0e3, 0, 'f', 1);
+    } else {
+        rate_text = tr("Event rate: %1 ev/s").arg(m.event_rate, 0, 'f', 0);
     }
-    if (gray.empty()) {
-        chart_->clear();
-        return;
-    }
+    rate_label_->setText(rate_text);
 
-    // Variance of Laplacian: the standard focus measure. cv::Laplacian with
-    // ksize=3 on a CV_64F buffer; σ² is the variance.
-    cv::Mat lap;
-    cv::Laplacian(gray, lap, CV_64F, 3, 1, 0, cv::BORDER_REPLICATE);
-    cv::Scalar mean, sigma;
-    cv::meanStdDev(lap, mean, sigma);
-    const double variance = sigma[0] * sigma[0];
-
-    // Fix the chart's Y-axis ceiling to the theoretical maximum for this
-    // frame's resolution (ideal single-pixel checkerboard). Keeps the scale
-    // stable across time — the line doesn't jump as the data range shifts.
-    chart_->set_y_max(compute_theoretical_max_variance(gray.cols, gray.rows));
-
-    chart_->add_value(variance);
+    contrast_chart_->add_value(m.contrast);
+    width_chart_->add_value(m.mean_line_width);
 }
 
 } // namespace gui

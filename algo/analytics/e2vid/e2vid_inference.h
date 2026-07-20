@@ -279,6 +279,10 @@ public:
     bool downsample() const { return downsample_; }
 
     /// @brief Sets the hot-pixel mask for the voxel grid preprocessor.
+    /// Accepts either effective-resolution (eff HxW) or full sensor-resolution
+    /// (HxW) masks; the latter is 2x2-downsampled by the voxel grid when
+    /// downsampling is active (§四-M3). Mismatched sizes are rejected — check
+    /// hot_pixel_mask_rejected().
     void set_hot_pixel_mask(const std::vector<std::uint8_t>& mask) {
         hot_pixel_mask_ = mask;  // cache so it survives num_bins changes
         voxel_grid_.set_hot_pixel_mask(mask);
@@ -286,6 +290,10 @@ public:
     void clear_hot_pixel_mask() {
         hot_pixel_mask_.clear();
         voxel_grid_.clear_hot_pixel_mask();
+    }
+    /// @brief True if the last mask was rejected (size mismatch, §四-M3).
+    bool hot_pixel_mask_rejected() const {
+        return voxel_grid_.hot_mask_rejected();
     }
 
     void set_num_bins(int b) {

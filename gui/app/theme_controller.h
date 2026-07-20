@@ -76,10 +76,6 @@ public:
     /// @brief Returns the human-readable name of a mode choice.
     static QString mode_name(Mode m);
 
-    /// @brief Returns the effective background color (hex) for the current
-    /// combination of color_ + mode_. In dark mode this is the dark variant
-    /// of the selected color, not a single black.
-    QString effective_background_hex() const;
     /// @brief Returns the effective panel color (hex) — slightly different
     /// from the background, used for the title bar and status bar so they
     /// share the same shade while staying distinct from the sidebar.

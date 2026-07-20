@@ -42,6 +42,18 @@ BiasesPanel::BiasesPanel(QWidget* parent) : AbstractPanel(parent) {
     outer->addWidget(container_, 1);
 
     container_->setEnabled(false);
+
+    // Debounced apply for wheel/keyboard slider edits (see header, §六-U1).
+    apply_debounce_.setSingleShot(true);
+    apply_debounce_.setInterval(300);
+    connect(&apply_debounce_, &QTimer::timeout, this, [this]() {
+        for (auto& r : rows_) {
+            if (r.name == pending_apply_) {
+                apply_value(r, r.slider->value());
+                break;
+            }
+        }
+    });
 }
 
 void BiasesPanel::on_camera_connected(CameraController* controller) {
@@ -218,8 +230,13 @@ void BiasesPanel::populate() {
                 [this, bias_name, spin = row.spin](int v) {
                     QSignalBlocker b(spin);
                     spin->setValue(v);
-                    // Don't apply during drag — valueChanged fires per tick
-                    // and would flood USB writes. Apply on sliderReleased.
+                    // Don't apply per tick — valueChanged fires continuously
+                    // during a drag and would flood USB writes. Drag edits
+                    // are applied on sliderReleased; wheel/keyboard edits
+                    // (which never emit sliderReleased) go through a 300 ms
+                    // debounce so they still reach the hardware (§六-U1).
+                    pending_apply_ = bias_name;
+                    apply_debounce_.start();
                 });
         connect(row.slider, &QSlider::sliderReleased, this,
                 [this, bias_name]() {

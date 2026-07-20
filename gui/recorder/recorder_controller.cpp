@@ -47,6 +47,12 @@ bool RecorderController::start(CameraController* controller, const QString& path
         emit error(tr("No camera connected."));
         return false;
     }
+    // Recording while the camera is not streaming produces an empty file
+    // (audit §六-C5) — require an active stream.
+    if (!controller->is_running()) {
+        emit error(tr("Camera is not streaming. Start streaming before recording."));
+        return false;
+    }
     Metavision::I_EventsStream* stream = nullptr;
     try {
         stream = camera->get_device().get_facility<Metavision::I_EventsStream>();
