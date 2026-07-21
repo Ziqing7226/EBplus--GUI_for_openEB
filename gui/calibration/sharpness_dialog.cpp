@@ -230,10 +230,19 @@ SharpnessDialog::SharpnessDialog(QWidget* parent) : QDialog(parent) {
     timer_->setInterval(kPollIntervalMs);
     connect(timer_, &QTimer::timeout, this, &SharpnessDialog::on_tick);
     timer_->start();
+
+    // §11.4-P0-3 B1: start the metrics worker. It sleeps on work_cv_ until
+    // on_tick hands it a count image, so the idle cost is negligible.
+    worker_ = std::thread([this]() { worker_loop(); });
 }
 
 SharpnessDialog::~SharpnessDialog() {
     if (timer_) timer_->stop();
+    // Stop the worker FIRST, before touching camera_ / buffer_: on_tick (GUI
+    // thread) and worker_loop both touch pending_count_image_ / latest_result_,
+    // and worker_loop calls compute_sharpness_metrics which has no GUI deps.
+    // After join, no thread touches the worker slots.
+    stop_and_join_worker();
     // Note: cd_broadcast is a single boolean shared with the calibration
     // wizard. Like the wizard, this dialog flips it off on teardown without
     // tracking which consumer enabled it — if both tools are open at once,
@@ -248,6 +257,44 @@ SharpnessDialog::~SharpnessDialog() {
     // SDK thread via DirectConnection) finishes before buffer_ is destroyed.
     std::lock_guard<std::mutex> lk(mutex_);
     buffer_.clear();
+}
+
+void SharpnessDialog::worker_loop() {
+    // Worker thread: no Qt calls, no GUI object access. Only
+    // compute_sharpness_metrics (pure OpenCV) + mutex-protected slot I/O.
+    while (!worker_stop_.load(std::memory_order_acquire)) {
+        cv::Mat img;
+        double win = 0.0;
+        {
+            std::unique_lock<std::mutex> lk(work_mutex_);
+            work_cv_.wait(lk, [this] {
+                return worker_stop_.load(std::memory_order_acquire) ||
+                       !pending_count_image_.empty();
+            });
+            if (worker_stop_.load(std::memory_order_acquire)) break;
+            // Move the pending image out so the GUI thread can immediately
+            // fill the slot again while we compute. If a newer image arrives
+            // during computation, it overwrites the (now empty) slot and we
+            // pick it up on the next iteration — natural frame dropping.
+            img = std::move(pending_count_image_);
+            pending_count_image_ = cv::Mat();
+            win = pending_window_s_;
+        }
+        // Heavy O(W×H) computation OUTSIDE the lock — GUI thread can hand
+        // the next image without waiting for us.
+        const SharpnessMetrics m = compute_sharpness_metrics(img, win);
+        {
+            std::lock_guard<std::mutex> rlk(result_mutex_);
+            latest_result_ = m;
+            has_new_result_ = true;
+        }
+    }
+}
+
+void SharpnessDialog::stop_and_join_worker() {
+    worker_stop_.store(true, std::memory_order_release);
+    work_cv_.notify_one();
+    if (worker_.joinable()) worker_.join();
 }
 
 void SharpnessDialog::set_camera(CameraController* camera) {
@@ -344,9 +391,8 @@ void SharpnessDialog::on_tick() {
            "If noise is high, reduce noise first."));
 
     // Build the count image under the lock (copy-swap pattern: the lock only
-    // covers buffer trimming + image construction; the expensive metrics run
-    // after unlocking). Events arrive SDK-sorted by timestamp, so the window
-    // is the newest window_ms() of the buffer.
+    // covers buffer trimming + image construction). Events arrive SDK-sorted
+    // by timestamp, so the window is the newest window_ms() of the buffer.
     cv::Mat count_image;
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -385,10 +431,34 @@ void SharpnessDialog::on_tick() {
         }
     }
 
-    // Metrics run on the GUI thread, outside the lock. A 100 ms window on a
-    // 640×480 CV_32F image makes the distance transform cheap enough here.
-    const SharpnessMetrics m =
-        compute_sharpness_metrics(count_image, window_ms() / 1000.0);
+    // §11.4-P0-3 B1: hand the count image to the worker thread and read back
+    // the LATEST computed result. The GUI thread never calls
+    // compute_sharpness_metrics — it only does light buffer work + UI updates.
+    // UI therefore lags data by ≤ 1 tick (100 ms), which is imperceptible.
+    {
+        std::lock_guard<std::mutex> lk(work_mutex_);
+        pending_count_image_ = std::move(count_image);
+        pending_window_s_ = window_ms() / 1000.0;
+    }
+    work_cv_.notify_one();
+
+    // Read the latest result. has_new_result_ distinguishes "worker hasn't
+    // produced anything yet" (first tick after open) from "result unchanged".
+    SharpnessMetrics m;
+    bool has_result;
+    {
+        std::lock_guard<std::mutex> rlk(result_mutex_);
+        m = latest_result_;
+        has_result = has_new_result_;
+        has_new_result_ = false;
+    }
+
+    if (!has_result) {
+        // First tick: worker just received the first count image and hasn't
+        // finished yet. Leave the UI at its default ("—" / "Waiting for
+        // data...") — the next tick will pick up the result.
+        return;
+    }
     if (!m.valid) {
         show_no_data(tr("No events in window — point the camera at a "
                         "textured scene."));

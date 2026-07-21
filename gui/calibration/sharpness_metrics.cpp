@@ -12,35 +12,48 @@ namespace gui {
 cv::Mat remove_isolated_pixels(const cv::Mat& count_image, float max_count) {
     if (count_image.empty()) return cv::Mat();
 
+    // §12.2-A #4: replace the hand-written 8-neighbour double loop (~44M
+    // memory reads/tick at 1280×720) with SIMD-vectorised OpenCV ops.
+    // Semantics are IDENTICAL: a pixel is removed iff 0 < v <= max_count AND
+    // none of its 8 neighbours is non-zero. (cv::medianBlur was considered
+    // but rejected — it would also thin/remove legitimate 2-px-wide lines,
+    // breaking the IsolatedNoiseDoesNotDistortMetrics test.)
+    //
+    // Strategy:
+    //   1. candidates  = (src > 0) & (src <= max_count)   — pixels that COULD
+    //      be removed (single-event specks, not saturated/structural pixels).
+    //   2. has_neighbour = dilate(binary, ring_kernel)    — 1 iff at least
+    //      one of the 8 neighbours is non-zero. The ring kernel (0 at center,
+    //      1 elsewhere) excludes the center pixel itself.
+    //   3. isolated   = candidates & ~has_neighbour        — removal mask.
+    //   4. result     = src.clone(); result.setTo(0, isolated).
     cv::Mat src;
     count_image.convertTo(src, CV_32F);
-    cv::Mat dst = src.clone();
 
-    const int rows = src.rows;
-    const int cols = src.cols;
-    for (int y = 0; y < rows; ++y) {
-        const float* srow = src.ptr<float>(y);
-        float* drow = dst.ptr<float>(y);
-        for (int x = 0; x < cols; ++x) {
-            const float v = srow[x];
-            if (v <= 0.0f || v > max_count) continue;
-            // A hot pixel is a lone speck: none of its 8 neighbours (read from
-            // the ORIGINAL image, so the pass is order-independent) fired.
-            bool has_neighbour = false;
-            for (int dy = -1; dy <= 1 && !has_neighbour; ++dy) {
-                const int ny = y + dy;
-                if (ny < 0 || ny >= rows) continue;
-                const float* nrow = src.ptr<float>(ny);
-                for (int dx = -1; dx <= 1; ++dx) {
-                    if (dx == 0 && dy == 0) continue;
-                    const int nx = x + dx;
-                    if (nx < 0 || nx >= cols) continue;
-                    if (nrow[nx] > 0.0f) { has_neighbour = true; break; }
-                }
-            }
-            if (!has_neighbour) drow[x] = 0.0f;
-        }
-    }
+    cv::Mat binary;
+    cv::compare(src, 0.0, binary, cv::CMP_GT);  // CV_8U: 255 where src > 0
+
+    // Ring kernel: 1 at all 8 neighbours, 0 at center — so dilation looks at
+    // neighbours only, not the pixel itself.
+    const cv::Mat ring_kernel = (cv::Mat_<uchar>(3, 3) <<
+        1, 1, 1,
+        1, 0, 1,
+        1, 1, 1);
+    cv::Mat neighbour;
+    cv::dilate(binary, neighbour, ring_kernel, cv::Point(-1, -1), 1,
+               cv::BORDER_CONSTANT, 0);
+
+    // candidates: 0 < v <= max_count. has_neighbour: any 8-neighbour > 0.
+    cv::Mat candidates, has_neighbour;
+    cv::inRange(src, cv::Scalar(1e-6f), cv::Scalar(max_count), candidates);
+    cv::compare(neighbour, 0, has_neighbour, cv::CMP_GT);  // 255 where neighbour > 0
+
+    // isolated = candidates AND NOT has_neighbour
+    cv::Mat isolated;
+    cv::bitwise_and(candidates, ~has_neighbour, isolated);
+
+    cv::Mat dst = src.clone();
+    dst.setTo(0.0f, isolated);
     return dst;
 }
 

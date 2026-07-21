@@ -10,12 +10,18 @@
 // EventDisplayWidget::current_frame() + variance-of-Laplacian, which measured
 // noise density and event density rather than sharpness (R1/R2).
 //
-// Threading: the cd_events_ready connection is Qt::DirectConnection (same
-// pattern as CalibrationEventTap), so on_events_ready() runs on the SDK
-// streaming thread and only appends to a mutex-protected buffer — never
-// touches the GUI. The 10 Hz QTimer (GUI thread) trims the buffer to the
-// window, builds the count image under the lock, and runs the metric
-// computation after unlocking.
+// Threading (audit §11.4-P0-3 B1):
+//   - cd_events_ready is Qt::DirectConnection → on_events_ready() runs on the
+//     SDK streaming thread and only appends to a mutex-protected buffer.
+//   - The 10 Hz QTimer (GUI thread) trims the buffer to the window, builds the
+//     count image under the lock, then HANDS the count image to a worker
+//     thread (std::thread) via a single-slot pending queue (work_mutex_ /
+//     work_cv_). The GUI thread never runs compute_sharpness_metrics.
+//   - The worker thread runs compute_sharpness_metrics and writes the result
+//     into a single-slot latest_result_ (result_mutex_). The next on_tick
+//     picks it up and updates the UI — UI thus lags data by ≤ 1 tick (100 ms),
+//     which is imperceptible. If the worker is slower than 10 Hz, intermediate
+//     count images are coalesced (only the latest pending one is processed).
 
 #ifndef GUI_CALIBRATION_SHARPNESS_DIALOG_H
 #define GUI_CALIBRATION_SHARPNESS_DIALOG_H
@@ -23,12 +29,19 @@
 #include <QDialog>
 #include <QWidget>
 
+#include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
+
+#include <opencv2/core.hpp>
 
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/base/utils/timestamp.h>
+
+#include "calibration/sharpness_metrics.h"
 
 class QComboBox;
 class QLabel;
@@ -103,6 +116,13 @@ private:
     void reset_accumulation();
     void show_no_data(const QString& reason);
 
+    /// @brief Worker thread body: wait for a pending count image, run
+    ///        compute_sharpness_metrics, publish the result. Worker thread
+    ///        only — never touches GUI objects or Qt code paths.
+    void worker_loop();
+    /// @brief Signals the worker to exit and joins it. GUI thread only.
+    void stop_and_join_worker();
+
     CameraController* camera_{nullptr};
     EventDisplayWidget* display_{nullptr};  // fallback marker only, never polled
     QTimer* timer_{nullptr};
@@ -125,6 +145,24 @@ private:
     /// Cap on buffer_.size() in case the GUI thread stalls (same rationale
     /// and scale as CalibrationEventTap::kMaxBufferEvents).
     static constexpr std::size_t kMaxBufferEvents = 2'000'000;
+
+    // --- Worker thread (audit §11.4-P0-3 B1) ---
+    // Input slot (work_mutex_/work_cv_): the GUI thread hands the latest
+    // count image to the worker. If the worker is busy, the pending image is
+    // overwritten — only the freshest image is processed.
+    // Output slot (result_mutex_): the worker publishes the latest metrics;
+    // the GUI thread reads them on the next tick. has_new_result_ lets the
+    // GUI thread distinguish "no result yet" from "result unchanged".
+    std::thread worker_;
+    std::mutex work_mutex_;
+    std::condition_variable work_cv_;
+    cv::Mat pending_count_image_;
+    double pending_window_s_{0.1};
+    std::atomic<bool> worker_stop_{false};
+
+    std::mutex result_mutex_;
+    SharpnessMetrics latest_result_{};
+    bool has_new_result_{false};
 };
 
 } // namespace gui
