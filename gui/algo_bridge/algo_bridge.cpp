@@ -755,7 +755,9 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Passive,
          {pint("window_us", "Window (us)", "10000", "1000", "1000000"),
           pint("t0_us", "T0 delay (us)", "500", "0", "1000"),
-          pint("trigger_channel", "Trigger channel", "0", "0", "7")}});
+          pint("trigger_channel", "Trigger channel", "0", "0", "7")},
+         "Requires an external trigger source; none is currently wired in "
+         "this GUI, so the output is always empty (§5-G3)."});
 
     // §4.3.22 Bandpass Filter
     add({"bandpass_filter", "Bandpass Filter", "cv", "self",

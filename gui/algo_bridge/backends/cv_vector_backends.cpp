@@ -416,8 +416,7 @@ public:
     OrientationClusterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
-        if (k == "min_events") algo_.set_min_cluster_size(to_i(v));
-        else if (k == "dt") algo_.set_dt(static_cast<float>(to_d(v)));
+        if (k == "dt") algo_.set_dt(static_cast<float>(to_d(v)));
         else if (k == "factor") algo_.set_factor(static_cast<float>(to_d(v)));
         else if (k == "rf_width") algo_.set_rf_width(to_i(v));
         else if (k == "rf_height") algo_.set_rf_height(to_i(v));
@@ -432,7 +431,6 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "min_events") return from_i(algo_.min_cluster_size());
         if (k == "dt") return from_d(algo_.dt());
         if (k == "factor") return from_d(algo_.factor());
         if (k == "rf_width") return from_i(algo_.rf_width());

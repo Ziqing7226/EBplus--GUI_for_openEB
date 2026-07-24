@@ -67,6 +67,10 @@ struct AlgoInfo {
     std::string source;          // "self" | "openeb"
     AlgoDisplayMode display_mode{AlgoDisplayMode::Passive};
     std::vector<AlgoParamSpec> params;
+    /// Optional caveat shown as the enable-checkbox tooltip (e.g. known
+    /// limitations such as "requires an external trigger source"). Empty =
+    /// no tooltip. Kept last so aggregate initialisers are unaffected.
+    std::string description;
 };
 
 /// A live algorithm instance. Holds a real AlgoBackend that wraps an algo/ class.

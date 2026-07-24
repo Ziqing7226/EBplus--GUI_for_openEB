@@ -100,6 +100,11 @@ void AlgorithmsPanel::build_ui() {
             if (a->source != "self") continue;
 
             auto* cb = new QCheckBox(QString::fromStdString(a->display_name), gb);
+            // Surface registered caveats (e.g. trigger_synced: needs an
+            // external trigger source, output always empty — §5-G3).
+            if (!a->description.empty()) {
+                cb->setToolTip(QString::fromStdString(a->description));
+            }
             checkboxes_[a->name] = cb;
             form->addRow(cb);
 
