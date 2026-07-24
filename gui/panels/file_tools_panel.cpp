@@ -3,8 +3,10 @@
 #include "file_tools_panel.h"
 
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -19,6 +21,25 @@
 #include "app/file_converter.h"
 
 namespace gui {
+
+namespace {
+// True when src and dst resolve to the same file (audit §六-E2: converting/
+// cutting onto the source would overwrite the very file being read).
+bool same_file(const QString& src, const QString& dst) {
+    const QFileInfo s(src);
+    const QString s_canon = s.canonicalFilePath();
+    if (s_canon.isEmpty()) return false;
+    const QFileInfo d(dst);
+    QString d_canon = d.canonicalFilePath();
+    if (d_canon.isEmpty()) {
+        // dst doesn't exist yet — canonicalize its directory instead.
+        const QString cdir = d.dir().canonicalPath();
+        if (cdir.isEmpty()) return false;
+        d_canon = cdir + QLatin1Char('/') + d.fileName();
+    }
+    return s_canon == d_canon;
+}
+} // namespace
 
 FileToolsPanel::FileToolsPanel(FileConverter* converter, QWidget* parent)
     : AbstractPanel(parent), converter_(converter) {
@@ -109,6 +130,11 @@ void FileToolsPanel::on_convert_hdf5() {
     QString final_dst = dst;
     if (!final_dst.endsWith(".h5", Qt::CaseInsensitive))
         final_dst += ".h5";
+    if (same_file(src, final_dst)) {
+        QMessageBox::warning(this, tr("Convert to HDF5"),
+            tr("Output path must differ from the source file (it would be overwritten)."));
+        return;
+    }
     progress_->setVisible(true);
     progress_->setValue(0);
     lbl_status_->setText(tr("Converting to HDF5..."));
@@ -128,6 +154,11 @@ void FileToolsPanel::on_convert_csv() {
     QString final_dst = dst;
     if (!final_dst.endsWith(".csv", Qt::CaseInsensitive))
         final_dst += ".csv";
+    if (same_file(src, final_dst)) {
+        QMessageBox::warning(this, tr("Convert to CSV"),
+            tr("Output path must differ from the source file (it would be overwritten)."));
+        return;
+    }
     progress_->setVisible(true);
     progress_->setValue(0);
     lbl_status_->setText(tr("Converting to CSV..."));
@@ -165,6 +196,11 @@ void FileToolsPanel::on_cutter() {
     QString final_dst = dst;
     if (!final_dst.endsWith(".raw", Qt::CaseInsensitive))
         final_dst += ".raw";
+    if (same_file(src, final_dst)) {
+        QMessageBox::warning(this, tr("File Cutter"),
+            tr("Output path must differ from the source file (it would be overwritten)."));
+        return;
+    }
     const auto start_us = static_cast<Metavision::timestamp>(spStart->value() * 1e6);
     const auto end_us = static_cast<Metavision::timestamp>(spEnd->value() * 1e6);
     progress_->setVisible(true);

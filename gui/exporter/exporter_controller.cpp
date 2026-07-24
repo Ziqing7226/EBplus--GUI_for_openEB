@@ -2,6 +2,7 @@
 
 #include "exporter_controller.h"
 
+#include <QFile>
 #include <QMetaObject>
 
 #include <algorithm>
@@ -41,6 +42,10 @@ bool ExporterController::start(const ExportParams& params) {
         } catch (const std::exception& e) {
             QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
                 emit failed(msg);
+            }, Qt::QueuedConnection);
+        } catch (...) {
+            QMetaObject::invokeMethod(this, [this]() {
+                emit failed(tr("Export failed with an unknown error."));
             }, Qt::QueuedConnection);
         }
         running_ = false;
@@ -128,8 +133,10 @@ void ExporterController::run_hdf5(const ExportParams& p) {
     }
 
     // Distinguish cancel from completion: a cancelled export must not emit
-    // completed (the output file is partial/truncated).
+    // completed (the output file is partial/truncated). Delete the partial
+    // file so the user can't mistake it for a valid recording (audit §六-E4).
     if (cancel_.load(std::memory_order_acquire)) {
+        QFile::remove(p.output_path);
         QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
             emit failed(msg.empty() ? tr("Export cancelled.")
                                     : QString::fromUtf8(msg.c_str()));
@@ -197,7 +204,12 @@ void ExporterController::run_avi(const ExportParams& p) {
         return;
     }
 
-    auto gen = std::make_unique<Metavision::CDFrameGenerator>(w, h);
+    // process_all_frames=true: with the default (false) the generator only
+    // encodes the LAST frame of each buffered batch — intermediate frames are
+    // skipped (video duration compressed) and stop() aborts with buffered
+    // events still unprocessed (video tail missing). See audit §六-E1.
+    auto gen = std::make_unique<Metavision::CDFrameGenerator>(
+        w, h, /*process_all_frames=*/true);
     gen->set_color_palette(p.color ? Metavision::ColorPalette::Dark : Metavision::ColorPalette::Gray);
     gen->set_display_accumulation_time_us(
         static_cast<Metavision::timestamp>(p.accumulation_us));
@@ -208,6 +220,22 @@ void ExporterController::run_avi(const ExportParams& p) {
     // a real error from a user-initiated cancel and show the actual cause.
     std::string callback_error;
     std::atomic<bool> done{false};
+
+    // Backpressure (audit §11.2-J, 85b869f): CDFrameGenerator.events_back_
+    // is private to the SDK and grows unboundedly when encoding is slower
+    // than reading (real_time_playback=false reads as fast as possible).
+    // Since we cannot cap the queue directly, we apply backpressure from
+    // outside: the frame callback publishes its timestamp to last_frame_ts,
+    // and the event callback blocks (sleeps 10ms) when the event stream is
+    // more than kMaxEventLagUs ahead of the last produced frame. This bounds
+    // memory to roughly kMaxEventLagUs × event_rate (≈80 MB at 10 Meps).
+    // The frame_produced gate avoids a startup deadlock: the first batch of
+    // events (which may carry a large t if the file doesn't start at 0)
+    // would otherwise wait forever for a frame that hasn't been produced.
+    static constexpr Metavision::timestamp kMaxEventLagUs = 1000000; // 1 s
+    std::atomic<Metavision::timestamp> last_frame_ts{0};
+    std::atomic<bool> frame_produced{false};
+
     // start() takes (fps, callback). The callback receives (timestamp, frame).
     // It returns false if the generator thread failed to start.
     //
@@ -219,8 +247,15 @@ void ExporterController::run_avi(const ExportParams& p) {
     // otherwise. cv::VideoWriter with isColor=false fed a 3-channel image
     // (or vice versa) produces corrupted output or an OpenCV assertion.
     if (!gen->start(static_cast<std::uint16_t>(p.fps),
-                    [&recorder, &done, &callback_error, this, color = p.color](Metavision::timestamp, cv::Mat& frame) {
+                    [&recorder, &done, &callback_error, this, color = p.color,
+                     &last_frame_ts, &frame_produced](Metavision::timestamp ts, cv::Mat& frame) {
                         try {
+                            // Publish frame timestamp for backpressure (§11.2-J).
+                            // Ordered relaxed: the event callback polls this
+                            // opportunistically; a stale read only causes one
+                            // extra 10 ms sleep, not a correctness issue.
+                            last_frame_ts.store(ts, std::memory_order_relaxed);
+                            frame_produced.store(true, std::memory_order_relaxed);
                             if (cancel_ || done) return;
                             if (frame.empty()) return;
                             cv::Mat out;
@@ -255,8 +290,21 @@ void ExporterController::run_avi(const ExportParams& p) {
 
     std::atomic<Metavision::timestamp> last_ts{0};
     auto id = cam.cd().add_callback(
-        [&gen, &last_ts, &callback_error, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+        [&gen, &last_ts, &callback_error, this, &last_frame_ts, &frame_produced](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             try {
+                // Backpressure (§11.2-J): if the event stream is too far
+                // ahead of the last produced frame, sleep to let the
+                // generator catch up. This bounds events_back_ growth.
+                // Skip when no frame has been produced yet (startup) or
+                // when the batch is empty (nothing to throttle).
+                if (b != e && frame_produced.load(std::memory_order_relaxed)) {
+                    const Metavision::timestamp ev_ts = (e - 1)->t;
+                    while (!cancel_.load(std::memory_order_acquire) &&
+                           ev_ts - last_frame_ts.load(std::memory_order_relaxed) > kMaxEventLagUs) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                    if (cancel_.load(std::memory_order_acquire)) return;
+                }
                 gen->add_events(b, e);
                 if (b != e) last_ts.store((e - 1)->t, std::memory_order_relaxed);
             } catch (const std::exception& e2) {
@@ -286,6 +334,8 @@ void ExporterController::run_avi(const ExportParams& p) {
     recorder.stop();
 
     if (cancel_.load(std::memory_order_acquire)) {
+        // Partial/truncated AVI — delete it (audit §六-E4).
+        QFile::remove(p.output_path);
         QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
             emit failed(msg.empty() ? tr("Export cancelled.")
                                     : QString::fromUtf8(msg.c_str()));
