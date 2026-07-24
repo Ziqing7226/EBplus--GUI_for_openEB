@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QtDebug>
 
 #include <map>
 
@@ -452,7 +453,8 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
     QStringList unknown_algos;
     for (auto it = algos.begin(); it != algos.end(); ++it) {
         const auto name = it.key().toStdString();
-        if (!bridge->find(name)) {
+        const auto* info = bridge->find(name);
+        if (!info) {
             // Unknown algorithm — skip but flag failure with a descriptive
             // message so the user knows which entries were rejected (BUG-R1).
             ok = false;
@@ -461,9 +463,27 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
         }
         const auto entry = it.value().toObject();
         const auto params = entry.value("params").toObject();
+        // Warn on parameter keys the algorithm no longer registers (e.g.
+        // removed dead params such as n_sigma or accumulator_decay_us, or
+        // hand-edited typos). The values are still forwarded: set_param()
+        // drops unknown keys from param_values_ (BUG-G12) but passes them to
+        // the backend, which handles backward-compat aliases (e.g. the
+        // event_to_video "downsample" -> preproc_downsample forward). Without
+        // this log a stale config entry would vanish silently (§11.2-style
+        // silent failure).
+        auto is_known_key = [&info](const std::string& key) {
+            for (const auto& p : info->params) {
+                if (p.key == key) return true;
+            }
+            return false;
+        };
         auto live = bridge->find_live(name);
         if (live) {
             for (auto pit = params.begin(); pit != params.end(); ++pit) {
+                if (!is_known_key(pit.key().toStdString())) {
+                    qWarning("ConfigManager: unrecognized param %s::%s in config",
+                             name.c_str(), pit.key().toStdString().c_str());
+                }
                 live->set_param(pit.key().toStdString(), pit.value().toString().toStdString());
             }
             if (entry.contains("enabled")) {
@@ -474,6 +494,10 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
             // them when the algorithm is later enabled (N1).
             std::map<std::string, std::string> cached;
             for (auto pit = params.begin(); pit != params.end(); ++pit) {
+                if (!is_known_key(pit.key().toStdString())) {
+                    qWarning("ConfigManager: unrecognized param %s::%s in config",
+                             name.c_str(), pit.key().toStdString().c_str());
+                }
                 cached[pit.key().toStdString()] = pit.value().toString().toStdString();
             }
             bridge->cache_algo_params(name, cached);

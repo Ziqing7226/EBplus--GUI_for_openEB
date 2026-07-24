@@ -18,10 +18,6 @@ set(GUI_LIB_SOURCES
     algo_bridge/backends/analytics_extra_backends.cpp
     algo_bridge/backends/display_backends.cpp
     algo_bridge/backends/filter_backends.cpp
-    algo_bridge/backends/openeb_filter_backends.cpp
-    algo_bridge/backends/openeb_frame_backends.cpp
-    algo_bridge/backends/openeb_preproc_backends.cpp
-    algo_bridge/backends/openeb_util_backends.cpp
     algo_bridge/backends/backend_factory.cpp
     algo_bridge/backends/backend_common.cpp
     algo_bridge/filter_chain.cpp

@@ -37,24 +37,16 @@ public:
     OrientationFilterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
-        if (k == "tau_us") algo_.set_time_window_us(to_i(v));
-        else if (k == "min_neighbors") algo_.set_min_neighbors(to_i(v));
-        else if (k == "min_dt_threshold_us") algo_.set_min_dt_threshold_us(to_i(v));
-        else if (k == "multi_ori_output") algo_.set_multi_ori_output(to_b(v));
+        if (k == "min_dt_threshold_us") algo_.set_min_dt_threshold_us(to_i(v));
         else if (k == "use_average_dt") algo_.set_use_average_dt(to_b(v));
         else if (k == "ori_history_enabled") algo_.set_ori_history_enabled(to_b(v));
-        else if (k == "pass_all_events") algo_.set_pass_all_events(to_b(v));
         else if (k == "dt_reject_threshold_us") algo_.set_dt_reject_threshold_us(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "tau_us") return from_i(algo_.time_window_us());
-        if (k == "min_neighbors") return from_i(algo_.min_neighbors());
         if (k == "min_dt_threshold_us") return from_i(algo_.min_dt_threshold_us());
-        if (k == "multi_ori_output") return from_b(algo_.multi_ori_output());
         if (k == "use_average_dt") return from_b(algo_.use_average_dt());
         if (k == "ori_history_enabled") return from_b(algo_.ori_history_enabled());
-        if (k == "pass_all_events") return from_b(algo_.pass_all_events());
         if (k == "dt_reject_threshold_us") return from_i(algo_.dt_reject_threshold_us());
         return {};
     }

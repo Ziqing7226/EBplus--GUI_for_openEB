@@ -149,14 +149,6 @@ public:
     double harmonic_threshold() const { return harm_threshold_; }
 
     // Repetitious (jAER port) ----------------------------------------------
-    // NOTE: period_us_/tolerance_us_ are legacy no-op parameters retained
-    // only because gui/algo_bridge backends still expose them; they do not
-    // participate in the Repetitious decision (jAER uses ratio_shorter/
-    // ratio_longer). Removal is deferred to the gui bridge cleanup.
-    void set_period_us(int v) { rep_period_us_ = clamp_i(v, 1000, 1000000); }
-    void set_tolerance_us(int v) { rep_tolerance_us_ = clamp_i(v, 100, 10000); }
-    int period_us() const { return rep_period_us_; }
-    int tolerance_us() const { return rep_tolerance_us_; }
     void set_ratio_shorter(int v) { rep_ratio_shorter_ = clamp_i(v, 1, 100); }
     void set_ratio_longer(int v) { rep_ratio_longer_ = clamp_i(v, 1, 100); }
     int ratio_shorter() const { return rep_ratio_shorter_; }
@@ -676,8 +668,6 @@ private:
     int harm_line_freq_hz_{50};   // jAER f0 默认 100（此处 50 = 市电频率，有意）
     double harm_notch_q_{3.0};    // jAER quality factor Q
     double harm_threshold_{0.1};  // jAER threshold (fraction of power)
-    Metavision::timestamp rep_period_us_{20000};    // legacy no-op (see above)
-    Metavision::timestamp rep_tolerance_us_{1000};  // legacy no-op (see above)
     int rep_ratio_shorter_{2};   // jAER RepetitiousFilter default
     int rep_ratio_longer_{2};    // jAER RepetitiousFilter default
     int rep_averaging_samples_{3}; // jAER averagingSamples default

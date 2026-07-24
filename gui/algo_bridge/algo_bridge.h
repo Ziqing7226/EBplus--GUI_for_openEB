@@ -1,13 +1,13 @@
 // gui/algo_bridge/algo_bridge.h — bridge between the Qt GUI layer and the
-// algo/ C++ algorithm modules (self-developed) plus the OpenEB built-in
-// algorithms (wrapped).
+// algo/ C++ algorithm modules (self-developed).
 //
 // Design reference: design.md §3.8 and §4.
 //
 // The bridge真正实例化并调用 algo/cv 与 algo/analytics 的真实算法类。
 // AlgoInstance 持有一个 AlgoBackend，push_events 时零拷贝 reinterpret_cast
 // EventCD→gui_algo::Event 后调用真实 process()/filter()，pull_result 返回
-// 过滤事件 + 叠加层 + 帧。注册表列出全部 29 个自研模块 + 30 个 openEB 能力。
+// 过滤事件 + 叠加层 + 帧。注册表列出 28 个自研模块 + 8 个 OpenEB 事件变换
+// 阶段（flip/rotate/ROI 等，实际处理在 FilterChain，此处仅作注册占位）。
 
 #ifndef GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
 #define GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
@@ -61,7 +61,7 @@ struct AlgoParamSpec {
 struct AlgoInfo {
     std::string name;            // unique id, e.g. "noise_filter"
     std::string display_name;    // human readable
-    std::string category;        // cv | analytics | calibration | openeb_filter | openeb_frame | openeb_preproc | openeb_util
+    std::string category;        // cv | analytics | openeb_filter
     std::string source;          // "self" | "openeb"
     AlgoDisplayMode display_mode{AlgoDisplayMode::Passive};
     std::vector<AlgoParamSpec> params;
@@ -219,17 +219,8 @@ public:
     /// @brief Returns all live instances (for batch event push / result pull).
     std::vector<std::shared_ptr<AlgoInstance>> list_live();
 
-    void push_events(const std::shared_ptr<AlgoInstance>& inst,
-                     const Metavision::EventCD* begin,
-                     const Metavision::EventCD* end);
-
-    AlgoResult pull_result(const std::shared_ptr<AlgoInstance>& inst);
-
 private:
     void register_openeb_filters();
-    void register_openeb_frame_modes();
-    void register_openeb_preprocessors();
-    void register_openeb_utils();
     void register_self_cv();
     void register_self_analytics();
 

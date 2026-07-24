@@ -74,7 +74,6 @@ void AlgorithmsPanel::build_ui() {
     const QMap<QString, QString> cat_titles = {
         {"cv",              tr("Computer Vision")},
         {"analytics",       tr("Analytics")},
-        {"calibration",     tr("Calibration")},
     };
 
     for (auto it = by_cat.constBegin(); it != by_cat.constEnd(); ++it) {
@@ -335,7 +334,7 @@ void AlgorithmsPanel::apply_global_roi() {
     const std::string w = std::to_string(roi_w_sp_->value());
     const std::string h = std::to_string(roi_h_sp_->value());
     // Delegate to the bridge, which iterates every live self-developed
-    // instance (skipping OpenEB wrappers and calibration algos) AND caches
+    // instance (skipping the OpenEB event-transform stages) AND caches
     // the values so future instances created via create() inherit the
     // current ROI (N3).
     bridge_->apply_global_roi(enabled, x, y, w, h);
@@ -446,9 +445,8 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_line_freq_hz", "Harm Hz", 'e', "50", "50", "60", 5},
         {"preproc_filter_notch_q", "Harm Q", 'f', "5.0", "0.1", "100.0", 5},
         {"preproc_filter_harmonic_threshold", "Harm thresh", 'f', "0.1", "0.0", "1.0", 5},
-        // Repetitious (mode 6)
-        {"preproc_filter_rep_period_us", "Rep period (us)", 'i', "5000", "1000", "1000000", 6},
-        {"preproc_filter_rep_tolerance_us", "Rep tol (us)", 'i', "1000", "100", "10000", 6},
+        // Repetitious (mode 6). rep_period_us/rep_tolerance_us are omitted:
+        // the algo stores them but never uses them (audit §7.3).
         {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "10", "1", "100", 6},
         {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "10", "1", "100", 6},
         {"preproc_filter_rep_min_dt_to_store_us", "Rep min dt (us)", 'i', "1000", "0", "1000000", 6},

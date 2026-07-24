@@ -322,17 +322,17 @@ public:
 };
 
 /// FlowStatistics backend — requires ground-truth flow samples (not available
-/// in real-time). Counts events and reports a status; no frame is produced.
-/// Supports ROI (design §5.6.6): when enabled, only ROI events are counted.
+/// in real-time). Counts events only (audit §三-9: the FlowStatistics member
+/// was never fed events, so it was removed); reports a status; no frame is
+/// produced. Supports ROI (design §5.6.6): when enabled, only ROI events are
+/// counted.
 class FlowStatisticsBackend final : public AlgoBackend {
-    gui_algo::FlowStatistics algo_;
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
     std::size_t total_events_{0};
 public:
-    FlowStatisticsBackend(int w, int h)
-        : algo_(gui_algo::FlowStatistics::Source::Synthetic, 5) {
+    FlowStatisticsBackend(int w, int h) {
         roi_.init(w, h);
     }
     void set_param(const std::string& k, const std::string& v) override {
@@ -356,7 +356,7 @@ public:
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); total_events_ = 0; }
+    void reset() override { passthrough_.clear(); roi_buf_.clear(); total_events_ = 0; }
 };
 
 /// ISIAnalyzer backend — renders ISI histogram as frame.

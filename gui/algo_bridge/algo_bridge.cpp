@@ -1,7 +1,8 @@
 // gui/algo_bridge/algo_bridge.cpp
 //
 // AlgoInstance 持有真实的 AlgoBackend 实例，真正调用 algo/cv 与 algo/analytics
-// 的算法类。注册表列出全部 29 个自研模块 + 30 个 openEB 能力 = 59 项。
+// 的算法类。注册表列出 28 个自研模块 + 8 个 OpenEB 事件变换阶段（实际处理
+// 在 FilterChain，此处仅作注册占位）= 36 项。
 
 #include "algo_bridge.h"
 
@@ -288,9 +289,8 @@ std::vector<AlgoParamSpec> preproc_params() {
         penum("preproc_filter_line_freq_hz", "Preproc Harmonic Hz", "50", {"50", "60"}),
         pfloat("preproc_filter_notch_q", "Preproc Harmonic Q", "5.0", "0.1", "100.0"),
         pfloat("preproc_filter_harmonic_threshold", "Preproc Harmonic thresh", "0.1", "0.0", "1.0"),
-        // Repetitious (mode 6)
-        pint("preproc_filter_rep_period_us", "Preproc Rep period (us)", "5000", "1000", "1000000"),
-        pint("preproc_filter_rep_tolerance_us", "Preproc Rep tol (us)", "1000", "100", "10000"),
+        // Repetitious (mode 6). rep_period_us/rep_tolerance_us are NOT
+        // registered: the algo stores them but never uses them (audit §7.3).
         pint("preproc_filter_rep_ratio_shorter", "Preproc Rep ratio short", "10", "1", "100"),
         pint("preproc_filter_rep_ratio_longer", "Preproc Rep ratio long", "10", "1", "100"),
         pint("preproc_filter_rep_min_dt_to_store_us", "Preproc Rep min dt (us)", "1000", "0", "1000000"),
@@ -312,9 +312,6 @@ std::vector<AlgoParamSpec> preproc_params() {
 
 AlgoBridge::AlgoBridge() {
     register_openeb_filters();
-    register_openeb_frame_modes();
-    register_openeb_preprocessors();
-    register_openeb_utils();
     register_self_cv();
     register_self_analytics();
 }
@@ -350,7 +347,7 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create(const std::string& name) {
         // the user's latest global modifications take precedence over stale
         // config values (BUG-1: N1+N6 interaction). Per-algo params like
         // model_path/mode are unaffected since the global caches don't
-        // contain those keys. Skip calibration algos (BUG-R8).
+        // contain those keys.
         auto pit = algo_param_cache_.find(name);
         if (pit != algo_param_cache_.end()) {
             for (const auto& [k, v] : pit->second) {
@@ -358,8 +355,7 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create(const std::string& name) {
             }
             algo_param_cache_.erase(pit);
         }
-        if (it->second.source == "self" &&
-            it->second.category != "calibration") {
+        if (it->second.source == "self") {
             for (const auto& [k, v] : preproc_cache_) {
                 inst->set_param(k, v);
             }
@@ -386,19 +382,16 @@ void AlgoBridge::set_sensor_dimensions(int width, int height) {
 void AlgoBridge::apply_global_preproc(const std::string& key,
                                       const std::string& value) {
     // Apply the preproc_* parameter to every live self-developed instance.
-    // OpenEB wrapper algorithms (source=="openeb") have backend_==nullptr
-    // (pass-through); preproc_* params have no effect on them and would
-    // pollute their param_values_ map, so they are skipped.
+    // OpenEB event-transform stages (source=="openeb") have backend_==nullptr
+    // (pass-through to FilterChain); preproc_* params have no effect on them
+    // and would pollute their param_values_ map, so they are skipped.
     std::lock_guard<std::mutex> lk(live_mutex_);
     // Cache the value so instances created later (by other code paths) inherit
     // the shared preprocessing state (BUG-R4).
     preproc_cache_[key] = value;
     for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
         if (auto inst = it->second.lock()) {
-            // Skip calibration algorithms — they don't use preproc params
-            // and would just accumulate pollution in param_values_ (BUG-R8).
-            if (inst->info().source == "self" &&
-                inst->info().category != "calibration") {
+            if (inst->info().source == "self") {
                 inst->set_param(key, value);
             }
             ++it;
@@ -424,8 +417,7 @@ void AlgoBridge::apply_global_roi(const std::string& enabled,
     roi_cache_["roi_h"] = h;
     for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
         if (auto inst = it->second.lock()) {
-            if (inst->info().source == "self" &&
-                inst->info().category != "calibration") {
+            if (inst->info().source == "self") {
                 inst->set_param("roi_enabled", enabled);
                 inst->set_param("roi_x", x);
                 inst->set_param("roi_y", y);
@@ -473,23 +465,12 @@ std::vector<std::shared_ptr<AlgoInstance>> AlgoBridge::list_live() {
     return out;
 }
 
-void AlgoBridge::push_events(const std::shared_ptr<AlgoInstance>& inst,
-                             const Metavision::EventCD* begin,
-                             const Metavision::EventCD* end) {
-    if (inst) {
-        inst->push_events(begin, end);
-    }
-}
-
-AlgoResult AlgoBridge::pull_result(const std::shared_ptr<AlgoInstance>& inst) {
-    if (!inst) {
-        return {};
-    }
-    return inst->pull_result();
-}
-
 // ---------------------------------------------------------------------------
-// OpenEB-wrapped filters (design §4.3.1) — unchanged
+// OpenEB-wrapped event-transform stages (design §4.3.1). These stay
+// registered so the FilterChain stages appear in config capture and keep a
+// stable name space. The former openeb_frame / openeb_preproc / openeb_util
+// registrations and their backends were removed (audit §三-B6/7, §五-A2):
+// they had no GUI entry point and were unreachable dead code.
 // ---------------------------------------------------------------------------
 
 void AlgoBridge::register_openeb_filters() {
@@ -506,10 +487,6 @@ void AlgoBridge::register_openeb_filters() {
           pint("x1", "X end", "1279", "0", ""),
           pint("y1", "Y end", "719", "0", ""),
           pbool("output_relative_coordinates", "Relative coords", "false")}});
-
-    add({"roi_mask", "ROI Mask", "openeb_filter", "openeb",
-         AlgoDisplayMode::Passive,
-         {{"mask_path", "Mask image path", "string", "", "", "", {}}}});
 
     add({"polarity_filter", "Polarity Filter", "openeb_filter", "openeb",
          AlgoDisplayMode::Passive,
@@ -535,135 +512,6 @@ void AlgoBridge::register_openeb_filters() {
          AlgoDisplayMode::Passive,
          {pfloat("scale_width", "Scale X", "1.0", "0.0001", "10"),
           pfloat("scale_height", "Scale Y", "1.0", "0.0001", "10")}});
-
-    add({"adaptive_rate_split", "Adaptive Rate Split", "openeb_filter", "openeb",
-         AlgoDisplayMode::Passive,
-         {pfloat("thr_var_per_event", "Var threshold", "5e-4", "1e-5", "1e-2"),
-          pint("downsampling_factor", "Downsampling", "2", "1", "8")}});
-}
-
-// ---------------------------------------------------------------------------
-// OpenEB-wrapped frame generators (design §4.3.2) — unchanged
-// ---------------------------------------------------------------------------
-
-void AlgoBridge::register_openeb_frame_modes() {
-    auto add = [&](AlgoInfo a) {
-        a.source = "openeb";
-        a.category = "openeb_frame";
-        a.display_mode = AlgoDisplayMode::Replace;
-        registry_[a.name] = std::move(a);
-    };
-
-    add({"frame_integration", "Integration Frame", "openeb_frame", "openeb",
-         AlgoDisplayMode::Replace,
-         {pint("decay_time_us", "Decay time (us)", "1000000", "10000", "10000000")}});
-
-    add({"frame_diff", "Diff Frame", "openeb_frame", "openeb",
-         AlgoDisplayMode::Replace,
-         {pint("bit_size", "Bit size", "8", "2", "8"),
-          pbool("allow_rollover", "Allow rollover", "true")}});
-
-    add({"frame_histogram", "Histogram Frame", "openeb_frame", "openeb",
-         AlgoDisplayMode::Replace,
-         {pint("channel_bit_neg", "Neg bits", "4", "1", "7"),
-          pint("channel_bit_pos", "Pos bits", "4", "1", "7"),
-          pbool("packed", "Packed", "false")}});
-
-    add({"frame_time_decay", "Time Decay Frame", "openeb_frame", "openeb",
-         AlgoDisplayMode::Replace,
-         {pint("exponential_decay_time_us", "Decay (us)", "100000", "10000", "10000000"),
-          penum("palette", "Palette", "1", {"0=Light", "1=Dark", "2=CoolWarm", "3=Gray"})}});
-
-    add({"frame_contrast_map", "Contrast Map", "openeb_frame", "openeb",
-         AlgoDisplayMode::Replace,
-         {pfloat("contrast_on", "Contrast ON", "1.2", "0.1", "10"),
-          pfloat("contrast_off", "Contrast OFF", "-1", "-10", "0")}});
-
-    add({"frame_periodic", "Periodic Frame", "openeb_frame", "openeb",
-         AlgoDisplayMode::Replace,
-         {pint("accumulation_time_us", "Accumulation (us)", "10000", "1000", "1000000"),
-          pfloat("fps", "FPS", "30", "0", "120")}});
-
-    add({"frame_on_demand", "On-Demand Frame", "openeb_frame", "openeb",
-         AlgoDisplayMode::Replace,
-         {pint("accumulation_time_us", "Accumulation (us)", "0", "0", "10000000")}});
-}
-
-// ---------------------------------------------------------------------------
-// OpenEB-wrapped preprocessors (design §4.3.3) — unchanged
-// ---------------------------------------------------------------------------
-
-void AlgoBridge::register_openeb_preprocessors() {
-    auto add = [&](AlgoInfo a) {
-        a.source = "openeb";
-        a.category = "openeb_preproc";
-        a.display_mode = AlgoDisplayMode::Passive;
-        registry_[a.name] = std::move(a);
-    };
-
-    add({"preproc_diff", "Diff Preprocessor", "openeb_preproc", "openeb",
-         AlgoDisplayMode::Passive,
-         {pfloat("max_incr_per_pixel", "Max incr/px", "5", "0.1", "100"),
-          pfloat("clip_value_after_normalization", "Clip value", "1", "0.1", "10")}});
-
-    add({"preproc_histo", "Histo Preprocessor", "openeb_preproc", "openeb",
-         AlgoDisplayMode::Passive,
-         {pfloat("max_incr_per_pixel", "Max incr/px", "5", "0.1", "100"),
-          pfloat("clip_value_after_normalization", "Clip value", "1", "0.1", "10"),
-          pbool("use_CHW", "Use CHW", "true")}});
-
-    add({"preproc_hw_diff", "Hardware Diff", "openeb_preproc", "openeb",
-         AlgoDisplayMode::Passive,
-         {pint("accumulation_time_us", "Accumulation (us)", "33000", "1000", "1000000")}});
-
-    add({"preproc_hw_histo", "Hardware Histo", "openeb_preproc", "openeb",
-         AlgoDisplayMode::Passive, {}});
-
-    add({"preproc_time_surface", "Time Surface Processor", "openeb_preproc", "openeb",
-         AlgoDisplayMode::Passive,
-         // 'channels' triggers backend reconstruction (1→merge, 2→split)
-         {penum("channels", "Channels", "1", {"1=merged", "2=split"})}});
-
-    add({"preproc_event_cube", "Event Cube", "openeb_preproc", "openeb",
-         AlgoDisplayMode::Passive,
-         {pint("num_bins", "Num bins", "10", "2", "20"),
-          pint("delta_t_us", "Delta t (us)", "33000", "1000", "1000000"),
-          pbool("split_polarity", "Split polarity", "false"),
-          pfloat("max_incr_per_pixel", "Max incr/px", "5", "0.1", "100")}});
-
-    add({"preproc_factory", "Preprocessor Factory", "openeb_preproc", "openeb",
-         AlgoDisplayMode::Passive,
-         {{"config_path", "JSON config path", "string", "", "", "", {}}}});
-}
-
-// ---------------------------------------------------------------------------
-// OpenEB-wrapped utilities (design §4.3.4) — unchanged
-// ---------------------------------------------------------------------------
-
-void AlgoBridge::register_openeb_utils() {
-    auto add = [&](AlgoInfo a) {
-        a.source = "openeb";
-        a.category = "openeb_util";
-        a.display_mode = AlgoDisplayMode::Passive;
-        registry_[a.name] = std::move(a);
-    };
-
-    add({"util_rate_estimator", "Rate Estimator", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive, {}});
-    add({"util_frame_composer", "Frame Composer", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive, {}});
-    add({"util_rolling_buffer", "Rolling Buffer", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive,
-         {penum("mode", "Mode", "0", {"0=N_EVENTS", "1=N_US"}),
-          pint("delta_n_events", "N events", "5000", "1", "1000000"),
-          pint("delta_ts_us", "Delta t (us)", "1000000", "1000", "60000000")}});
-    add({"util_video_writer", "Video Writer", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive, {}});
-    add({"util_data_synchronizer", "Data Synchronizer", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive,
-         {pint("period_us", "Period (us)", "10000", "1000", "1000000000")}});
-    add({"util_timing_profiler", "Timing Profiler", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive, {}});
 }
 
 // ---------------------------------------------------------------------------
@@ -686,24 +534,22 @@ void AlgoBridge::register_self_cv() {
     // noise filter is now a stackable preprocessing stage (see preproc_params)
     // shared by all self-developed algorithms (ROI → filter → downsample).
 
-    // §4.3.6 Hot Pixel Filter
+    // §4.3.6 Hot Pixel Filter. n_sigma is NOT registered: the algo marks it
+    // "deprecated, unused" — exposing it would be a no-op control (§三-31).
     add({"hot_pixel_filter", "Hot Pixel Filter", "cv", "self",
          AlgoDisplayMode::Passive,
          {pfloat("learning_window_s", "Learning window (s)", "5.0", "0.1", "60.0"),
-          pfloat("n_sigma", "N-sigma", "4.0", "1.0", "10.0"),
           pbool("enable_fpn_correction", "FPN correction", "false"),
           pfloat("fpn_target_rate_hz", "FPN target rate (Hz)", "100", "1", "1000")}});
 
     // §4.3.7 Orientation Filter (jAER SimpleOrientationFilter min-dt WTA)
     add({"orientation_filter", "Orientation Filter", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("tau_us", "Time window (us)", "10000", "1000", "50000"),
-          pint("min_neighbors", "Min neighbors", "1", "1", "8"),
-          pint("min_dt_threshold_us", "Min dt threshold (us)", "100000", "1", "1000000"),
-          pbool("multi_ori_output", "Multi-ori output", "false"),
+         // tau_us / min_neighbors / multi_ori_output / pass_all_events were
+         // removed (audit §二-2.7): dead params in the algo, never effective.
+         {pint("min_dt_threshold_us", "Min dt threshold (us)", "100000", "1", "1000000"),
           pbool("use_average_dt", "Use average dt", "true"),
           pbool("ori_history_enabled", "Ori history smoothing", "false"),
-          pbool("pass_all_events", "Pass all events", "false"),
           pint("dt_reject_threshold_us", "Dt reject threshold (us)", "100000", "1", "10000000")}});
 
     // §4.3.8 Direction Selective Filter (jAER DirectionSelectiveFilter)
@@ -756,36 +602,35 @@ void AlgoBridge::register_self_cv() {
          {pint("min_length", "Min length (px)", "10", "3", "100"),
           pint("gap", "Max gap (px)", "3", "1", "20")}});
 
-    // §4.3.14 Hough Line Tracker (jAER HoughLineTracker)
+    // §4.3.14 Hough Line Tracker (jAER HoughLineTracker). accumulator_decay_us
+    // is NOT registered: the algo stores it but never uses it (§7.3).
     add({"hough_line", "Hough Line Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
          {pint("threshold", "Threshold", "50", "2", "500"),
           pint("num_theta_bins", "Theta bins", "90", "8", "360"),
           pint("num_rho_bins", "Rho bins (0=auto)", "0", "0", "4000"),
-          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000"),
           pfloat("hough_decay_factor", "Per-packet decay factor", "0.6", "0.0", "1.0")}});
 
     // §4.3.15 Hough Circle Tracker (jAER HoughCircleTracker) — tightened
     // defaults to reduce lag: narrower radius range (8-30 → 23 radii vs
     // 5-50 → 46) and higher threshold (50 vs 30) so find_peaks scans fewer
-    // candidates.
+    // candidates. min_radius and accumulator_decay_us are NOT registered:
+    // the algo never reads them (§三-32) — exposing them was a no-op control.
     add({"hough_circle", "Hough Circle Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("min_radius", "Min radius (px)", "8", "1", "100"),
-          pint("max_radius", "Max radius (px)", "30", "5", "500"),
+         {pint("max_radius", "Max radius (px)", "30", "5", "500"),
           pint("threshold", "Threshold", "50", "2", "500"),
-          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000"),
           pfloat("decay", "Decay factor", "1.0", "0.0", "10.0"),
           pint("buffer_length", "Buffer length", "4000", "100", "100000"),
           pint("nr_max", "Max circles", "1", "1", "20"),
           pbool("decay_mode", "Decay mode", "true"),
           pbool("loc_depression", "Local depression", "true")}});
 
-    // §4.3.17 Orientation Cluster
+    // §4.3.17 Orientation Cluster. min_events is NOT registered: the algo
+    // marks it "Stored, unused" (§五-A3) — exposing it was a no-op control.
     add({"orientation_cluster", "Orientation Cluster", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("min_events", "Min events", "20", "5", "500"),
-          pfloat("dt", "dt (us)", "10000", "100", "1000000"),
+         {pfloat("dt", "dt (us)", "10000", "100", "1000000"),
           pfloat("factor", "Factor", "1000", "1", "100000"),
           pint("rf_width", "RF width", "1", "1", "64"),
           pint("rf_height", "RF height", "1", "1", "64"),
@@ -814,11 +659,9 @@ void AlgoBridge::register_self_cv() {
           pfloat("threshold", "Threshold", "10", "1", "100"),
           pint("erosion_size", "Erosion size", "0", "0", "20")}});
 
-    // §4.3.20 Perspective Undistort
-    add({"perspective_undistort", "Perspective Undistort", "cv", "self",
-         AlgoDisplayMode::Passive,
-         {pbool("enable", "Enable", "false"),
-          pfloat("zoom", "Zoom", "1.0", "0.1", "10.0")}});
+    // §4.3.20 Perspective Undistort — removed (§三-B8): the backend never
+    // wired calibration into the algo (always a no-op) and the shared
+    // Preprocessor undistort stage (preproc_undistort_*) supersedes it.
 
     // §4.3.21 Trigger Synced Filter
     add({"trigger_synced", "Trigger Synced Filter", "cv", "self",
@@ -847,11 +690,12 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Passive,
          {pint("factor", "Dilation factor", "10", "1", "1000")}});
 
-    // §4.3.25 XYT Visualizer
+    // §4.3.25 XYT Visualizer. max_points is NOT registered: the backend only
+    // stored it and the 3D display uses SpaceTimeDisplay's own XYTVisualizer
+    // instance, so the control had no effect on anything (§五-A3).
     add({"xyt_visualizer", "XYT 3D Visualizer", "cv", "self",
          AlgoDisplayMode::Standalone,
-         {pint("time_window_us", "Time window (us)", "500000", "10000", "10000000"),
-          pint("max_points", "Max points", "50000", "1000", "500000")}});
+         {pint("time_window_us", "Time window (us)", "500000", "10000", "10000000")}});
 
     // §4.3.26 Overlay
     add({"overlay", "Overlay", "cv", "self",
@@ -896,7 +740,9 @@ void AlgoBridge::register_self_analytics() {
           pint("output_fps", "Output fps", "30", "1", "120"),
           // --- Shared non-DL params (mode 0,1) ---
           pfloat("window_ms", "Window (ms)", "50", "10", "500", "0,1"),
-          pfloat("decay_tau_ms", "Decay tau (ms)", "500", "0", "5000", "0,1"),
+          // decay_tau_ms: exponential dimming of the reconstructed frame
+          // between output frames (event_to_video.h get_frame); 0 = off.
+          pfloat("decay_tau_ms", "Frame dimming tau (ms)", "500", "0", "5000", "0,1"),
           // --- BardowVariational (mode 0) ---
           pfloat("delta_t_ms", "Delta t (ms)", "15", "1", "50", "0"),
           pfloat("theta", "Theta", "0.22", "0.05", "0.5", "0"),

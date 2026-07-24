@@ -174,7 +174,6 @@ public:
 /// reflect the buffer state in its status label.
 class XYTVisualizerBackend final : public AlgoBackend {
     gui_algo::XYTVisualizer algo_;
-    int max_points_{50000};
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
@@ -190,12 +189,10 @@ public:
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
         if (k == "time_window_us") algo_.set_time_window_ms(static_cast<float>(to_i(v)) / 1000.0F);
-        else if (k == "max_points") max_points_ = to_i(v);
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "time_window_us") return from_i(static_cast<int>(algo_.time_window_ms() * 1000.0F));
-        if (k == "max_points") return from_i(max_points_);
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {

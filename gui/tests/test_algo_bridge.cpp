@@ -39,24 +39,28 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Registry completeness (§3.11.2: 29 self + 30 openEB). noise_filter was
+// Registry completeness (§3.11.2: 28 self + 8 openEB). noise_filter was
 // removed in v1.0.9 (now a stackable preprocessing stage); sensor_self_test
 // was added in §4.4.8; intrinsic_calibration was removed (now a Tools-menu
-// wizard, not a registered algo), so the live registry holds 29 self-developed
-// + 30 OpenEB-wrapped = 59 entries.
+// wizard, not a registered algo); perspective_undistort was removed (audit
+// §三-B8, superseded by the preproc undistort stage); the 22 unreachable
+// OpenEB frame/preproc/util/roi_mask/adaptive_rate_split registrations were
+// removed (audit §三-B6/7), leaving the 8 FilterChain event-transform stages
+// (roi_filter, polarity_filter, polarity_invert, flip_x, flip_y, rotate,
+// transpose, rescale). Live registry: 28 self-developed + 8 OpenEB = 36.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 59u);
+    EXPECT_EQ(algos.size(), 36u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
         if (a.source == "self") ++self_count;
         else if (a.source == "openeb") ++openeb_count;
     }
-    EXPECT_EQ(self_count, 29u);
-    EXPECT_EQ(openeb_count, 30u);
+    EXPECT_EQ(self_count, 28u);
+    EXPECT_EQ(openeb_count, 8u);
 }
 
 TEST(AlgoBridgeRegistry, KeyNamesPresent) {
@@ -69,11 +73,23 @@ TEST(AlgoBridgeRegistry, KeyNamesPresent) {
     EXPECT_NE(bridge.find("time_surface"), nullptr);
     EXPECT_NE(bridge.find("blob_detector"), nullptr);
     EXPECT_NE(bridge.find("sensor_self_test"), nullptr);
-    // OpenEB-wrapped algorithms.
+    // OpenEB event-transform stages (handled by FilterChain).
     EXPECT_NE(bridge.find("roi_filter"), nullptr);
-    EXPECT_NE(bridge.find("frame_integration"), nullptr);
-    EXPECT_NE(bridge.find("preproc_diff"), nullptr);
-    EXPECT_NE(bridge.find("util_rate_estimator"), nullptr);
+    EXPECT_NE(bridge.find("flip_x"), nullptr);
+    EXPECT_NE(bridge.find("polarity_filter"), nullptr);
+}
+
+TEST(AlgoBridgeRegistry, RemovedRegistrationsAreGone) {
+    AlgoBridge bridge;
+    // Audit §三-B6/7: unreachable OpenEB backends removed.
+    EXPECT_EQ(bridge.find("frame_integration"), nullptr);
+    EXPECT_EQ(bridge.find("preproc_diff"), nullptr);
+    EXPECT_EQ(bridge.find("preproc_hw_diff"), nullptr);
+    EXPECT_EQ(bridge.find("util_rate_estimator"), nullptr);
+    EXPECT_EQ(bridge.find("roi_mask"), nullptr);
+    EXPECT_EQ(bridge.find("adaptive_rate_split"), nullptr);
+    // Audit §三-B8: superseded by the preproc undistort stage.
+    EXPECT_EQ(bridge.find("perspective_undistort"), nullptr);
 }
 
 TEST(AlgoBridgeRegistry, NoiseFilterRemovedInV1_0_9) {
@@ -168,9 +184,9 @@ TEST(AlgoBridgeInstances, ParamRoundTrip) {
     AlgoBridge bridge;
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
-    inst->set_param("n_sigma", "5.5");
+    inst->set_param("fpn_target_rate_hz", "250");
     inst->set_param("learning_window_s", "10.0");
-    EXPECT_EQ(inst->get_param("n_sigma"), "5.5");
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "250");
     EXPECT_EQ(inst->get_param("learning_window_s"), "10.0");
     // Unknown key returns an empty string.
     EXPECT_EQ(inst->get_param("no_such_key"), "");
@@ -180,8 +196,11 @@ TEST(AlgoBridgeInstances, DefaultsAppliedAtConstruction) {
     AlgoBridge bridge;
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
-    // The default n_sigma declared in the registry is "4.0".
-    EXPECT_EQ(inst->get_param("n_sigma"), "4.0");
+    // The default fpn_target_rate_hz declared in the registry is "100".
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "100");
+    // n_sigma was removed from the registry (algo marks it unused, audit
+    // §三-31) — it is now an unknown key and returns an empty string.
+    EXPECT_EQ(inst->get_param("n_sigma"), "");
 }
 
 TEST(AlgoBridgeInstances, EnableDisableState) {

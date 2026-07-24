@@ -20,7 +20,6 @@
 #include "algo/cv/orientation_cluster.h"
 #include "algo/cv/cluster_lif.h"
 #include "algo/cv/background_mask_filter.h"
-#include "algo/cv/perspective_undistort.h"
 #include "algo/cv/trigger_synced_filter.h"
 #include "algo/cv/bandpass_filter.h"
 #include "algo/cv/optical_gyro.h"
@@ -49,7 +48,6 @@ using gui_algo::HoughCircleTracker;
 using gui_algo::OrientationCluster;
 using gui_algo::ClusterLIF;
 using gui_algo::BackgroundMaskFilter;
-using gui_algo::PerspectiveUndistort;
 using gui_algo::TriggerSyncedFilter;
 using gui_algo::BandpassFilter;
 using gui_algo::OpticalGyro;
@@ -151,8 +149,8 @@ TEST(HoughLineTrackerTest, Params) {
     EXPECT_EQ(t.threshold(), 100);
     t.set_num_theta_bins(45);
     EXPECT_EQ(t.num_theta_bins(), 45);
-    t.set_accumulator_decay_us(50000);
-    EXPECT_EQ(t.accumulator_decay_us(), 50000);
+    t.set_hough_decay_factor(0.5F);
+    EXPECT_FLOAT_EQ(t.hough_decay_factor(), 0.5F);
 }
 TEST(HoughLineTrackerTest, ProcessEmpty) {
     HoughLineTracker t(32, 32);
@@ -170,14 +168,10 @@ TEST(HoughCircleTrackerTest, Construction) {
 }
 TEST(HoughCircleTrackerTest, Params) {
     HoughCircleTracker t(32, 32);
-    t.set_min_radius_px(10);
-    EXPECT_EQ(t.min_radius_px(), 10);
     t.set_max_radius_px(100);
     EXPECT_EQ(t.max_radius_px(), 100);
     t.set_threshold(50);
     EXPECT_EQ(t.threshold(), 50);
-    t.set_accumulator_decay_us(50000);
-    EXPECT_EQ(t.accumulator_decay_us(), 50000);
 }
 TEST(HoughCircleTrackerTest, ProcessEmpty) {
     HoughCircleTracker t(32, 32);
@@ -241,20 +235,6 @@ TEST(BackgroundMaskFilterTest, ProcessEmpty) {
     auto pkt = make_packet(empty);
     const auto& mask = f.process(pkt);
     EXPECT_FALSE(mask.empty());
-}
-
-// --- 4.3.20 PerspectiveUndistort ---
-TEST(PerspectiveUndistortTest, Construction) {
-    PerspectiveUndistort u;
-    EXPECT_TRUE(u.use_lut());
-    EXPECT_TRUE(u.undistort());
-}
-TEST(PerspectiveUndistortTest, Params) {
-    PerspectiveUndistort u;
-    u.set_undistort(false);
-    EXPECT_FALSE(u.undistort());
-    u.set_rectify(true);
-    EXPECT_TRUE(u.rectify());
 }
 
 // --- 4.3.21 TriggerSyncedFilter (jAER FilterSyncedEvents port) ---

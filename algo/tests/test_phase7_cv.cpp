@@ -177,8 +177,8 @@ TEST(HotPixelFilterTest, Params) {
     HotPixelFilter f(32, 32);
     f.set_learning_window_s(10.0);
     EXPECT_DOUBLE_EQ(f.learning_window_s(), 10.0);
-    f.set_n_sigma(5.0);
-    EXPECT_DOUBLE_EQ(f.n_sigma(), 5.0);
+    f.set_num_hot_pixels_max(500);
+    EXPECT_EQ(f.num_hot_pixels_max(), 500);
     f.set_enable_fpn_correction(true);
     EXPECT_TRUE(f.enable_fpn_correction());
     f.set_fpn_target_rate_hz(100.0);
@@ -189,8 +189,8 @@ TEST(HotPixelFilterTest, ParamClamping) {
     HotPixelFilter f(32, 32);
     f.set_learning_window_s(0.0); // below 1.0
     EXPECT_DOUBLE_EQ(f.learning_window_s(), 1.0);
-    f.set_n_sigma(0.5); // below 2.0
-    EXPECT_DOUBLE_EQ(f.n_sigma(), 2.0);
+    f.set_num_hot_pixels_max(0); // below 1
+    EXPECT_EQ(f.num_hot_pixels_max(), 1);
 }
 
 TEST(HotPixelFilterTest, LearnAndProcess) {
@@ -215,16 +215,15 @@ TEST(OrientationFilterTest, Construction) {
     OrientationFilter f(64, 48);
     EXPECT_EQ(f.width(), 64);
     EXPECT_EQ(f.height(), 48);
-    EXPECT_EQ(f.time_window_us(), 10000);
-    EXPECT_EQ(f.min_neighbors(), 2);
+    EXPECT_EQ(f.min_dt_threshold_us(), 100000);
 }
 
 TEST(OrientationFilterTest, Params) {
     OrientationFilter f(32, 32);
-    f.set_time_window_us(5000);
-    EXPECT_EQ(f.time_window_us(), 5000);
-    f.set_min_neighbors(4);
-    EXPECT_EQ(f.min_neighbors(), 4);
+    f.set_min_dt_threshold_us(5000);
+    EXPECT_EQ(f.min_dt_threshold_us(), 5000);
+    f.set_use_average_dt(false);
+    EXPECT_FALSE(f.use_average_dt());
     f.set_color_map(OrientationFilter::ColorMap::HSV);
     EXPECT_EQ(f.color_map(), OrientationFilter::ColorMap::HSV);
 }

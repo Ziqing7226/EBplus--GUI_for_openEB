@@ -52,8 +52,6 @@ public:
     /// For GUI-thread mutations prefer set_stage_enabled / set_stage_param,
     /// which take the lock internally.
     FilterStage* stage(const std::string& name);
-    /// @brief Lists every known stage name (whether or not enabled).
-    std::vector<std::string> stage_names() const;
 
     /// @brief Thread-safe stage mutators. GUI threads must use these instead
     /// of stage()->set_enabled/set_param to avoid racing the SDK thread's

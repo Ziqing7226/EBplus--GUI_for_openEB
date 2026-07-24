@@ -54,7 +54,7 @@ TEST(ConfigManagerAlgoState, RoundTripAlgoParams) {
 
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
-    inst->set_param("n_sigma", "5.5");
+    inst->set_param("fpn_target_rate_hz", "250");
     inst->set_param("learning_window_s", "10.0");
     inst->set_enabled(true);
 
@@ -78,7 +78,7 @@ TEST(ConfigManagerAlgoState, RoundTripAlgoParams) {
         ASSERT_TRUE(algos.contains("hot_pixel_filter"));
         const auto entry = algos.value("hot_pixel_filter").toObject();
         const auto params = entry.value("params").toObject();
-        EXPECT_EQ(params.value("n_sigma").toString(), "5.5");
+        EXPECT_EQ(params.value("fpn_target_rate_hz").toString(), "250");
         EXPECT_EQ(params.value("learning_window_s").toString(), "10.0");
         EXPECT_TRUE(entry.value("enabled").toBool());
     }
@@ -88,14 +88,14 @@ TEST(ConfigManagerAlgoState, RoundTripAlgoParams) {
     AlgoBridge bridge2;
     auto inst2 = bridge2.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst2, nullptr);
-    EXPECT_NE(inst2->get_param("n_sigma"), "5.5");  // default before load
+    EXPECT_NE(inst2->get_param("fpn_target_rate_hz"), "250");  // default before load
 
     ConfigManager cm2;
     QString err2;
     ASSERT_TRUE(cm2.load_algo_params_from_file(&bridge2, path, err2))
         << err2.toStdString();
 
-    EXPECT_EQ(inst2->get_param("n_sigma"), "5.5");
+    EXPECT_EQ(inst2->get_param("fpn_target_rate_hz"), "250");
     EXPECT_EQ(inst2->get_param("learning_window_s"), "10.0");
     EXPECT_TRUE(inst2->is_enabled());
 
@@ -135,7 +135,7 @@ TEST(ConfigManagerAlgoState, ApplyStateCachesParamsForNonLiveAlgos) {
     QJsonObject algos;
     QJsonObject entry;
     QJsonObject params;
-    params["n_sigma"] = QStringLiteral("9.9");
+    params["fpn_target_rate_hz"] = QStringLiteral("999");
     entry["params"] = params;
     entry["enabled"] = true;
     algos["hot_pixel_filter"] = entry;
@@ -147,9 +147,9 @@ TEST(ConfigManagerAlgoState, ApplyStateCachesParamsForNonLiveAlgos) {
     // Create the instance — cached params should be replayed by create().
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
-    EXPECT_EQ(inst->get_param("n_sigma"), "9.9");
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "999");
 
     // Applying again on the now-live instance should also work.
     EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
-    EXPECT_EQ(inst->get_param("n_sigma"), "9.9");
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "999");
 }

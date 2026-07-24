@@ -49,37 +49,22 @@ public:
           ori_history_(static_cast<std::size_t>(width)
                            * static_cast<std::size_t>(height), 0) {}
 
-    // Legacy no-op parameters, retained only because gui/algo_bridge still
-    // exposes them; they do not participate in classify(). Removal deferred
-    // to the gui bridge cleanup.
-    void set_time_window_us(int v) { time_window_us_ = clamp_i(v, 1000, 50000); }
-    void set_min_neighbors(int v) { min_neighbors_ = clamp_i(v, 1, 8); }
     void set_color_map(ColorMap m) { color_map_ = m; }
     /// @brief jAER minDtThresholdUs: an orientation is emitted only if the
     /// per-orientation aggregate delta-time is below this (us). Default 100000.
     void set_min_dt_threshold_us(int v) { min_dt_threshold_us_ = clamp_i(v, 1, 1000000); }
-    /// @brief multi-ori output (jAER multiOriOutputEnabled). Legacy no-op,
-    /// retained for gui/algo_bridge compat (see above).
-    void set_multi_ori_output(bool v) { multi_ori_output_ = v; }
     /// @brief jAER useAverageDtEnabled: true = average dt, false = max dt.
     void set_use_average_dt(bool v) { use_average_dt_ = v; }
     /// @brief jAER oriHistoryEnabled: temporal smoothing of orientation labels.
     void set_ori_history_enabled(bool v) { ori_history_enabled_ = v; }
-    /// @brief jAER passAllEvents. Legacy no-op, retained for gui/algo_bridge
-    /// compat (see above).
-    void set_pass_all_events(bool v) { pass_all_events_ = v; }
     /// @brief jAER dtRejectThreshold: delta-times above this are rejected as
     /// outliers when computing per-orientation average/max dt.
     void set_dt_reject_threshold_us(int v) { dt_reject_threshold_us_ = clamp_i(v, 1, 10000000); }
 
-    int time_window_us() const { return time_window_us_; }   // legacy no-op
-    int min_neighbors() const { return min_neighbors_; }     // legacy no-op
     ColorMap color_map() const { return color_map_; }
     int min_dt_threshold_us() const { return min_dt_threshold_us_; }
-    bool multi_ori_output() const { return multi_ori_output_; }  // legacy no-op
     bool use_average_dt() const { return use_average_dt_; }
     bool ori_history_enabled() const { return ori_history_enabled_; }
-    bool pass_all_events() const { return pass_all_events_; }    // legacy no-op
     int dt_reject_threshold_us() const { return dt_reject_threshold_us_; }
     int width() const { return width_; }
     int height() const { return height_; }
@@ -280,13 +265,9 @@ private:
 
     int width_;
     int height_;
-    int time_window_us_{10000};      // legacy no-op (gui/algo_bridge compat)
-    int min_neighbors_{2};           // legacy no-op (gui/algo_bridge compat)
     int min_dt_threshold_us_{100000};  // jAER minDtThresholdUs
-    bool multi_ori_output_{false};   // legacy no-op (gui/algo_bridge compat)
     bool use_average_dt_{true};        // jAER useAverageDtEnabled (default true)
     bool ori_history_enabled_{false};  // jAER oriHistoryEnabled
-    bool pass_all_events_{false};    // legacy no-op (gui/algo_bridge compat)
     int dt_reject_threshold_us_{200000};  // jAER dtRejectThreshold 默认 500000（此处 200000 为有意收紧）
     float ori_history_mixing_factor_{0.25F};  // 平滑器语义，jAER 门控版默认 0.1（见 classify 注释）
     ColorMap color_map_{ColorMap::Fixed4};

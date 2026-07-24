@@ -56,40 +56,30 @@ class HoughCircleTracker {
 public:
     /// @brief Constructor.
     /// @param width, height      Accumulator dimensions (pixels).
-    /// @param min_radius_px      Legacy no-op, retained only because
-    ///                           gui/algo_bridge passes it positionally;
-    ///                           removal deferred to the gui bridge cleanup.
     /// @param max_radius_px      The single fixed circle radius (jAER `radius`).
     /// @param threshold          Detection threshold (jAER `threshold`; default
     ///                           30 here vs jAER 15, intentional).
-    /// @param accumulator_decay_us Legacy no-op (jAER uses `decay`), retained
-    ///                           for gui/algo_bridge compat (see above).
     /// @param decay              jAER decay coefficient (default 1.0).
     /// @param buffer_length      FIFO event history length (default 4000).
     /// @param nr_max             Number of maxima to track (default 1).
     /// @param decay_mode         If true, apply time-based decay (default true).
     /// @param loc_depression     If true, suppress detected neighborhoods.
     HoughCircleTracker(int width, int height,
-                       int min_radius_px = 5,
                        int max_radius_px = 50,
                        int threshold = 30,
-                       Metavision::timestamp accumulator_decay_us = 100000,
                        float decay = 1.0f,
                        int buffer_length = 4000,
                        int nr_max = 1,
                        bool decay_mode = true,
                        bool loc_depression = true)
         : width_(width), height_(height),
-          min_radius_px_(min_radius_px),
           max_radius_px_(max_radius_px),
           threshold_(threshold),
-          accumulator_decay_us_(accumulator_decay_us),
           decay_(decay),
           buffer_length_(buffer_length),
           nr_max_(nr_max),
           decay_mode_(decay_mode),
           loc_depression_(loc_depression) {
-        if (min_radius_px_ < 0) min_radius_px_ = 0;
         if (max_radius_px_ < 0) max_radius_px_ = 0;
         if (buffer_length_ < 1) buffer_length_ = 1;   // jAER allows 0 (div-by-zero)
         if (nr_max_ < 0) nr_max_ = 0;
@@ -221,12 +211,8 @@ public:
     }
 
     // Parameter accessors ---------------------------------------------------
-    int min_radius_px() const { return min_radius_px_; }  // legacy no-op
     int max_radius_px() const { return max_radius_px_; }
     int threshold() const { return threshold_; }
-    Metavision::timestamp accumulator_decay_us() const {  // legacy no-op
-        return accumulator_decay_us_;
-    }
     float decay() const { return decay_; }
     int buffer_length() const { return buffer_length_; }
     int nr_max() const { return nr_max_; }
@@ -237,10 +223,6 @@ public:
     /// to render the Hough space as an aux frame.
     const std::vector<float>& accum() const { return accum_; }
 
-    void set_min_radius_px(int v) {
-        if (v < 0) v = 0;
-        min_radius_px_ = v;  // legacy no-op (gui/algo_bridge compat)
-    }
     void set_max_radius_px(int v) {
         if (v < 0) v = 0;
         if (v == max_radius_px_) return;
@@ -248,9 +230,6 @@ public:
         rebuild();
     }
     void set_threshold(int v) { threshold_ = v; }
-    void set_accumulator_decay_us(Metavision::timestamp v) {
-        accumulator_decay_us_ = v;  // legacy no-op (gui/algo_bridge compat)
-    }
     void set_decay(float v) {
         if (v < 0.0f) v = 0.0f;
         decay_ = v;
@@ -498,10 +477,8 @@ private:
     // Parameters ------------------------------------------------------------
     int width_;
     int height_;
-    int min_radius_px_;   ///< Legacy no-op (gui/algo_bridge compat).
     int max_radius_px_;   ///< The single fixed circle radius (jAER `radius`).
     int threshold_;
-    Metavision::timestamp accumulator_decay_us_;  ///< Legacy no-op (gui compat).
     float decay_;          ///< jAER `decay` (default 1.0).
     int buffer_length_;    ///< jAER `bufferLength` (default 4000).
     int nr_max_;           ///< jAER `nrMax` (default 1).

@@ -36,7 +36,9 @@ class HoughLineBackend final : public AlgoBackend {
     int num_theta_bins_{90};
     int num_rho_bins_{0};
     int threshold_{50};
-    Metavision::timestamp decay_us_{100000};
+    // Persisted so rebuild() re-applies it (the algo ctor takes it directly;
+    // accumulator_decay_us was removed algo-side as a dead param, §7.3).
+    float hough_decay_factor_{0.6F};
     std::unique_ptr<gui_algo::HoughLineTracker> algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
@@ -54,7 +56,8 @@ public:
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
         algo_ = std::make_unique<gui_algo::HoughLineTracker>(
-            aw / f, ah / f, num_theta_bins_, num_rho_bins_, threshold_, decay_us_);
+            aw / f, ah / f, num_theta_bins_, num_rho_bins_, threshold_,
+            hough_decay_factor_);
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (preproc_.set_param(k, v)) {
@@ -65,12 +68,9 @@ public:
         if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
         else if (k == "num_theta_bins") { num_theta_bins_ = to_i(v); need_rebuild = true; }
         else if (k == "num_rho_bins") { num_rho_bins_ = to_i(v); need_rebuild = true; }
-        else if (k == "accumulator_decay_us") {
-            decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
-            if (algo_) algo_->set_accumulator_decay_us(decay_us_);
-        }
         else if (k == "hough_decay_factor") {
-            if (algo_) algo_->set_hough_decay_factor(static_cast<float>(to_d(v)));
+            hough_decay_factor_ = static_cast<float>(to_d(v));
+            if (algo_) algo_->set_hough_decay_factor(hough_decay_factor_);
         }
         else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
         else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
@@ -89,7 +89,6 @@ public:
         if (k == "threshold" && algo_) return from_i(algo_->threshold());
         if (k == "num_theta_bins") return from_i(num_theta_bins_);
         if (k == "num_rho_bins") return from_i(num_rho_bins_);
-        if (k == "accumulator_decay_us") return from_i(static_cast<int>(decay_us_));
         if (k == "hough_decay_factor" && algo_) return from_d(algo_->hough_decay_factor());
         return {};
     }
@@ -170,10 +169,10 @@ public:
 class HoughCircleBackend final : public AlgoBackend {
     int sensor_w_{0}, sensor_h_{0};
     ProcessRegion roi_;
-    int min_radius_{8};
+    // min_radius / accumulator_decay_us were removed algo-side as dead
+    // params (§三-32); the ctor no longer takes them.
     int max_radius_{30};
     int threshold_{50};
-    Metavision::timestamp decay_us_{100000};
     // jAER params (persisted so rebuild() preserves them)
     float decay_{1.0f};
     int buffer_length_{4000};
@@ -202,7 +201,7 @@ public:
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
         algo_ = std::make_unique<gui_algo::HoughCircleTracker>(
-            aw / f, ah / f, min_radius_, max_radius_, threshold_, decay_us_,
+            aw / f, ah / f, max_radius_, threshold_,
             decay_, buffer_length_, nr_max_, decay_mode_, loc_depression_);
     }
     void set_param(const std::string& k, const std::string& v) override {
@@ -211,13 +210,8 @@ public:
             return;
         }
         bool need_rebuild = false;
-        if (k == "min_radius") { min_radius_ = to_i(v); need_rebuild = true; }
-        else if (k == "max_radius") { max_radius_ = to_i(v); need_rebuild = true; }
+        if (k == "max_radius") { max_radius_ = to_i(v); need_rebuild = true; }
         else if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
-        else if (k == "accumulator_decay_us") {
-            decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
-            if (algo_) algo_->set_accumulator_decay_us(decay_us_);
-        }
         else if (k == "decay") { decay_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_decay(decay_); }
         else if (k == "buffer_length") { buffer_length_ = to_i(v); if (algo_) algo_->set_buffer_length(buffer_length_); }
         else if (k == "nr_max") { nr_max_ = to_i(v); if (algo_) algo_->set_nr_max(nr_max_); }
@@ -237,10 +231,8 @@ public:
         if (k == "roi_y") return from_i(roi_.y);
         if (k == "roi_w") return from_i(roi_.w);
         if (k == "roi_h") return from_i(roi_.h);
-        if (k == "min_radius") return from_i(min_radius_);
         if (k == "max_radius") return from_i(max_radius_);
         if (k == "threshold") return from_i(threshold_);
-        if (k == "accumulator_decay_us") return from_i(static_cast<int>(decay_us_));
         if (k == "decay" && algo_) return from_d(algo_->decay());
         if (k == "buffer_length" && algo_) return from_i(algo_->buffer_length());
         if (k == "nr_max" && algo_) return from_i(algo_->nr_max());

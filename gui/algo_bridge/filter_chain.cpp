@@ -336,10 +336,6 @@ bool FilterChain::is_stage_enabled(const std::string& name) const {
     return it != stages_.end() && it->second->enabled();
 }
 
-std::vector<std::string> FilterChain::stage_names() const {
-    return order_;
-}
-
 void FilterChain::process(const Metavision::EventCD* begin,
                           const Metavision::EventCD* end,
                           std::vector<Metavision::EventCD>& out) {
