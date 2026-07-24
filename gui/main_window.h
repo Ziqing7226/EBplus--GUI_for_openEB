@@ -38,6 +38,7 @@
 
 #include <metavision/sdk/base/utils/callback_id.h>
 #include <metavision/sdk/base/events/event_cd.h>
+#include <metavision/sdk/core/utils/colors.h>
 
 #include "algo_bridge/algo_bridge.h"
 #include "app/camera_controller.h"
@@ -155,6 +156,13 @@ private:
     void remove_algo_callback();
     void process_algo_results(QImage& frame);
 
+    /// Re-renders the main display frame from an algorithm's filtered event
+    /// stream (audit §五-G1). Uses the same Metavision palette/background as
+    /// FileFrameGenerator::render_frame so the re-injected stream keeps the
+    /// exact look of the normal display pipeline.
+    void render_filtered_events_frame(
+        QImage& frame, const std::vector<Metavision::EventCD>& events);
+
     /// File playback: feeds the events in the current accumulation window
     /// (emitted by FileFrameGenerator) to all live AlgoInstances and to the
     /// XYT 3D display, synchronously with the displayed frame. This replaces
@@ -235,6 +243,10 @@ private:
     /// file-mode "Display FPS" metric (event timestamps are meaningless
     /// there — audit §六-P6).
     std::chrono::steady_clock::time_point prev_frame_wall_{};
+
+    /// Current display palette, tracked in update_palettes() so the §五-G1
+    /// filtered-events re-render uses the same colors as the main pipeline.
+    Metavision::ColorPalette display_palette_{Metavision::ColorPalette::Dark};
 
     /// True while closeEvent() is tearing down; AlgoWindow `closing`
     /// handlers skip modal report dialogs in that case (audit §六-M3).

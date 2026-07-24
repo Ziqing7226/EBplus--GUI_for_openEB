@@ -24,10 +24,13 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
 #include <metavision/sdk/core/utils/colors.h>
+
+#include <opencv2/core.hpp>
 
 #include "panels/algorithms_panel.h"
 #include "panels/biases_panel.h"
@@ -1108,6 +1111,8 @@ void MainWindow::update_palettes(int index) {
         case 3: p = Metavision::ColorPalette::Gray; break;
         default: break;
     }
+    // Track the palette for the §五-G1 filtered-events re-render.
+    display_palette_ = p;
     camera_.frame_pipeline()->set_color_palette(p);
 }
 
@@ -1603,6 +1608,33 @@ void MainWindow::remove_algo_callback() {
     algo_cd_cb_id_.reset();
 }
 
+void MainWindow::render_filtered_events_frame(
+    QImage& frame, const std::vector<Metavision::EventCD>& events) {
+    // Re-render the whole frame from the algorithm's output events (audit
+    // §五-G1). Render at the DISPLAYED frame's size (sensor scale for both
+    // the live CDFrameGenerator path and the file FileFrameGenerator path),
+    // using the same Metavision palette and background as
+    // FileFrameGenerator::render_frame so the re-injected stream is visually
+    // indistinguishable from the normal display.
+    const int w = frame.width(), h = frame.height();
+    if (w <= 0 || h <= 0) return;
+    const cv::Vec3b bg  = Metavision::get_bgr_color(display_palette_, Metavision::ColorType::Background);
+    const cv::Vec3b on  = Metavision::get_bgr_color(display_palette_, Metavision::ColorType::Positive);
+    const cv::Vec3b off = Metavision::get_bgr_color(display_palette_, Metavision::ColorType::Negative);
+    cv::Mat img(h, w, CV_8UC3, cv::Scalar(bg[0], bg[1], bg[2]));
+    // Rendering is O(events) and runs at most once per displayed frame.
+    // Cap the count defensively — the bridge is expected to keep
+    // filtered_events at or below ~50k events per pull.
+    constexpr std::size_t kMaxRenderEvents = 50000;
+    const std::size_t n = std::min(events.size(), kMaxRenderEvents);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& ev = events[i];
+        if (ev.x < 0 || ev.x >= w || ev.y < 0 || ev.y >= h) continue;
+        img.ptr<cv::Vec3b>(static_cast<int>(ev.y))[ev.x] = ev.p ? on : off;
+    }
+    frame = mat_to_qimage(img);
+}
+
 void MainWindow::process_algo_results(QImage& frame) {
     // Iterate a snapshot of live instances and pull each one's latest result,
     // then dispatch to the instance's display strategy (design §3.5.4). The
@@ -1613,6 +1645,17 @@ void MainWindow::process_algo_results(QImage& frame) {
     // Snapshot once and reuse for draw_roi_overlays to avoid a redundant
     // list_live() call (N7).
     auto instances = algo_bridge_.list_live();
+
+    // Phase 1: pull every enabled instance's result. The results are kept
+    // (moved — AlgoResult's cv::Mat is refcounted, so this is cheap) so that
+    // the §五-G1 filtered-events re-render can run BEFORE any strategy draws
+    // overlays onto the frame.
+    struct PulledResult {
+        std::shared_ptr<AlgoInstance> inst;
+        AlgoResult result;
+    };
+    std::vector<PulledResult> pulled;
+    pulled.reserve(instances.size());
     for (auto& inst : instances) {
         // Surface the flood-guard auto-disable so the user knows why an algo
         // stopped producing output (design §5.6.7). Re-enabling it from the
@@ -1636,11 +1679,60 @@ void MainWindow::process_algo_results(QImage& frame) {
         } catch (...) {
             continue;
         }
+        pulled.push_back({inst, std::move(r)});
+    }
+
+    // Phase 2 (audit §五-G1): filtering/transform algorithms
+    // (hot_pixel_filter, ultra_slow_motion, trigger_synced, overlay,
+    // optical_gyro, ...) produce an event stream as their ONLY output — it
+    // used to have no consumer, so enabling them left the main display
+    // unchanged. Re-inject that stream: if an enabled instance returned
+    // non-empty filtered_events, re-render the main frame from those events
+    // before any strategy draws. Algorithms are mutually exclusive, so at
+    // most one should produce an event stream; if several do, the first wins
+    // and the user is notified once.
+    const std::vector<Metavision::EventCD>* reinject = nullptr;
+    std::string reinject_name;
+    bool multiple = false;
+    for (auto& pr : pulled) {
+        if (!pr.result.filtered_events.empty()) {
+            if (reinject == nullptr) {
+                reinject = &pr.result.filtered_events;
+                reinject_name = pr.inst->info().name;
+            } else {
+                multiple = true;
+            }
+        }
+    }
+    // "Once per occurrence": warn only on the rising edge, re-arm when the
+    // condition clears (it should never occur — algorithms are exclusive).
+    static bool reinject_warned = false;
+    if (multiple && !reinject_warned) {
+        reinject_warned = true;
+        statusBar()->showMessage(
+            tr("Multiple algorithms output filtered events; showing %1")
+                .arg(QString::fromStdString(reinject_name)), 5000);
+    } else if (!multiple) {
+        reinject_warned = false;
+    }
+    if (reinject != nullptr) {
+        // Re-render replaces the frame content; cost is bounded (one render
+        // per displayed frame, events capped in render_filtered_events_frame).
+        try {
+            render_filtered_events_frame(frame, *reinject);
+        } catch (...) {
+            // A cv::Exception must not escape this Qt slot (audit §五-H2);
+            // skip the re-render for one frame instead.
+        }
+    }
+
+    // Phase 3: dispatch each pulled result to its display strategy.
+    for (auto& pr : pulled) {
         // apply_strategy runs mat_to_qimage / frame.copy etc. — a
         // cv::Exception escaping this Qt slot would terminate the app
         // (audit §五-H2). Skip this algorithm's output for one frame instead.
         try {
-            inst->apply_strategy(frame, r, ctx);
+            pr.inst->apply_strategy(frame, pr.result, ctx);
         } catch (...) {
             continue;
         }
