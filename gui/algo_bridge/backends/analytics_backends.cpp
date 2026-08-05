@@ -357,6 +357,11 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); total_events_ = 0; }
+    void set_sensor_dimensions(int w, int h) override {
+        // Event-count only — no sensor-sized algorithm state; just update
+        // the ROI geometry (audit §五-D1).
+        roi_.set_sensor_dimensions(w, h);
+    }
 };
 
 /// ISIAnalyzer backend — renders ISI histogram as frame.
@@ -388,19 +393,34 @@ public:
             if (k == "preproc_downsample") rebuild();
             return;
         }
+        // Only rebuild when the effective dimensions actually change
+        // (audit §五-D4): apply_global_roi fires 5 set_param calls, and a
+        // rebuild discards the accumulated histogram each time.
+        const bool prev_roi_enabled = roi_.enabled;
+        const int prev_roi_rw = roi_.rw;
+        const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
+        bool roi_changed = false;
         if (k == "per_pixel") {
             per_pixel_ = to_b(v);
             need_rebuild = true;
         } else if (k == "max_isi_ms") {
             max_isi_ms_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_max_isi_ms(max_isi_ms_);
-        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); roi_changed = true; }
+        else if (k == "roi_x") { roi_.x = to_i(v); roi_changed = true; }
+        else if (k == "roi_y") { roi_.y = to_i(v); roi_changed = true; }
+        else if (k == "roi_w") { roi_.w = to_i(v); roi_changed = true; }
+        else if (k == "roi_h") { roi_.h = to_i(v); roi_changed = true; }
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
+        else if (roi_changed) {
+            const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
+            const int old_ah = prev_roi_enabled ? prev_roi_rh : sensor_h_;
+            roi_.compute(sensor_w_, sensor_h_);
+            const int new_aw = roi_.enabled ? roi_.rw : sensor_w_;
+            const int new_ah = roi_.enabled ? roi_.rh : sensor_h_;
+            if (new_aw != old_aw || new_ah != old_ah) rebuild();
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;

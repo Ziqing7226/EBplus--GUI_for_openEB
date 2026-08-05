@@ -276,7 +276,9 @@ std::vector<AlgoParamSpec> preproc_params() {
         // Refractory (mode 2)
         pint("preproc_filter_refractory_us", "Preproc Refractory (us)", "1000", "100", "100000"),
         // DWF (mode 3)
-        pint("preproc_filter_dwf_window_length", "Preproc DWF win len", "2", "1", "100"),
+        // dwf_window_length upper bound raised to 1024 (audit §5-B3): the
+        // jAER/design working point is 512, unreachable with the old max 100.
+        pint("preproc_filter_dwf_window_length", "Preproc DWF win len", "2", "1", "1024"),
         pint("preproc_filter_dwf_dist_threshold", "Preproc DWF dist", "2", "1", "1024"),
         pint("preproc_filter_dwf_min_correlated", "Preproc DWF min corr", "2", "1", "8"),
         pbool("preproc_filter_dwf_double_mode", "Preproc DWF double", "false"),
@@ -386,25 +388,36 @@ void AlgoBridge::set_sensor_dimensions(int width, int height) {
 void AlgoBridge::apply_global_preproc(const std::string& key,
                                       const std::string& value) {
     // Apply the preproc_* parameter to every live self-developed instance.
-    // OpenEB wrapper algorithms (source=="openeb") have backend_==nullptr
-    // (pass-through); preproc_* params have no effect on them and would
-    // pollute their param_values_ map, so they are skipped.
-    std::lock_guard<std::mutex> lk(live_mutex_);
-    // Cache the value so instances created later (by other code paths) inherit
-    // the shared preprocessing state (BUG-R4).
-    preproc_cache_[key] = value;
-    for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
-        if (auto inst = it->second.lock()) {
-            // Skip calibration algorithms — they don't use preproc params
-            // and would just accumulate pollution in param_values_ (BUG-R8).
-            if (inst->info().source == "self" &&
-                inst->info().category != "calibration") {
-                inst->set_param(key, value);
+    // OpenEB event-transform stages (source=="openeb") have backend_==nullptr
+    // (pass-through to FilterChain); preproc_* params have no effect on them
+    // and would pollute their param_values_ map, so they are skipped.
+    //
+    // Threading (audit §五-C2): set_param can be heavyweight (e.g. E2VID
+    // rebuilds reload the ONNX model). Take a snapshot under live_mutex_ and
+    // apply the params OUTSIDE the lock so list_live/find_live callers are
+    // not blocked for the duration.
+    std::vector<std::shared_ptr<AlgoInstance>> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(live_mutex_);
+        // Cache the value so instances created later (by other code paths)
+        // inherit the shared preprocessing state (BUG-R4).
+        preproc_cache_[key] = value;
+        for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
+            if (auto inst = it->second.lock()) {
+                // Skip calibration algorithms — they don't use preproc params
+                // and would just accumulate pollution in param_values_ (BUG-R8).
+                if (inst->info().source == "self" &&
+                    inst->info().category != "calibration") {
+                    snapshot.push_back(std::move(inst));
+                }
+                ++it;
+            } else {
+                it = live_instances_.erase(it);
             }
-            ++it;
-        } else {
-            it = live_instances_.erase(it);
         }
+    }
+    for (auto& inst : snapshot) {
+        inst->set_param(key, value);
     }
 }
 
@@ -415,27 +428,34 @@ void AlgoBridge::apply_global_roi(const std::string& enabled,
                                   const std::string& h) {
     // Apply the roi_* parameters to every live self-developed instance and
     // cache them so instances created later inherit the current ROI (N3).
-    // Same source/category filter as apply_global_preproc.
-    std::lock_guard<std::mutex> lk(live_mutex_);
-    roi_cache_["roi_enabled"] = enabled;
-    roi_cache_["roi_x"] = x;
-    roi_cache_["roi_y"] = y;
-    roi_cache_["roi_w"] = w;
-    roi_cache_["roi_h"] = h;
-    for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
-        if (auto inst = it->second.lock()) {
-            if (inst->info().source == "self" &&
-                inst->info().category != "calibration") {
-                inst->set_param("roi_enabled", enabled);
-                inst->set_param("roi_x", x);
-                inst->set_param("roi_y", y);
-                inst->set_param("roi_w", w);
-                inst->set_param("roi_h", h);
+    // Same snapshot-then-apply-outside-lock pattern as apply_global_preproc
+    // (audit §五-C2). Same source/category filter as apply_global_preproc.
+    std::vector<std::shared_ptr<AlgoInstance>> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(live_mutex_);
+        roi_cache_["roi_enabled"] = enabled;
+        roi_cache_["roi_x"] = x;
+        roi_cache_["roi_y"] = y;
+        roi_cache_["roi_w"] = w;
+        roi_cache_["roi_h"] = h;
+        for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
+            if (auto inst = it->second.lock()) {
+                if (inst->info().source == "self" &&
+                    inst->info().category != "calibration") {
+                    snapshot.push_back(std::move(inst));
+                }
+                ++it;
+            } else {
+                it = live_instances_.erase(it);
             }
-            ++it;
-        } else {
-            it = live_instances_.erase(it);
         }
+    }
+    for (auto& inst : snapshot) {
+        inst->set_param("roi_enabled", enabled);
+        inst->set_param("roi_x", x);
+        inst->set_param("roi_y", y);
+        inst->set_param("roi_w", w);
+        inst->set_param("roi_h", h);
     }
 }
 
@@ -720,14 +740,14 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Overlay,
          {penum("mode", "Mode", "0", {"0=LocalPlanes", "1=LucasKanade",
            "2=BlockMatch", "3=ClusterOF"}),
-          pint("search_radius", "Search radius (px)", "8", "3", "30"),
+          pint("search_radius", "Search radius (px)", "4", "3", "30"),
           pint("time_window_us", "Time window (us)", "20000", "1000", "100000"),
           pfloat("cluster_ema_alpha", "Cluster EMA alpha", "0.05", "0.001", "1.0")}});
 
     // §4.3.10 Blob Detector
     add({"blob_detector", "Blob Detector", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pfloat("threshold", "Threshold", "10", "1", "254"),
+         {pfloat("threshold", "Threshold", "50", "1", "254"),
           pfloat("learning_rate", "Learning rate", "0.05", "0.001", "1.0")}});
 
     // §4.3.11 Object Tracker (4 modes, jAER RectangularClusterTracker)
@@ -741,20 +761,23 @@ void AlgoBridge::register_self_cv() {
           pbool("enable_velocity_prediction", "Velocity prediction", "true"),
           pfloat("location_mixing_factor", "Location mixing factor", "0.05", "0.0", "1.0"),
           pfloat("predictive_velocity_factor", "Predictive velocity factor", "1.0", "0.0", "10.0"),
-          pint("mass_decay_tau_us", "Mass decay tau (us)", "100000", "1", "1000000"),
+          pint("mass_decay_tau_us", "Mass decay tau (us)", "10000", "1", "1000000"),
           pfloat("threshold_mass_for_visible", "Threshold mass visible", "10.0", "0.0", "1000000.0")}});
 
-    // §4.3.12 Corner Detector (3 modes)
+    // §4.3.12 Corner Detector (3 modes). The enum labels must match
+    // algo/cv/corner_detector.h's Mode enum order exactly (the backend maps
+    // the index via static_cast) — previously mislabelled (§五-A1): the old
+    // labels {"Harris","FAST","AGAST"} ran EndStopped/TypeCoincidence/Harris.
     add({"corner_detector", "Corner Detector", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {penum("mode", "Mode", "0", {"0=Harris", "1=FAST", "2=AGAST"}),
-          pfloat("min_score", "Min score", "0.01", "0", "1.0")}});
+         {penum("mode", "Mode", "0", {"0=EndStopped", "1=TypeCoincidence", "2=Harris"}),
+          pfloat("min_score", "Min score", "0.1", "0", "1.0")}});
 
     // §4.3.13 Line Segment Detector (ELiSeD)
     add({"line_segment", "Line Segment (ELiSeD)", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("min_length", "Min length (px)", "10", "3", "100"),
-          pint("gap", "Max gap (px)", "3", "1", "20")}});
+         {pint("min_length", "Min length (px)", "20", "3", "100"),
+          pint("gap", "Max gap (px)", "5", "1", "20")}});
 
     // §4.3.14 Hough Line Tracker (jAER HoughLineTracker)
     add({"hough_line", "Hough Line Tracker", "cv", "self",
@@ -801,16 +824,20 @@ void AlgoBridge::register_self_cv() {
     // §4.3.18 Cluster LIF
     add({"cluster_lif", "Cluster LIF", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pfloat("tau_ms", "Tau (ms)", "10", "1", "1000"),
-          pfloat("threshold", "Threshold", "1.0", "0.1", "10.0"),
+         {pfloat("tau_ms", "Tau (ms)", "22", "1", "1000"),
+          pfloat("threshold", "Threshold", "15", "0.1", "1000"),
           pint("receptive_field_size_pixels", "Receptive field (px)", "8", "2", "128"),
           pfloat("initial_potential_percent", "Initial potential (%)", "50", "0", "100"),
           pfloat("jump_after_firing_percent", "Jump after firing (%)", "10", "0", "100")}});
 
-    // §4.3.19 Background Mask Filter
+    // §4.3.19 Background Mask Filter. The "learning" control maps to the
+    // algo's learning window in seconds (set_learning_window_s), not a rate —
+    // named accordingly (§五-B2); default 5s matches the jAER working point.
+    // The backend still accepts the old "learning_rate" key as an alias, and
+    // ConfigManager migrates it on load (§11.2-G).
     add({"background_mask", "Background Mask Filter", "cv", "self",
          AlgoDisplayMode::Replace,
-         {pfloat("learning_rate", "Learning rate", "0.05", "0.001", "1.0"),
+         {pfloat("learning_window_s", "Learning window (s)", "5.0", "0.1", "60.0"),
           pfloat("threshold", "Threshold", "10", "1", "100"),
           pint("erosion_size", "Erosion size", "0", "0", "20")}});
 
@@ -931,10 +958,12 @@ void AlgoBridge::register_self_analytics() {
          {pbool("per_pixel", "Per pixel", "false"),
           pfloat("max_isi_ms", "Max ISI (ms)", "100", "1", "1000")}});
 
-    // §4.4.5 Particle Counter
+    // §4.4.5 Particle Counter. line_y default -1 = auto (algo uses the
+    // sensor-height midpoint); a hardcoded 360 breaks on non-720p sensors
+    // (§五-B4).
     add({"particle_counter", "Particle Counter", "analytics", "self",
          AlgoDisplayMode::Overlay,
-         {pint("line_y", "Line Y (px)", "360", "0", ""),
+         {pint("line_y", "Line Y (-1=auto)", "-1", "-1", ""),
           pint("min_area", "Min area (px)", "10", "1", "10000")}});
 
     // §4.4.6 Auto Bias Controller
@@ -945,8 +974,8 @@ void AlgoBridge::register_self_analytics() {
     // §4.4.7 Freq Detector
     add({"freq_detector", "Frequency Detector", "analytics", "self",
          AlgoDisplayMode::Standalone,
-         {pfloat("update_interval_s", "Update interval (s)", "0.5", "0.1", "10"),
-          pint("min_events", "Min events", "50", "10", "1000")}});
+         {pfloat("update_interval_s", "Update interval (s)", "1.0", "0.1", "10"),
+          pint("min_events", "Min events", "3", "1", "1000")}});
 
     // §4.4.8 Sensor Self-Test — per-pixel refractory-period heatmap + bad-pixel
     // detection. Registered WITHOUT roi_params/preproc_params (the self-test

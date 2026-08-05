@@ -104,9 +104,12 @@ public:
         // the sliding-window formulation in both Bardow (2016) and Cook
         // (2011) — no exponential decay, old events are fully discarded.
         rebuild_log_intensity();
-        // Optional exponential decay (default off — the sliding window
-        // already provides temporal locality). Users can enable it for
-        // extra smoothing via the decay_tau_ms parameter.
+        // Optional per-frame dimming (default off). NOTE on semantics: the
+        // scaling runs right after the full sliding-window rebuild above, so
+        // it never accumulates across frames — it exponentially dims the
+        // CURRENT frame's brightness by the inter-frame interval
+        // (exp(-dt_frame/tau)). It is NOT cross-frame temporal smoothing
+        // (the old comment claiming "extra smoothing" was wrong).
         if (current_t_ > last_frame_t_ && decay_tau_ms_ > 0.0f) {
             const double dt_us =
                 static_cast<double>(current_t_ - last_frame_t_);
@@ -169,8 +172,11 @@ public:
     void set_num_iterations(int n) { num_iterations_ = clamp_iter(n, 10, 500); }
     int num_iterations() const { return num_iterations_; }
 
-    /// @brief Sets the log-intensity decay time constant in ms.
-    /// Larger values = slower decay (longer memory); 0 disables decay.
+    /// @brief Sets the per-frame dimming time constant in ms.
+    /// Larger values = weaker dimming; 0 disables dimming.
+    /// Semantics: each get_frame() scales the freshly rebuilt log-intensity
+    /// by exp(-dt_frame/tau) — an observable per-frame brightness dimming,
+    /// not cross-frame temporal smoothing (see get_frame()).
     void set_decay_tau_ms(float ms) {
         decay_tau_ms_ = (ms < 0.0f) ? 0.0f : (ms > 5000.0f ? 5000.0f : ms);
     }
@@ -888,9 +894,10 @@ private:
     std::vector<double> log_intensity_;
     Metavision::timestamp current_t_{0};
     Metavision::timestamp last_frame_t_{0};   ///< Last get_frame() timestamp
-    /// Optional exponential decay for log_intensity_ (ms). Default 0
-    /// (disabled) — the sliding window already provides temporal locality.
-    /// Users can enable it for extra temporal smoothing.
+    /// Per-frame dimming time constant (ms). Default 0 (disabled). Applied
+    /// right after the sliding-window rebuild, so it dims the current frame
+    /// by the inter-frame interval — NOT cross-frame temporal smoothing.
+    /// Kept (develop removed it) because the dimming is user-observable.
     float decay_tau_ms_{0.0f};
 
     // --- BardowVariational optimization state ---

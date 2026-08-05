@@ -81,7 +81,10 @@ public:
     void set_max_age_us(int v) { max_age_us_ = clamp_i(v, 1000, 1000000); }
 
     // Shared orientation params (jAER NUM_TYPES = 4) ----------------------
-    void set_num_orientations(int v) { num_orientations_ = clamp_i(v, 4, 8); }
+    /// @brief Number of orientation bins. Clamped to exactly 4: the
+    /// EndStopped walker tables kBaseDx/kBaseDy have only 4 entries and are
+    /// indexed with %4, so values > 4 would misalign bin semantics (§四-低6).
+    void set_num_orientations(int v) { num_orientations_ = clamp_i(v, 4, 4); }
 
     Mode mode() const { return mode_; }
     double accumulation_ms() const { return accumulation_ms_; }
@@ -187,7 +190,7 @@ private:
             ori_surface_.assign(
                 static_cast<std::size_t>(2) * static_cast<std::size_t>(width_)
                     * static_cast<std::size_t>(height_),
-                0);
+                -1);  // -1 = never seen (0 is a legal timestamp, §四-低8)
             last_ori_.assign(
                 static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_),
                 -1);
@@ -227,7 +230,7 @@ private:
                 const int nx = static_cast<int>(e.x) + dx;
                 if (nx < 0 || nx >= width_) continue;
                 const Metavision::timestamp lt = ori_surface_[idx_of(nx, ny, pol)];
-                if (lt == 0) continue;
+                if (lt < 0) continue;  // -1 = never seen
                 const double diff = static_cast<double>(e.t - lt);
                 if (diff < 0.0 || diff > win) continue;
                 const double w = 1.0 - diff / win;     // freshness weight
@@ -261,7 +264,7 @@ private:
         const Metavision::timestamp lt1 = ori_surface_[idx_of(x, y, 1)];
         Metavision::timestamp lt = lt0;
         if (lt1 > lt) lt = lt1;
-        if (lt == 0) return false;  // never seen
+        if (lt < 0) return false;  // -1 = never seen
         const Metavision::timestamp dt = t - lt;
         return dt >= 0 && dt <= max_age_us_;
     }

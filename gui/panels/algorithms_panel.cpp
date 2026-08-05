@@ -173,8 +173,19 @@ void AlgorithmsPanel::build_ui() {
                             });
                 } else if (p.type == "float") {
                     auto* sp = new QDoubleSpinBox(params_host);
-                    sp->setRange(-1e9, 1e9);
+                    // Apply the registered min/max (audit §五-B1): clamping in
+                    // the GUI keeps the displayed value equal to the value
+                    // the algorithm actually runs with (previously the GUI
+                    // allowed ±1e9 and the algo clamped silently, so the two
+                    // diverged). Step is 1/100 of the registered range.
+                    bool oklo = false, okhi = false;
+                    const double lo = QString::fromStdString(p.min_value).toDouble(&oklo);
+                    const double hi = QString::fromStdString(p.max_value).toDouble(&okhi);
+                    const double rlo = oklo ? lo : -1e9;
+                    const double rhi = okhi ? hi : 1e9;
+                    sp->setRange(rlo, rhi);
                     sp->setDecimals(6);
+                    sp->setSingleStep((rhi - rlo) / 100.0);
                     sp->setValue(QString::fromStdString(p.default_value).toDouble());
                     w = sp;
                     connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -497,8 +508,12 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
                     });
         } else { // 'f'
             auto* sp = new QDoubleSpinBox(gb);
-            sp->setRange(-1e9, 1e9);
+            // Apply the registered min/max (audit §五-B1); step = range/100.
+            const double lo = std::string(p.lo).empty() ? -1e9 : std::stod(p.lo);
+            const double hi = std::string(p.hi).empty() ? 1e9 : std::stod(p.hi);
+            sp->setRange(lo, hi);
             sp->setDecimals(6);
+            sp->setSingleStep((hi - lo) / 100.0);
             sp->setValue(std::stod(p.def));
             w = sp;
             connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,

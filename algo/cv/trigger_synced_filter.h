@@ -79,8 +79,29 @@ public:
         std::vector<Event> kept;
         if (packet.empty()) return kept;
 
-        const std::vector<Metavision::timestamp>& trigs =
-            triggers_[static_cast<std::size_t>(trigger_channel_)];
+        auto& trigs = triggers_[static_cast<std::size_t>(trigger_channel_)];
+
+        // 前缀截断（§四-待验证1）：triggers_ 列表只增不减、process() 此前
+        // 每包从 0 重扫（O(n²)）。先把早于本包窗口的触发按序结算进
+        // laserPeriod/lastTriggerTimestamp（与下方 while 循环同一语义），
+        // 再从列表移除，使每包只扫新增的触发。
+        {
+            const Metavision::timestamp win_start = packet[0].t;
+            std::size_t consumed = 0;
+            while (consumed < trigs.size() && trigs[consumed] < win_start) {
+                const Metavision::timestamp tt = trigs[consumed];
+                if (last_trigger_ts_ != kDefaultTimestamp) {
+                    laser_period_ = tt - last_trigger_ts_;
+                    if (laser_period_ < 0) laser_period_ = 0;
+                }
+                last_trigger_ts_ = tt;
+                ++consumed;
+            }
+            if (consumed > 0) {
+                trigs.erase(trigs.begin(),
+                            trigs.begin() + static_cast<long>(consumed));
+            }
+        }
 
         std::size_t trig_idx = 0;
         for (const Event& e : packet) {
@@ -102,6 +123,8 @@ public:
             update_maps(e);
 
             // jAER only emits OFF events that satisfy the laser-line gate.
+            // 差异：首个触发之前 C++ 全滤（jAER lastTriggerTimestamp 初值 0，
+            // 等效 t=0 处有一次隐式触发，流开始处满足窗口的 OFF 事件可通过）。
             if (e.is_off()) {
                 const Metavision::timestamp last_on = last_on_at(e.x, e.y);
                 const Metavision::timestamp last_off = e.t;
@@ -136,6 +159,7 @@ public:
     void set_trigger_channel(int v) { trigger_channel_ = clamp_channel(v); }
 
     /// @brief Resets all filter state (triggers, per-pixel maps, laser sync).
+    ///        差异：jAER resetFilter 只清两张时间图；本实现全清（§一-1.6）。
     void reset() {
         for (auto& ch : triggers_) ch.clear();
         last_trigger_ts_ = kDefaultTimestamp;

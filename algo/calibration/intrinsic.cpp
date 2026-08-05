@@ -15,11 +15,13 @@ IntrinsicCalibration::~IntrinsicCalibration() = default;
 void IntrinsicCalibration::set_pattern(CalibrationPattern pattern,
                                        int cols, int rows,
                                        float square_size_mm) {
-    // For chessboard, OpenCV expects inner-corner count (cols-1, rows-1).
+    // For chessboard, (cols, rows) IS the OpenCV inner-corner count — the same
+    // convention as cv::findChessboardCorners' patternSize, the wizard's UI
+    // ("Inner corners") and ChessboardDisplay (which draws (cols+1)×(rows+1)
+    // squares). (Previously this subtracted 1 here, so a 9×6 board on screen
+    // was searched as 8×5 and detection always failed.)
     // For circle grids, the count is the number of circles per row/column.
-    cv::Size new_bs = (pattern == CalibrationPattern::Chessboard)
-        ? cv::Size(std::max(cols - 1, 1), std::max(rows - 1, 1))
-        : cv::Size(std::max(cols, 1), std::max(rows, 1));
+    cv::Size new_bs = cv::Size(std::max(cols, 1), std::max(rows, 1));
     // The wizard refreshes set_pattern on every capture/run so the user can
     // change pattern/dims/square mid-session. Each frame's object_points_ is
     // frozen at capture time via make_object_grid(), so mixing different
@@ -41,11 +43,13 @@ std::vector<cv::Point3f> IntrinsicCalibration::make_object_grid() const {
     pts.reserve(static_cast<std::size_t>(board_size_.width) *
                 static_cast<std::size_t>(board_size_.height));
     if (pattern_ == CalibrationPattern::AsymmetricCircles) {
+        // OpenCV asymmetric circle grid: rows are horizontally spaced by
+        // 2*square, alternate rows offset by one square (§四-M4).
         for (int r = 0; r < board_size_.height; ++r) {
             for (int c = 0; c < board_size_.width; ++c) {
                 pts.emplace_back(
-                    c * square_size_mm_,
-                    (2 * r + (c & 1)) * square_size_mm_,
+                    (2 * c + (r & 1)) * square_size_mm_,
+                    r * square_size_mm_,
                     0.0f);
             }
         }
@@ -136,7 +140,6 @@ IntrinsicResult IntrinsicCalibration::run() {
     try {
         double rms = cv::calibrateCamera(object_points_, image_points_,
             image_size_, K, dist, rvecs, tvecs);
-        result.ok = true;
         result.rms = rms;
         result.K = K;
         result.dist_coeffs = dist;
@@ -151,6 +154,10 @@ IntrinsicResult IntrinsicCalibration::run() {
         precompute_undistort_lut(image_size_);
         result.undistort_map_x = undistort_map_x_;
         result.undistort_map_y = undistort_map_y_;
+        // Set ok only after every potentially-throwing operation succeeded
+        // (§四-低11): previously ok was set before the LUT precompute, so a
+        // throwing step left ok==true together with an error message.
+        result.ok = true;
     } catch (const cv::Exception& e) {
         result.error = e.what();
     } catch (const std::exception& e) {

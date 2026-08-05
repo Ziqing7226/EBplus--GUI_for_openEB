@@ -447,12 +447,31 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
     // replayed when the instance is eventually created (N1). Without this,
     // loading a config before enabling an algorithm would silently discard
     // all saved parameters.
+    //
+    // §11.2-F+G: before forwarding each param to set_param/cache_algo_params,
+    // we (1) rename obsolete keys per-algorithm via the migration table below
+    // (without this, old configs silently lose the renamed param's value —
+    // set_param only stores keys present in info->params), and (2) clamp
+    // out-of-range float/int values to the registered [min, max] so that the
+    // stored param_values_ matches the algo's runtime value (the algo setter
+    // already clamps internally, but without this the displayed value would
+    // diverge from the runtime value until the user touches the spinbox). The
+    // migration table is scoped by algo name because the same key may
+    // legitimately exist under different algos with different semantics —
+    // e.g. blob_detector still uses "learning_rate" as a rate, while
+    // background_mask renamed it to "learning_window_s" for a window-in-
+    // seconds semantics (§五-B2).
+    static const std::map<std::string, std::map<std::string, std::string>> kParamRenames = {
+        {"background_mask", {{"learning_rate", "learning_window_s"}}},
+    };
+
     const auto algos = obj.value("algorithms").toObject();
     bool ok = true;
     QStringList unknown_algos;
     for (auto it = algos.begin(); it != algos.end(); ++it) {
         const auto name = it.key().toStdString();
-        if (!bridge->find(name)) {
+        const auto* info = bridge->find(name);
+        if (!info) {
             // Unknown algorithm — skip but flag failure with a descriptive
             // message so the user knows which entries were rejected (BUG-R1).
             ok = false;
@@ -461,10 +480,80 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
         }
         const auto entry = it.value().toObject();
         const auto params = entry.value("params").toObject();
+
+        // Build the migrated + clamped param map once so the live and cached
+        // paths see identical values.
+        std::map<std::string, std::string> migrated;
+        for (auto pit = params.begin(); pit != params.end(); ++pit) {
+            std::string key = pit.key().toStdString();
+            std::string val = pit.value().toString().toStdString();
+
+            // §11.2-G: rename obsolete keys per-algorithm.
+            auto rit = kParamRenames.find(name);
+            if (rit != kParamRenames.end()) {
+                auto mit = rit->second.find(key);
+                if (mit != rit->second.end()) {
+                    qWarning("ConfigManager: migrating obsolete param %s::%s -> %s",
+                             name.c_str(), key.c_str(), mit->second.c_str());
+                    key = mit->second;
+                }
+            }
+
+            // Warn on parameter keys the algorithm no longer registers (e.g.
+            // removed dead params such as n_sigma or accumulator_decay_us, or
+            // hand-edited typos). The values are still forwarded: set_param()
+            // drops unknown keys from param_values_ (BUG-G12) but passes them
+            // to the backend, which handles backward-compat aliases (e.g. the
+            // event_to_video "downsample" -> preproc_downsample forward).
+            // Without this log a stale config entry would vanish silently
+            // (§11.2-style silent failure).
+            const AlgoParamSpec* spec = nullptr;
+            for (const auto& p : info->params) {
+                if (p.key == key) { spec = &p; break; }
+            }
+            if (!spec) {
+                qWarning("ConfigManager: unrecognized param %s::%s in config",
+                         name.c_str(), key.c_str());
+                migrated[key] = val;
+                continue;
+            }
+
+            // §11.2-F: clamp out-of-range numeric values to the registered
+            // [min, max]. Only float/int params have a numeric range; enum/
+            // bool/string are passed through unchanged. If the registered
+            // min/max is empty (open bound), that side is skipped. If the
+            // value string is not parseable as a number, it is passed through
+            // unchanged (the backend will deal with it).
+            if (spec->type == "float" || spec->type == "int") {
+                bool okv = false, oklo = false, okhi = false;
+                const double v  = QString::fromStdString(val).toDouble(&okv);
+                const double lo = QString::fromStdString(spec->min_value).toDouble(&oklo);
+                const double hi = QString::fromStdString(spec->max_value).toDouble(&okhi);
+                if (okv) {
+                    double clamped = v;
+                    if (oklo && clamped < lo) clamped = lo;
+                    if (okhi && clamped > hi) clamped = hi;
+                    if (clamped != v) {
+                        qWarning("ConfigManager: clamping param %s::%s from %g to %g (range [%s, %s])",
+                                 name.c_str(), key.c_str(), v, clamped,
+                                 oklo ? spec->min_value.c_str() : "-inf",
+                                 okhi ? spec->max_value.c_str() : "+inf");
+                        // Preserve the registry's string format: ints as
+                        // ints, floats with 6 decimals (matches the
+                        // QDoubleSpinBox decimals in algorithms_panel).
+                        val = (spec->type == "int")
+                                  ? std::to_string(static_cast<long long>(clamped))
+                                  : QString::number(clamped, 'f', 6).toStdString();
+                    }
+                }
+            }
+            migrated[key] = val;
+        }
+
         auto live = bridge->find_live(name);
         if (live) {
-            for (auto pit = params.begin(); pit != params.end(); ++pit) {
-                live->set_param(pit.key().toStdString(), pit.value().toString().toStdString());
+            for (const auto& kv : migrated) {
+                live->set_param(kv.first, kv.second);
             }
             if (entry.contains("enabled")) {
                 live->set_enabled(entry.value("enabled").toBool());
@@ -472,11 +561,7 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
         } else {
             // No live instance — cache the params so create() can replay
             // them when the algorithm is later enabled (N1).
-            std::map<std::string, std::string> cached;
-            for (auto pit = params.begin(); pit != params.end(); ++pit) {
-                cached[pit.key().toStdString()] = pit.value().toString().toStdString();
-            }
-            bridge->cache_algo_params(name, cached);
+            bridge->cache_algo_params(name, migrated);
         }
     }
     if (!unknown_algos.isEmpty()) {

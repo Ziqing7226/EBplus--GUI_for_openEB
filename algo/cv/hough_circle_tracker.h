@@ -8,10 +8,10 @@
 //
 // 与 jAER 的少量差异（为兼容既有 backend/test API 所做，不影响算法语义）：
 //   * jAER 的单一 float 半径 `radius` (默认 0.8px) 在此映射为构造参数
-//     `max_radius_px`（整数像素），即本类使用的固定半径；`min_radius_px`
-//     仅为兼容旧 API 保留，不再参与累加。
-//   * jAER 的 `decay` (无量纲，默认 1.0) 在此作为新增参数 `decay` 保留；
-//     旧参数 `accumulator_decay_us` 仅为兼容旧 API 保留，不再参与衰减计算。
+//     `max_radius_px`（整数像素），即本类使用的固定半径。
+//   * threshold 默认 30 vs jAER 15（有意，GUI 噪声环境下减少误检）。
+//   * 修正了 jAER locDepression 的笔误（jAER [x-1][y-1] 写了两次、
+//     [x+1][y-1] 缺失）；本实现 8 邻域全部正确抑制。
 //   * max_coord 未被任何 above-threshold 检测命中时不输出（jAER 会输出
 //     (0,0)）；避免在 GUI 上画出多余的左上角圆。
 //   * `buffer_length` 下限为 1（jAER 允许 0 但会触发除零）。
@@ -56,10 +56,14 @@ class HoughCircleTracker {
 public:
     /// @brief Constructor.
     /// @param width, height      Accumulator dimensions (pixels).
-    /// @param min_radius_px      Legacy, unused (kept for API compat).
+    /// @param min_radius_px      Legacy no-op, retained only because
+    ///                           gui/algo_bridge passes it positionally;
+    ///                           removal deferred to the gui bridge cleanup.
     /// @param max_radius_px      The single fixed circle radius (jAER `radius`).
-    /// @param threshold          Detection threshold (jAER `threshold`).
-    /// @param accumulator_decay_us Legacy, unused (jAER uses `decay`).
+    /// @param threshold          Detection threshold (jAER `threshold`; default
+    ///                           30 here vs jAER 15, intentional).
+    /// @param accumulator_decay_us Legacy no-op (jAER uses `decay`), retained
+    ///                           for gui/algo_bridge compat (see above).
     /// @param decay              jAER decay coefficient (default 1.0).
     /// @param buffer_length      FIFO event history length (default 4000).
     /// @param nr_max             Number of maxima to track (default 1).
@@ -93,16 +97,26 @@ public:
         rebuild();
     }
 
-    /// @brief Processes an event packet and returns detected circles.
-    std::vector<HoughCircle> process(const EventPacket& packet) {
-        std::vector<HoughCircle> result;
-        if (packet.empty()) return result;
-        if (width_ <= 0 || height_ <= 0) return result;
-
-        const Metavision::timestamp cur_t = packet[packet.size() - 1].t;
+    /// 衰减 + 事件累积，不做峰值扫描（供节流路径每包调用）。
+    ///
+    /// @param cur_t 显式时间戳供衰减计算使用。审计 §11.2-H：当 ROI/预处理
+    /// 滤掉了包尾事件、或整个包被滤空时，algo 的 last_t_ 会停滞，下一包
+    /// 的 dt 被夸大、衰减失真。调用方（HoughCircleBackend）应传
+    /// passthrough_.back().t 以保证 last_t_ 单调推进。默认 -1 = 用
+    /// packet.back().t（向后兼容 process() 与单元测试）。
+    void accumulate_only(const EventPacket& packet,
+                         Metavision::timestamp cur_t = -1) {
+        // Resolve cur_t: if not provided, use packet.back().t. If neither is
+        // available (empty packet, no explicit cur_t), bail — nothing to do.
+        if (cur_t < 0) {
+            if (packet.empty()) return;
+            cur_t = packet[packet.size() - 1].t;
+        }
 
         // jAER non-exponential decay: factor = 1/(0.0001*decay*dt).
-        if (decay_mode_ && decay_ > 0.0f) {
+        // Apply even when the packet is empty (cur_t provided) so last_t_
+        // stays monotonic across ROI-filtered empty packets (§11.2-H).
+        if (width_ > 0 && height_ > 0 && decay_mode_ && decay_ > 0.0f) {
             const float dt = static_cast<float>(cur_t - last_t_);
             if (dt > 0.0f) {
                 const float decay_factor = 1.0f / (0.0001f * decay_ * dt);
@@ -110,6 +124,11 @@ public:
             }
         }
         last_t_ = cur_t;
+
+        // Empty packet (with explicit cur_t): timestamp advanced, nothing
+        // else to do.
+        if (packet.empty()) return;
+        if (width_ <= 0 || height_ <= 0) return;
 
         // Reset running maxima for this packet (jAER resets maxValue, keeps
         // maxCoordinate so the last known position persists across packets).
@@ -137,6 +156,12 @@ public:
                 if (old.x >= 0) accumulate(old.x, old.y, -1.0f);
             }
         }
+    }
+
+    /// 全量扫描累加器局部极大，返回检测到的圆（供节流路径按节奏调用）。
+    std::vector<HoughCircle> find_peaks() {
+        std::vector<HoughCircle> result;
+        if (width_ <= 0 || height_ <= 0) return result;
 
         // Re-scan the whole accumulator for local maxima above threshold
         // (overwrites the running maxima found during accumulation).
@@ -189,13 +214,19 @@ public:
         return result;
     }
 
+    /// process() 保持原签名 = accumulate_only(packet) 后调用 find_peaks()（兼容现有调用方）。
+    std::vector<HoughCircle> process(const EventPacket& packet) {
+        accumulate_only(packet);
+        return find_peaks();
+    }
+
     // Parameter accessors ---------------------------------------------------
-    int min_radius_px() const { return min_radius_px_; }
+    int min_radius_px() const { return min_radius_px_; }  // legacy no-op
     int max_radius_px() const { return max_radius_px_; }
     int threshold() const { return threshold_; }
-    /// @brief Compatibility alias for threshold().
+    /// @brief Compatibility alias for threshold() (used by older callers).
     int hough_threshold() const { return threshold_; }
-    Metavision::timestamp accumulator_decay_us() const {
+    Metavision::timestamp accumulator_decay_us() const {  // legacy no-op
         return accumulator_decay_us_;
     }
     float decay() const { return decay_; }
@@ -210,7 +241,7 @@ public:
 
     void set_min_radius_px(int v) {
         if (v < 0) v = 0;
-        min_radius_px_ = v;  // legacy, unused
+        min_radius_px_ = v;  // legacy no-op (gui/algo_bridge compat)
     }
     void set_max_radius_px(int v) {
         if (v < 0) v = 0;
@@ -222,7 +253,7 @@ public:
     /// @brief Compatibility alias for set_threshold().
     void set_hough_threshold(int v) { threshold_ = v; }
     void set_accumulator_decay_us(Metavision::timestamp v) {
-        accumulator_decay_us_ = v;  // legacy, unused
+        accumulator_decay_us_ = v;  // legacy no-op (gui/algo_bridge compat)
     }
     void set_decay(float v) {
         if (v < 0.0f) v = 0.0f;
@@ -323,19 +354,21 @@ private:
     /// circle of radius `max_radius_px_` centered at (centerX, centerY) into
     /// the accumulator, adding `weight` to each outlined cell. Uses only
     /// integer addition/subtraction. Ellipse eqn: A*x^2 + B*y^2 + C*x*y - 1
-    /// = 0, with A = B = radius^2, C = 0 (a circle).
+    /// = 0, with A = B = radius^2, C = 0 (a circle). All accumulator math is
+    /// int64: radius^2 overflows 32-bit int for radius >= 46341 (§四-低10).
     void accumulate(int centerX, int centerY, float weight) {
-        const int aa = max_radius_px_ * max_radius_px_;
-        const int bb = aa;
-        const int twoC = 0;
+        const std::int64_t aa =
+            static_cast<std::int64_t>(max_radius_px_) * max_radius_px_;
+        const std::int64_t bb = aa;
+        const std::int64_t twoC = 0;
 
         int x = 0;
-        int y = static_cast<int>(std::lround(std::sqrt(static_cast<float>(bb))));
-        const int twoaa = 2 * aa;
-        const int twobb = 2 * bb;
-        int dx = (twoaa * y) + (twoC * x);
-        int dy = -((twobb * x) + (twoC * y));
-        int ellipseError = aa * ((y * y) - bb);
+        int y = static_cast<int>(std::lround(std::sqrt(static_cast<double>(bb))));
+        const std::int64_t twoaa = 2 * aa;
+        const std::int64_t twobb = 2 * bb;
+        std::int64_t dx = (twoaa * y) + (twoC * x);
+        std::int64_t dy = -((twobb * x) + (twoC * y));
+        std::int64_t ellipseError = aa * ((static_cast<std::int64_t>(y) * y) - bb);
 
         // first sector: (dy/dx > 1) -> y+1 (x+1)
         while (dy > dx) {
@@ -469,10 +502,10 @@ private:
     // Parameters ------------------------------------------------------------
     int width_;
     int height_;
-    int min_radius_px_;   ///< Legacy, unused (jAER has a single radius).
+    int min_radius_px_;   ///< Legacy no-op (gui/algo_bridge compat).
     int max_radius_px_;   ///< The single fixed circle radius (jAER `radius`).
     int threshold_;
-    Metavision::timestamp accumulator_decay_us_;  ///< Legacy, unused.
+    Metavision::timestamp accumulator_decay_us_;  ///< Legacy no-op (gui compat).
     float decay_;          ///< jAER `decay` (default 1.0).
     int buffer_length_;    ///< jAER `bufferLength` (default 4000).
     int nr_max_;           ///< jAER `nrMax` (default 1).

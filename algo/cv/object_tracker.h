@@ -5,11 +5,11 @@
 //   RCT             — rectangular cluster tracker (IIR location mixing).
 //   Median          — median position update (robust to outliers).
 //   Kalman          — per-cluster KalmanFilter2D (position + velocity).
-//   MultiHypothesis — ✅ 移植自 jAER KalmanEventFilter (labyrinthkalman).
-//                     Per-cluster pool of K KalmanFilter2D hypotheses gated by
-//                     Mahalanobis distance d²=(e-μ)ᵀ·S⁻¹·(e-μ), S=P+R, gate =
-//                     χ² 2D 95% = 5.99; prune low-prob / merge close / cap ~5;
-//                     output = highest-probability hypothesis position.
+//   MultiHypothesis — 借鉴 jAER KalmanEventFilter (labyrinthkalman) 的
+//                     分配/生成骨架（逐事件 Mahalanobis 最近分配 + 阈值内
+//                     correct 否则新建 + 每包 predict）；概率池、0.9 衰减、
+//                     归一化、低概率剪枝、近邻合并、池上限 5、最优假设输出
+//                     均为自研。门限 χ² 2D 95% = 5.99 ≠ jAER 3.0。
 // Each cluster implements ClusterInterface (position, velocity, bbox,
 // trajectory, mass, age). Output: vector<TrackedObject>. Header-only.
 
@@ -91,6 +91,13 @@ public:
 
     /// @brief Processes a batch of events, updating clusters.
     void process(const Event* events, std::size_t count) {
+        // First packet after construction/reset: anchor prev_batch_t_ to the
+        // first event (-1 sentinel). With large-timestamp sources (live camera
+        // t≈1e9us, cropped playback) a 0 initial value would age every cluster
+        // by t0 and instantly prune them all on the next packet (§四-M1).
+        if (prev_batch_t_ < 0 && count > 0) {
+            prev_batch_t_ = events[0].t;
+        }
         Metavision::timestamp last_t = prev_batch_t_;
         prune_lost();
         for (auto& c : clusters_) c.begin_batch();
@@ -141,7 +148,7 @@ public:
         clusters_.clear();
         tracked_.clear();
         next_id_ = 0;
-        prev_batch_t_ = 0;
+        prev_batch_t_ = -1;  // -1 sentinel: re-anchor on the next first event
     }
 
 private:
@@ -171,8 +178,8 @@ private:
     class Cluster : public ClusterInterface {
     public:
         struct Recent { float x, y; Metavision::timestamp t; };
-        /// One KalmanFilter2D hypothesis for MultiHypothesis mode (移植自 jAER
-        /// KalmanEventFilter: each filter = one ball-position hypothesis).
+        /// One KalmanFilter2D hypothesis for MultiHypothesis mode (骨架借鉴
+        /// jAER KalmanEventFilter: each filter = one ball-position hypothesis).
         struct MhHyp { KalmanFilter2D kf; double prob; };
 
         Cluster(int id, const Event& seed, Mode mode, int cluster_size_px,
@@ -277,8 +284,15 @@ private:
                 }
             } else if (enable_velocity_prediction_) {
                 const float dt_s = static_cast<float>(dt_us) * 1e-6F;
-                x_ += vx_ * dt_s;
-                y_ += vy_ * dt_s;
+                // Clamp the per-batch extrapolation to ±cluster_size_px
+                // (§四-S1): without this, a noisy velocity estimate
+                // integrated over a whole packet gap threw the cluster
+                // hundreds of px away and every packet spawned a new cluster.
+                const float lim = static_cast<float>(cluster_size_px_);
+                const float dx = vx_ * dt_s;
+                const float dy = vy_ * dt_s;
+                x_ += (dx < -lim) ? -lim : (dx > lim ? lim : dx);
+                y_ += (dy < -lim) ? -lim : (dy > lim ? lim : dy);
             }
         }
 
@@ -381,13 +395,14 @@ private:
             predicted_this_batch_ = true;
         }
 
-        // ✅ 移植自 jAER KalmanEventFilter (labyrinthkalman): per-cluster pool
-        // of KalmanFilter2D hypotheses. Each batch: predict all hypotheses
-        // once; per event compute Mahalanobis d²=(e-μ)ᵀ·S⁻¹·(e-μ), S=P+R;
-        // assign to the nearest hypothesis if d² < gate (χ² 2D 95% = 5.99),
-        // else spawn a new hypothesis (or replace the lowest-probability one
-        // when the pool is capped). Then prune low-probability hypotheses,
-        // merge close ones, and emit the highest-probability hypothesis.
+        // 借鉴 jAER KalmanEventFilter (labyrinthkalman) 的分配/生成骨架:
+        // per-cluster pool of KalmanFilter2D hypotheses. Each batch: predict
+        // all hypotheses once; per event compute Mahalanobis d²=(e-μ)ᵀ·S⁻¹·(e-μ),
+        // S=P+R; assign to the nearest hypothesis if d² < gate (χ² 2D 95% =
+        // 5.99, jAER 用 3.0), else spawn a new hypothesis (or replace the
+        // lowest-probability one when the pool is capped). Then prune
+        // low-probability hypotheses, merge close ones, and emit the
+        // highest-probability hypothesis (概率池/剪枝/合并均为自研).
         void update_mh(const Event& e, Metavision::timestamp prev_t) {
             const double ex = static_cast<double>(e.x);
             const double ey = static_cast<double>(e.y);
@@ -555,8 +570,14 @@ private:
                 const float dt_s =
                     static_cast<float>(e.t - prev_pos_t_) * 1e-6F;
                 if (dt_s > 0.0F) {
-                    vx_ = (x_ - prev_x_) / dt_s;
-                    vy_ = (y_ - prev_y_) / dt_s;
+                    // jAER RCT velocityTauMs=100ms first-order low-pass on the
+                    // instantaneous velocity (alpha = min(1, dt/tau)). Without
+                    // it the IIR-smoothed per-event position step (~0.05 px)
+                    // divided by a us-scale dt produced huge velocity spikes
+                    // that broke tracking via age() extrapolation (§四-S1).
+                    const float alpha = std::min(1.0F, dt_s / 0.1F);
+                    vx_ += alpha * ((x_ - prev_x_) / dt_s - vx_);
+                    vy_ += alpha * ((y_ - prev_y_) / dt_s - vy_);
                 }
             }
             prev_x_ = x_;
@@ -597,8 +618,8 @@ private:
         std::vector<MhHyp> mh_hyps_;          // MultiHypothesis KF pool
         std::vector<ClusterPathPoint> trajectory_;
         KalmanFilter2D kf_;
-        // MultiHypothesis tuning (移植自 jAER KalmanEventFilter).
-        double mh_gate_{5.99};                // χ² 2D 95% gating threshold
+        // MultiHypothesis tuning (骨架借鉴 jAER KalmanEventFilter，门限不同).
+        double mh_gate_{5.99};                // χ² 2D 95% gating threshold (jAER 3.0)
         int mh_max_pool_{5};                  // cap on hypotheses per cluster
         bool mh_predicted_this_batch_{false};
         double mh_prune_prob_{0.01};         // prune hypotheses below this prob
@@ -675,7 +696,7 @@ private:
     std::vector<Cluster> clusters_;
     std::vector<TrackedObject> tracked_;
     int next_id_{0};
-    Metavision::timestamp prev_batch_t_{0};
+    Metavision::timestamp prev_batch_t_{-1};  // -1 = no packet seen yet
 };
 
 } // namespace gui_algo

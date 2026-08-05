@@ -8,8 +8,10 @@
 // either resets to reset_value (legacy mode, when jump_after_firing_percent
 // == 0) or drops by max(jump_after_firing_percent * threshold / 100, 1.0)
 // (jAER behaviour, retaining residual potential). Initial membrane potential
-// is set to initial_potential_percent * threshold / 100 (jAER
-// MPInitialPercnetTh, default 0 = start at reset_value). Used by ClusterLIF
+// is set to initial_potential_percent * threshold / 100 — 有意修正 jAER
+// LIFNeuron.reset 漏除 100 的上游 bug（jAER 实为 MPInitialPercnetTh *
+// MPThreshold，默认 50×15=750，导致神经元首个事件即发放；本实现按百分数
+// 语义计算，默认 50% → 7.5）。Used by ClusterLIF
 // (4.3.18) and related clustering algorithms. Header-only.
 
 #ifndef GUI_ALGO_COMMON_LIF_INTEGRATOR_H
@@ -36,7 +38,8 @@ public:
     ///        jump_after_firing_percent == 0 (legacy full-reset mode).
     /// @param decay_step_us Discrete leak granularity (unused, kept for ABI).
     /// @param initial_potential_percent Initial MP as a percent of threshold
-    ///        (jAER MPInitialPercnetTh). 0 → start at reset_value (legacy).
+    ///        (jAER MPInitialPercnetTh，但有意修正其漏除 100 的上游 bug，
+    ///        见头注释). 0 → start at reset_value (legacy).
     /// @param jump_after_firing_percent MP drop after firing as a percent of
     ///        threshold (jAER MPJumpAfterFiringPercentTh). 0 → legacy
     ///        full-reset to reset_value; >0 → MP -= max(pct*th/100, 1.0),
@@ -67,6 +70,7 @@ public:
                    Metavision::timestamp t) {
         if (x >= width_ || y >= height_) return false;
         const std::size_t idx = static_cast<std::size_t>(y) * width_ + x;
+        if (t > latest_t_) latest_t_ = t;
         // Apply leak since the last update at this cell (decays toward 0).
         const auto prev = last_ts_[idx];
         last_ts_[idx] = t;
@@ -98,12 +102,20 @@ public:
 
     /// @brief Globally leaks all neurons by @p dt_us. Call periodically to
     /// prevent stale potentials from accumulating on quiet cells.
-    void leak_global(Metavision::timestamp dt_us) {
+    /// Also synchronises every cell's last-update timestamp to @p now so a
+    /// later add_event() does not decay the same interval a second time
+    /// (§四-低3). @p now defaults to the latest event timestamp seen so far.
+    void leak_global(Metavision::timestamp dt_us,
+                     Metavision::timestamp now = -1) {
         if (dt_us <= 0) return;
+        if (now < 0) now = latest_t_;
         const double decay = std::exp(-static_cast<double>(dt_us) /
                                       static_cast<double>(tau_us_));
         for (auto& v : potential_) {
             v *= decay;
+        }
+        if (now >= 0) {
+            std::fill(last_ts_.begin(), last_ts_.end(), now);
         }
     }
 
@@ -119,6 +131,7 @@ public:
         std::fill(potential_.begin(), potential_.end(), initial_potential_);
         std::fill(last_ts_.begin(), last_ts_.end(),
                   static_cast<Metavision::timestamp>(-1));
+        latest_t_ = -1;
     }
 
     int width() const { return width_; }
@@ -153,8 +166,10 @@ public:
 
 private:
     /// @brief Computes the per-cell initial MP from the current threshold and
-    /// initial_potential_percent_ (jAER: MPInitialPercnetTh * MPThreshold /
-    /// 100). Falls back to reset_value_ when the percent is non-positive.
+    /// initial_potential_percent_ as percent * threshold / 100. 有意修正
+    /// jAER LIFNeuron.reset 漏除 100 的上游 bug（jAER 实为
+    /// MPInitialPercnetTh * MPThreshold，默认 750 而非 7.5）。
+    /// Falls back to reset_value_ when the percent is non-positive.
     double compute_initial_potential() const {
         if (initial_potential_percent_ <= 0.0) return reset_value_;
         return initial_potential_percent_ * threshold_ / 100.0;
@@ -179,6 +194,7 @@ private:
     double initial_potential_;
     std::vector<double> potential_;
     std::vector<Metavision::timestamp> last_ts_;
+    Metavision::timestamp latest_t_{-1};  ///< newest event timestamp seen
 };
 
 } // namespace gui_algo

@@ -73,6 +73,13 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); last_kept_ = 0; }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        // The algo holds a sensor-sized hot-pixel mask — rebuild it at the
+        // new dimensions (params revert to ctor defaults; MainWindow resets
+        // instances on source change anyway).
+        algo_ = gui_algo::HotPixelFilter(w, h);
+    }
 };
 
 /// OpticalGyro (EIS) backend — modifies event coordinates in place.
@@ -150,6 +157,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::OpticalGyro(w, h);  // sensor-sized motion maps
+    }
 };
 
 /// PerspectiveUndistort backend — remaps event coordinates in place.
@@ -289,6 +300,12 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        // Rebuild sensor-sized internal state, preserving the current mode
+        // (other params revert to ctor defaults).
+        algo_ = gui_algo::ObjectTracker(w, h, algo_.mode());
+    }
 };
 
 /// CornerDetector backend — corners as overlay points.
@@ -332,6 +349,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::CornerDetector(w, h, algo_.mode());
+    }
 };
 
 /// BlobDetector backend — blobs as overlay boxes.
@@ -372,6 +393,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::BlobDetector(w, h);  // sensor-sized background map
+    }
 };
 
 /// SparseOpticalFlow backend — flow vectors as overlay lines.
@@ -440,6 +465,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); flows_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::SparseOpticalFlow(w, h, algo_.mode());
+    }
 private:
     /// HSV (h,s,v in [0,1]) -> RGB (r,g,b in [0,255]).
     static void hsv_to_rgb(float h, float s, float v,

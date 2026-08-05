@@ -381,6 +381,11 @@ struct RoiFilter {
         preproc.init(w, h);
     }
 
+    /// @brief Re-initialises the ROI/preproc geometry after a sensor change
+    /// (audit §五-D1). Every backend holding a RoiFilter should call this
+    /// from its set_sensor_dimensions() override.
+    void set_sensor_dimensions(int w, int h) { init(w, h); }
+
     bool set_param(const std::string& k, const std::string& v) {
         if (preproc.set_param(k, v)) return true;
         if (k == "roi_enabled") { region.enabled = to_b(v); region.compute(sensor_w, sensor_h); return true; }

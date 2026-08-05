@@ -153,3 +153,148 @@ TEST(ConfigManagerAlgoState, ApplyStateCachesParamsForNonLiveAlgos) {
     EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
     EXPECT_EQ(inst->get_param("n_sigma"), "9.9");
 }
+
+// §11.2-G: a saved config that still uses the pre-rename key "learning_rate"
+// for background_mask must be migrated to "learning_window_s" on load. Without
+// the migration table the old key would be silently dropped (set_param only
+// stores keys present in info->params) and background_mask would start with
+// the default 5.0s instead of the user's saved value.
+TEST(ConfigManagerAlgoState, MigratesRenamedParamLearningRateToLearningWindowS) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("background_mask");
+    ASSERT_NE(inst, nullptr);
+    // Sanity: the new key is recognised, the old key is not.
+    ASSERT_FALSE(inst->info().params.empty());
+    bool has_new = false, has_old = false;
+    for (const auto& p : inst->info().params) {
+        if (p.key == "learning_window_s") has_new = true;
+        if (p.key == "learning_rate")     has_old = true;
+    }
+    ASSERT_TRUE(has_new) << "background_mask must register learning_window_s";
+    ASSERT_FALSE(has_old) << "background_mask must NOT register learning_rate";
+
+    QJsonObject obj;
+    obj["format"] = QStringLiteral("GUI-for-openEB-algo-params");
+    QJsonObject algos;
+    QJsonObject entry;
+    QJsonObject params;
+    // Old config file used the pre-rename key with a value (0.05) that was
+    // typical of the old "rate" semantics.
+    params["learning_rate"] = QStringLiteral("0.05");
+    entry["params"] = params;
+    algos["background_mask"] = entry;
+    obj["algorithms"] = algos;
+
+    QString err;
+    ConfigManager cm;
+    EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+
+    // The value must be reachable under the NEW key. (0.05 is within the
+    // registered [0.1, 60] range — actually below the min, so it gets clamped
+    // UP to 0.1 by §11.2-F. This also exercises the clamp path.)
+    const auto got = inst->get_param("learning_window_s");
+    EXPECT_FALSE(got.empty()) << "value not migrated to learning_window_s";
+    EXPECT_EQ(got, "0.100000") << "expected 0.05 clamped up to 0.1 (6 decimals)";
+    // The old key must NOT be stored.
+    EXPECT_TRUE(inst->get_param("learning_rate").empty());
+}
+
+// §11.2-G negative: blob_detector legitimately registers "learning_rate" as a
+// rate (not a window). The migration table is scoped by algo name, so this
+// key must NOT be renamed for blob_detector.
+TEST(ConfigManagerAlgoState, DoesNotMigrateLearningRateForBlobDetector) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("blob_detector");
+    ASSERT_NE(inst, nullptr);
+    bool has_rate = false;
+    for (const auto& p : inst->info().params) {
+        if (p.key == "learning_rate") has_rate = true;
+    }
+    ASSERT_TRUE(has_rate) << "blob_detector must register learning_rate";
+
+    QJsonObject obj;
+    obj["format"] = QStringLiteral("GUI-for-openEB-algo-params");
+    QJsonObject algos;
+    QJsonObject entry;
+    QJsonObject params;
+    params["learning_rate"] = QStringLiteral("0.05");
+    entry["params"] = params;
+    algos["blob_detector"] = entry;
+    obj["algorithms"] = algos;
+
+    QString err;
+    ConfigManager cm;
+    EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+
+    // blob_detector keeps learning_rate=0.05 (within [0.001, 1.0] — no clamp).
+    EXPECT_EQ(inst->get_param("learning_rate"), "0.05");
+}
+
+// §11.2-F: a saved config with an out-of-range numeric value must be clamped
+// to the registered [min, max] so the stored param_values_ matches the algo's
+// runtime value (the algo setter already clamps internally; without this the
+// displayed value would diverge until the user touches the spinbox).
+TEST(ConfigManagerAlgoState, ClampsOutOfRangeFloatParamToRegisteredRange) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("background_mask");
+    ASSERT_NE(inst, nullptr);
+    // Find the registered range for learning_window_s to make the test
+    // self-checking against future registry changes.
+    std::string lo, hi;
+    for (const auto& p : inst->info().params) {
+        if (p.key == "learning_window_s") { lo = p.min_value; hi = p.max_value; }
+    }
+    ASSERT_FALSE(lo.empty()) << "learning_window_s must register a min";
+    ASSERT_FALSE(hi.empty()) << "learning_window_s must register a max";
+
+    QJsonObject obj;
+    obj["format"] = QStringLiteral("GUI-for-openEB-algo-params");
+    QJsonObject algos;
+    QJsonObject entry;
+    QJsonObject params;
+    // 9999.0 is far above the registered max (60.0) — typical of old configs
+    // saved when the GUI spinbox allowed ±1e9.
+    params["learning_window_s"] = QStringLiteral("9999.0");
+    entry["params"] = params;
+    algos["background_mask"] = entry;
+    obj["algorithms"] = algos;
+
+    QString err;
+    ConfigManager cm;
+    EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+
+    // Stored value must be clamped to the registered max (6 decimals, matches
+    // QDoubleSpinBox in algorithms_panel).
+    const QString expected = QString::number(QString::fromStdString(hi).toDouble(), 'f', 6);
+    EXPECT_EQ(inst->get_param("learning_window_s"), expected.toStdString());
+}
+
+// §11.2-F+G combined: migration + clamp on the cache-only path (no live
+// instance yet). Ensures the migration is applied consistently for algos
+// that are enabled later (N1 replay path).
+TEST(ConfigManagerAlgoState, MigratesAndClampsOnCacheOnlyPath) {
+    AlgoBridge bridge;
+    // No find_or_create — leave background_mask non-live.
+
+    QJsonObject obj;
+    obj["format"] = QStringLiteral("GUI-for-openEB-algo-params");
+    QJsonObject algos;
+    QJsonObject entry;
+    QJsonObject params;
+    // Old key + out-of-range value: should be renamed AND clamped.
+    params["learning_rate"] = QStringLiteral("9999.0");
+    entry["params"] = params;
+    algos["background_mask"] = entry;
+    obj["algorithms"] = algos;
+
+    QString err;
+    ConfigManager cm;
+    EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+
+    // Now create the instance — cached (migrated + clamped) params replay.
+    auto inst = bridge.find_or_create("background_mask");
+    ASSERT_NE(inst, nullptr);
+    const QString expected = QString::number(60.0, 'f', 6);  // registered max
+    EXPECT_EQ(inst->get_param("learning_window_s"), expected.toStdString());
+    EXPECT_TRUE(inst->get_param("learning_rate").empty());
+}

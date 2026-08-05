@@ -63,7 +63,7 @@ public:
           // OpenEB MostRecentTimestampBuffer: rows=height, cols=width,
           // channels = 1 (merged) or 2 (split polarity).
           ts_buf_(height, width, static_cast<int>(channels_)) {
-        ts_buf_.set_to(0);  // 0 = sentinel for "never hit"
+        ts_buf_.set_to(-1);  // -1 = sentinel for "never hit" (0 is a legal ts)
     }
 
     /// @brief Updates the MostRecentTimestampBuffer with a batch of events.
@@ -88,6 +88,7 @@ public:
     cv::Mat render() const {
         cv::Mat img(height_, width_, CV_8UC3, cv::Scalar(0, 0, 0));
         if (width_ <= 0 || height_ <= 0) return img;
+        if (current_t_ < 0) return img;  // no events yet: all pixels "never hit"
 
         // OpenEB 线性衰减灰度图生成。
         cv::Mat gray;
@@ -115,7 +116,12 @@ public:
                 for (int x = 0; x < width_; ++x) {
                     const cv::Vec3b c_off = map_color(off[x] / 255.0);
                     const cv::Vec3b c_on = map_color(on[x] / 255.0);
-                    dst[x] = (c_off + c_on) * 0.5;
+                    // Per-channel max (§四-M2): cv::Vec3b + is a SATURATING
+                    // add, so (c_off+c_on)*0.5 halved the brightness of
+                    // single-polarity full-scale pixels (255 -> 128).
+                    dst[x] = cv::Vec3b(std::max(c_off[0], c_on[0]),
+                                       std::max(c_off[1], c_on[1]),
+                                       std::max(c_off[2], c_on[2]));
                 }
             }
         } else {
@@ -140,7 +146,7 @@ public:
         if (c != channels_) {
             channels_ = c;
             ts_buf_.create(height_, width_, static_cast<int>(channels_));
-            ts_buf_.set_to(0);
+            ts_buf_.set_to(-1);  // -1 = "never hit" sentinel
         }
     }
     Channels channels() const { return channels_; }
@@ -158,8 +164,8 @@ public:
 
     /// @brief Clears the timestamp buffer.
     void reset() {
-        ts_buf_.set_to(0);
-        current_t_ = 0;
+        ts_buf_.set_to(-1);  // -1 = "never hit" sentinel (0 is a legal ts)
+        current_t_ = -1;
     }
 
     int width() const { return width_; }
@@ -238,7 +244,7 @@ private:
     int refresh_rate_hz_;
     /// OpenEB MostRecentTimestampBuffer — 直接引用，不自行实现时间戳缓冲区。
     Metavision::MostRecentTimestampBuffer ts_buf_;
-    Metavision::timestamp current_t_{0};
+    Metavision::timestamp current_t_{-1};  // -1 = no event processed yet
 };
 
 } // namespace gui_algo
