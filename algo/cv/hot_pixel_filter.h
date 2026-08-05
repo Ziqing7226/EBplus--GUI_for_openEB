@@ -50,15 +50,11 @@ public:
 
     // Parameter setters with range clamping -------------------------------
     void set_learning_window_s(double v) { learning_window_s_ = clamp(v, 1.0, 60.0); }
-    // Legacy no-op, retained only because gui/algo_bridge still exposes it;
-    // removal deferred to the gui bridge cleanup.
-    void set_n_sigma(double v) { n_sigma_ = clamp(v, 2.0, 10.0); } // deprecated, unused
     void set_num_hot_pixels_max(int v) { num_hot_pixels_max_ = clamp_i(v, 1, 1000000); }
     void set_enable_fpn_correction(bool v) { enable_fpn_correction_ = v; }
     void set_fpn_target_rate_hz(double v) { fpn_target_rate_hz_ = clamp(v, 1.0, 1000.0); }
 
     double learning_window_s() const { return learning_window_s_; }
-    double n_sigma() const { return n_sigma_; } // deprecated, unused
     int num_hot_pixels_max() const { return num_hot_pixels_max_; }
     bool enable_fpn_correction() const { return enable_fpn_correction_; }
     double fpn_target_rate_hz() const { return fpn_target_rate_hz_; }
@@ -184,7 +180,6 @@ private:
     int width_;
     int height_;
     double learning_window_s_{5.0};
-    double n_sigma_{3.0}; // deprecated, retained for gui/algo_bridge compat
     int num_hot_pixels_max_{1000}; // jAER numHotPixelsMax default
     bool enable_fpn_correction_{false};
     double fpn_target_rate_hz_{50.0};

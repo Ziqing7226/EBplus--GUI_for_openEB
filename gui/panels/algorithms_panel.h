@@ -50,6 +50,14 @@ public:
     /// panel in sync with the Algorithm menu and AlgoWindow.
     void set_algo_enabled(const std::string& name, bool on);
 
+    /// @brief Re-syncs every parameter control with the values the algorithm
+    /// instances actually hold (live instance first, then the bridge's N1
+    /// param cache for non-live algorithms). Called after a config file is
+    /// loaded — ConfigManager::apply_algo_state writes instances/caches
+    /// directly, so without this the panel keeps displaying the pre-load
+    /// values while the algorithms run with the loaded ones (audit §5.9-疑点4).
+    void refresh_param_values();
+
 signals:
     /// @brief Emitted when an algorithm's enable state changes.
     void algorithm_toggled(const QString& name, bool enabled);

@@ -29,7 +29,6 @@ public:
     void stop();
 
     bool is_recording() const { return recording_; }
-    QString current_path() const { return path_; }
 
 signals:
     void recording_started(const QString& path);

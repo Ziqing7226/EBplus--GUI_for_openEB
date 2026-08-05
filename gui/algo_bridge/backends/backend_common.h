@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -109,8 +110,9 @@ inline bool apply_noise_filter_param(gui_algo::NoiseFilter& nf,
     else if (k == "line_freq_hz") nf.set_line_freq(to_i(v) == 60 ? gui_algo::NoiseFilter::LineFreq::Hz60 : gui_algo::NoiseFilter::LineFreq::Hz50);
     else if (k == "notch_q") nf.set_notch_q(to_d(v));
     else if (k == "harmonic_threshold") nf.set_harmonic_threshold(to_d(v));
-    else if (k == "rep_period_us") nf.set_period_us(to_i(v));
-    else if (k == "rep_tolerance_us") nf.set_tolerance_us(to_i(v));
+    // rep_period_us / rep_tolerance_us are intentionally NOT forwarded: the
+    // algo stores them but never uses them (audit §7.3); the registration
+    // entries were removed.
     else if (k == "rep_ratio_shorter") nf.set_ratio_shorter(to_i(v));
     else if (k == "rep_ratio_longer") nf.set_ratio_longer(to_i(v));
     else if (k == "rep_min_dt_to_store_us") nf.set_min_dt_to_store_us(to_i(v));
@@ -143,8 +145,6 @@ inline std::string get_noise_filter_param(const gui_algo::NoiseFilter& nf,
     if (k == "line_freq_hz") return from_i(nf.line_freq_hz());
     if (k == "notch_q") return from_d(nf.notch_q());
     if (k == "harmonic_threshold") return from_d(nf.harmonic_threshold());
-    if (k == "rep_period_us") return from_i(nf.period_us());
-    if (k == "rep_tolerance_us") return from_i(nf.tolerance_us());
     if (k == "rep_ratio_shorter") return from_i(nf.ratio_shorter());
     if (k == "rep_ratio_longer") return from_i(nf.ratio_longer());
     if (k == "rep_min_dt_to_store_us") return from_i(nf.min_dt_to_store_us());
@@ -225,6 +225,12 @@ struct Preprocessor {
                 undistort_dist_ = dist;
                 undistort_image_size_ = sz;
             } else {
+                // Surface the failure instead of silently clearing K — without
+                // this the user believes undistort is active while it is a
+                // no-op (audit §五-F3).
+                std::fprintf(stderr,
+                             "Preprocessor: failed to load intrinsics from '%s'"
+                             " — undistort disabled\n", v.c_str());
                 undistort_K_.release();
                 undistort_dist_.release();
                 undistort_image_size_ = cv::Size(0, 0);
@@ -314,7 +320,18 @@ struct Preprocessor {
             const int f = factor();
             if (!undistort_lut_valid_ ||
                 roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_) {
-                rebuild_undistort_lut(roi_x, roi_y, f);
+                // cv::undistortPoints can throw on malformed K/dist; without a
+                // guard the exception escapes into the event pipeline and is
+                // swallowed by a catch(...) upstream, silently killing the
+                // stream (audit §五-F3).
+                try {
+                    rebuild_undistort_lut(roi_x, roi_y, f);
+                } catch (const cv::Exception& e) {
+                    std::fprintf(stderr,
+                                 "Preprocessor: undistort LUT rebuild failed: %s\n",
+                                 e.what());
+                    undistort_lut_valid_ = false;
+                }
             }
             if (undistort_lut_valid_ && undistort_eff_w_ > 0 && undistort_eff_h_ > 0) {
                 if (p != buf_.data()) {
@@ -363,7 +380,14 @@ inline void crop_to_roi(const gui_algo::Event* src, std::size_t n,
         // Pass the ROI origin so the undistort LUT can be built with K
         // adjusted for the ROI offset (cx -= roi.x0, cy -= roi.y0).
         auto [p, m] = preproc->apply(out.data(), out.size(), roi.x0, roi.y0);
-        out.assign(p, p + m);
+        // p may alias out itself when the chain leaves the events unmodified
+        // (e.g. undistort enabled but LUT invalid) — std::vector::assign from
+        // the vector's own range is UB (audit §五-F3).
+        if (p != out.data()) {
+            out.assign(p, p + m);
+        } else {
+            out.resize(m);
+        }
     }
 }
 

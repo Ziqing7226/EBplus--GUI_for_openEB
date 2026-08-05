@@ -39,7 +39,6 @@ public:
     /// (the caller should show an error in that case so the UI doesn't hang).
     bool start(const ExportParams& params);
     void cancel();
-    bool is_running() const { return running_; }
 
 signals:
     void progress(double ratio);          // 0..1

@@ -48,12 +48,12 @@ public:
 
     /// @brief Returns the named stage. The pointer is returned WITHOUT the
     /// chain mutex held; callers must only use it for read-only queries that
-    /// do not race with the SDK thread, or must hold chain_mutex() themselves.
+    /// do not race with the SDK thread. (The chain mutex is a function-local
+    /// static inside filter_chain.cpp and is NOT part of the public API —
+    /// external code cannot hold it.)
     /// For GUI-thread mutations prefer set_stage_enabled / set_stage_param,
     /// which take the lock internally.
     FilterStage* stage(const std::string& name);
-    /// @brief Lists every known stage name (whether or not enabled).
-    std::vector<std::string> stage_names() const;
 
     /// @brief Thread-safe stage mutators. GUI threads must use these instead
     /// of stage()->set_enabled/set_param to avoid racing the SDK thread's

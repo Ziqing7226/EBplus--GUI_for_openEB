@@ -54,7 +54,6 @@ public:
 
     void stop();
     bool is_running() const { return file_mode_ || window_id_ >= 0; }
-    bool is_file_mode() const { return file_mode_; }
 
     /// @brief Thread-safe: called from the SDK CD callback. In live mode,
     /// forwards to CDFrameGenerator. In file mode, buffers into FileFrameGenerator.
@@ -84,7 +83,6 @@ public:
     void set_file_loading_complete(bool complete);
     Metavision::timestamp file_position_us() const;
     Metavision::timestamp file_duration_us() const;
-    bool file_is_playing() const;
 
     std::uint16_t fps() const { return fps_; }
     Metavision::timestamp accumulation_time_us() const { return accumulation_us_; }

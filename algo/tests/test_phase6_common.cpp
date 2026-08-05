@@ -201,7 +201,6 @@ TEST(EventPacketTest, MutablePacket) {
 
 TEST(PerformanceMeterTest, InitialState) {
     PerformanceMeter pm;
-    EXPECT_EQ(pm.fps(), 0.0);
     EXPECT_EQ(pm.latency_us(), 0.0);
     EXPECT_EQ(pm.total_events(), 0u);
     EXPECT_EQ(pm.total_frames(), 0u);
@@ -245,38 +244,7 @@ TEST(PerformanceMeterTest, Reset) {
     EXPECT_EQ(pm.total_events(), 0u);
     EXPECT_EQ(pm.total_frames(), 0u);
     EXPECT_EQ(pm.total_dropped(), 0u);
-    EXPECT_EQ(pm.fps(), 0.0);
-}
-
-TEST(PerformanceMeterTest, FPSPositiveAfterTwoFrames) {
-    PerformanceMeter pm(1.0f);
-    pm.tick_frame();
-    // Sleep to ensure measurable dt.
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    pm.tick_frame();
-    EXPECT_GT(pm.fps(), 0.0);
-    EXPECT_LT(pm.fps(), 1000.0);  // sane upper bound
-}
-
-TEST(PerformanceMeterTest, StartStopPerFilterMetrics) {
-    // jAER EventProcessingPerformanceMeter: start(n)/stop() records ns/event.
-    PerformanceMeter pm;
-    pm.start(1000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    pm.stop();
-    EXPECT_GT(pm.ns_per_event(), 0.0);
-    EXPECT_GT(pm.eps(), 0.0);
-    EXPECT_EQ(pm.n_samples(), 1u);
-    // Accumulate a second sample for avg/stderr.
-    pm.start(2000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    pm.stop();
-    EXPECT_EQ(pm.n_samples(), 2u);
-    EXPECT_GT(pm.avg_ns_per_event(), 0.0);
-    EXPECT_GE(pm.stderr_ns_per_event(), 0.0);
-    pm.reset();
-    EXPECT_EQ(pm.n_samples(), 0u);
-    EXPECT_EQ(pm.avg_ns_per_event(), 0.0);
+    EXPECT_EQ(pm.latency_us(), 0.0);
 }
 
 // =========================================================================

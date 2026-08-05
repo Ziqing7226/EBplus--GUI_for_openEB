@@ -106,7 +106,6 @@ public:
     std::uint16_t fps() const { return fps_; }
     Metavision::timestamp accumulation_time_us() const { return accumulation_us_; }
     bool loop() const { return loop_; }
-    bool has_events() const;
     std::size_t event_count() const;
 
     /// @brief Clears the event buffer and resets the cursor. Called when

@@ -134,12 +134,11 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
 
     // ActivityBar → QStackedWidget page switch.
     connect(activity_bar_, &ActivityBar::group_selected, this,
-            [this](int index, const QString& title) {
+            [this](int index, const QString&) {
                 if (index >= 0 && index < stacked_->count()) {
                     stacked_->setCurrentIndex(index);
                     QSettings().setValue(QStringLiteral("sidebar/active_group"),
                                          index);
-                    emit current_title_changed(title);
                 }
             });
 
@@ -152,11 +151,6 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
                           .value(QStringLiteral("sidebar/active_group"), 0)
                           .toInt();
     activity_bar_->select(saved);
-}
-
-QString SettingsPanel::current_title() const {
-    return activity_bar_ ? activity_bar_->title_at(activity_bar_->current_index())
-                         : QString();
 }
 
 void SettingsPanel::refresh_icons() {

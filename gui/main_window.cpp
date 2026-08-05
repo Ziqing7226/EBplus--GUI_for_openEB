@@ -24,6 +24,7 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <atomic>
 #include <cmath>
 #include <vector>
 
@@ -392,6 +393,12 @@ void MainWindow::build_menus() {
         if (path.isEmpty()) return;
         QString err;
         if (config_.load_algo_params_from_file(&algo_bridge_, path, err)) {
+            // apply_algo_state wrote instances/caches directly — re-sync the
+            // panel controls so the displayed values match the loaded ones
+            // (audit §5.9-疑点4).
+            if (auto* ap = settings_->algorithms_panel()) {
+                ap->refresh_param_values();
+            }
             statusBar()->showMessage(tr("Algorithm params loaded from %1").arg(path), 3000);
         } else if (!err.isEmpty()) {
             QMessageBox::warning(this, tr("Load failed"), err);
@@ -447,11 +454,11 @@ void MainWindow::build_menus() {
     // management functions irrelevant to the current dock-based GUI.
     // Algorithm-specific windows are opened from the sidebar's Algorithms
     // section, not duplicated here.
-    m_tools_ = mb->addMenu(tr("&Tools"));
+    auto* m_tools = mb->addMenu(tr("&Tools"));
     // Calibration (Phase 9) — launches the wizard lazily.
-    m_tools_->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
+    m_tools->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
     // Sharpness meter — live variance-of-Laplacian of the current event frame.
-    m_tools_->addAction(tr("&Sharpness..."), this, &MainWindow::on_sharpness);
+    m_tools->addAction(tr("&Sharpness..."), this, &MainWindow::on_sharpness);
 
     // Help
     auto* m_help = mb->addMenu(tr("&Help"));
@@ -1407,7 +1414,22 @@ void MainWindow::install_algo_callback() {
                             inst->push_events(pb, pe);
                         }
                     }
-                } catch (...) {}
+                } catch (const std::exception& e) {
+                    // Audit §五-H3: never let an algorithm exception die
+                    // silently — log throttled so a throwing algorithm is
+                    // visible instead of looking like "no detections".
+                    static std::atomic<int> live_push_errs{0};
+                    const int c = ++live_push_errs;
+                    if (c == 1 || c % 1000 == 0) {
+                        qWarning("push_events to algorithms failed (x%d): %s", c, e.what());
+                    }
+                } catch (...) {
+                    static std::atomic<int> live_push_errs_unknown{0};
+                    const int c = ++live_push_errs_unknown;
+                    if (c == 1 || c % 1000 == 0) {
+                        qWarning("push_events to algorithms failed with unknown exception (x%d)", c);
+                    }
+                }
                 // Feed the performance profiler for live-camera latency measurement.
                 // Uses the RAW event count/timestamp so the rate reflects camera
                 // output, not the post-filter count.
@@ -1557,7 +1579,21 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
                 }
             }
         }
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        // Audit §五-H3: same throttled logging as the live-camera path —
+        // a throwing algorithm must be visible, not silently stale.
+        static std::atomic<int> file_push_errs{0};
+        const int c = ++file_push_errs;
+        if (c == 1 || c % 1000 == 0) {
+            qWarning("push_events to algorithms failed (x%d): %s", c, e.what());
+        }
+    } catch (...) {
+        static std::atomic<int> file_push_errs_unknown{0};
+        const int c = ++file_push_errs_unknown;
+        if (c == 1 || c % 1000 == 0) {
+            qWarning("push_events to algorithms failed with unknown exception (x%d)", c);
+        }
+    }
 
     // Feed the performance profiler (file playback path). For file mode the
     // latency measured here → frame_ready is near-zero (both on GUI thread),
@@ -1854,9 +1890,10 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     // on the main (sensor-scale) display.
     const auto* info = algo_bridge_.find(algo_name);
     if (info && info->display_mode == AlgoDisplayMode::Standalone) {
+        // Note: background_mask is registered as Replace, not Standalone —
+        // listing it here was a dead branch (audit §五-G5).
         if (algo_name == "time_surface" || algo_name == "event_to_video" ||
-            algo_name == "isi_analyzer" || algo_name == "background_mask" ||
-            algo_name == "sensor_self_test") {
+            algo_name == "isi_analyzer" || algo_name == "sensor_self_test") {
             auto* disp = new EventDisplayWidget(nullptr);
             w->set_display_widget(disp);
         }

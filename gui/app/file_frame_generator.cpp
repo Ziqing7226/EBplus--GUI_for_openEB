@@ -148,11 +148,6 @@ Metavision::timestamp FileFrameGenerator::duration_us() const {
     return duration_us_.load(std::memory_order_relaxed);
 }
 
-bool FileFrameGenerator::has_events() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return !events_.empty();
-}
-
 std::size_t FileFrameGenerator::event_count() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return events_.size();

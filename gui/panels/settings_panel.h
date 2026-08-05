@@ -87,10 +87,6 @@ public:
     AlgorithmsPanel*    algorithms_panel()     const;
     FileToolsPanel*     file_tools_panel()     const;
 
-    /// @brief Returns the title of the currently-active group, used by
-    /// MainWindow to update the dock window title.
-    QString current_title() const;
-
     /// @brief Re-renders the ActivityBar icons with the current theme's
     /// foreground color. Called by MainWindow on theme_changed so icons
     /// stay in sync after a light/dark switch (BUG-4 fix pattern).
@@ -106,10 +102,6 @@ public:
     bool is_content_visible() const;
 
 signals:
-    /// @brief Emitted when the active group changes (user clicks an Activity
-    /// Bar entry, or the group is restored from QSettings at startup).
-    void current_title_changed(const QString& title);
-
     /// @brief Emitted when the sidebar content visibility changes (via
     /// toggle_content()). MainWindow connects this to resize the dock and
     /// update the toggle button's chevron icon (§11.2 point 5).

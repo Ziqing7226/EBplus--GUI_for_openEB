@@ -215,9 +215,4 @@ Metavision::timestamp FramePipeline::file_duration_us() const {
     return 0;
 }
 
-bool FramePipeline::file_is_playing() const {
-    if (file_mode_) return file_generator_.is_playing();
-    return false;
-}
-
 } // namespace gui

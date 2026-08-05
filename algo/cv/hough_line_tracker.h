@@ -51,21 +51,14 @@ struct HoughLine {
 /// are converted to image-spanning line segments for overlay rendering.
 class HoughLineTracker {
 public:
-    /// @param accumulator_decay_us Legacy no-op (jAER has no time-constant
-    ///                             decay — see header comment), retained only
-    ///                             because gui/algo_bridge passes it
-    ///                             positionally; removal deferred to the gui
-    ///                             bridge cleanup.
     HoughLineTracker(int width, int height,
                      int num_theta_bins = 90,
                      int num_rho_bins = 0,
                      int threshold = 50,
-                     Metavision::timestamp accumulator_decay_us = 100000,
                      float hough_decay_factor = 0.6F)
         : width_(width), height_(height),
           num_theta_bins_(num_theta_bins),
           threshold_(threshold),
-          accumulator_decay_us_(accumulator_decay_us),
           hough_decay_factor_(hough_decay_factor) {
         if (num_theta_bins_ < 1) num_theta_bins_ = 1;
         rebuild(num_rho_bins);
@@ -104,9 +97,6 @@ public:
     /// @brief Read-only access to the θ-ρ accumulator (θ major, ρ minor).
     /// Used by the GUI backend to render the Hough space as an aux frame.
     const std::vector<float>& accum() const { return accum_; }
-    Metavision::timestamp accumulator_decay_us() const {  // legacy no-op
-        return accumulator_decay_us_;
-    }
     void set_num_theta_bins(int v) {
         if (v < 1) v = 1;
         if (v == num_theta_bins_) return;
@@ -118,9 +108,6 @@ public:
         rebuild(v);
     }
     void set_threshold(int v) { threshold_ = v; }
-    void set_accumulator_decay_us(Metavision::timestamp v) {
-        accumulator_decay_us_ = v;  // legacy no-op (gui/algo_bridge compat)
-    }
     float hough_decay_factor() const { return hough_decay_factor_; }
     void set_hough_decay_factor(float v) {
         hough_decay_factor_ = v < 0.0F ? 0.0F : (v > 1.0F ? 1.0F : v);
@@ -310,7 +297,6 @@ private:
     int num_theta_bins_;
     int num_rho_bins_{1};
     int threshold_;
-    Metavision::timestamp accumulator_decay_us_;  ///< Legacy no-op (gui compat).
     float hough_decay_factor_{0.6F};  // jAER houghDecayFactor default (per-packet)
     float rho_max_{0.0f};
     float rho_step_{1.0f};

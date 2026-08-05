@@ -181,34 +181,6 @@ bool CameraController::is_running() const {
     return camera_ && camera_->is_running();
 }
 
-Metavision::timestamp CameraController::last_timestamp_us() const {
-    return last_ts_.load(std::memory_order_relaxed);
-}
-
-bool CameraController::save_config(const std::string& path) {
-    if (!camera_) {
-        return false;
-    }
-    try {
-        return camera_->save(path);
-    } catch (const Metavision::CameraException& e) {
-        emit error(QString::fromUtf8(e.what()));
-        return false;
-    }
-}
-
-bool CameraController::load_config(const std::string& path) {
-    if (!camera_) {
-        return false;
-    }
-    try {
-        return camera_->load(path);
-    } catch (const Metavision::CameraException& e) {
-        emit error(QString::fromUtf8(e.what()));
-        return false;
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Phase 2 facility accessors
 // ---------------------------------------------------------------------------
@@ -333,9 +305,6 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
         [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             try {
                 statistics_.add_events(b, e);
-                if (b != e) {
-                    last_ts_.store((e - 1)->t, std::memory_order_relaxed);
-                }
                 // File mode: buffer RAW events — FilterChain is applied
                 // per-frame in FileFrameGenerator::render_frame() so that
                 // filter toggles take effect immediately during playback.
@@ -370,7 +339,6 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
         });
 
     statistics_.reset();
-    last_ts_.store(-1, std::memory_order_relaxed);
     filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
 
     // Start the frame pipeline for the new sensor geometry. File sources use
@@ -436,7 +404,6 @@ void CameraController::teardown() {
 
     sensor_info_ = SensorInfo{};
     is_file_ = false;
-    last_ts_.store(-1, std::memory_order_relaxed);
 }
 
 void CameraController::fetch_sensor_info() {

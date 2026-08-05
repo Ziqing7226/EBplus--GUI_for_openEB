@@ -149,14 +149,6 @@ public:
     double harmonic_threshold() const { return harm_threshold_; }
 
     // Repetitious (jAER port) ----------------------------------------------
-    // NOTE: period_us_/tolerance_us_ are legacy no-op parameters retained
-    // only because gui/algo_bridge backends still expose them; they do not
-    // participate in the Repetitious decision (jAER uses ratio_shorter/
-    // ratio_longer). Removal is deferred to the gui bridge cleanup.
-    void set_period_us(int v) { rep_period_us_ = clamp_i(v, 1000, 1000000); }
-    void set_tolerance_us(int v) { rep_tolerance_us_ = clamp_i(v, 100, 10000); }
-    int period_us() const { return rep_period_us_; }
-    int tolerance_us() const { return rep_tolerance_us_; }
     void set_ratio_shorter(int v) { rep_ratio_shorter_ = clamp_i(v, 1, 100); }
     void set_ratio_longer(int v) { rep_ratio_longer_ = clamp_i(v, 1, 100); }
     int ratio_shorter() const { return rep_ratio_shorter_; }
@@ -375,7 +367,11 @@ private:
 
     bool refractory_pass(const Event& e) const {
         const Metavision::timestamp lt = last_any_[idx_of(e.x, e.y)];
-        if (lt == kSentinel || e.t < lt) return true;
+        if (lt == kSentinel) return true;
+        // 对齐 jAER RefractoryFilter：仅 dt > refractoryPeriod 放行。时间回退
+        // 事件（Evt3 NonMonotonicTimeHigh、文件 seek）dt <= 0，应被滤掉而非
+        // 放行（audit §一-1.3）。last_any_ 在 decide_and_update 中无条件更新，
+        // 因此回退后每像素只牺牲一个事件，不会锁死。
         return (e.t - lt) > thr(refractory_period_us_); // strict > refractory
     }
 
@@ -594,6 +590,10 @@ private:
     };
 
     void dwf_init() {
+        // 注释定档（audit §一-1.3，有意不改实现）：jAER 的单窗（FWF）模式用
+        // 完整 windowLength，且所有事件（含被滤的）都入窗；本实现两种模式的
+        // 环容量都取 wlen/2，且单窗模式下被滤事件不入窗。单窗模式（非默认）
+        // 因此比 jAER 弱；double 模式（默认）不受影响。
         const int dwlen = dwf_wlen_ > 1 ? dwf_wlen_ / 2 : 1;
         const std::size_t c = static_cast<std::size_t>(dwlen);
         dwf_signal_.init(c);
@@ -676,8 +676,6 @@ private:
     int harm_line_freq_hz_{50};   // jAER f0 默认 100（此处 50 = 市电频率，有意）
     double harm_notch_q_{3.0};    // jAER quality factor Q
     double harm_threshold_{0.1};  // jAER threshold (fraction of power)
-    Metavision::timestamp rep_period_us_{20000};    // legacy no-op (see above)
-    Metavision::timestamp rep_tolerance_us_{1000};  // legacy no-op (see above)
     int rep_ratio_shorter_{2};   // jAER RepetitiousFilter default
     int rep_ratio_longer_{2};    // jAER RepetitiousFilter default
     int rep_averaging_samples_{3}; // jAER averagingSamples default

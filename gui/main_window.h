@@ -192,12 +192,6 @@ private:
     void add_recent_file(const QString& path);
     void on_open_recent_file(const QString& path);
 
-    // Calibration menu actions.
-    QMenu* m_calibration_{nullptr};
-
-    // Tools menu.
-    QMenu* m_tools_{nullptr};
-
     CameraController camera_;
     AlgoBridge algo_bridge_;
 

@@ -146,14 +146,6 @@ IntrinsicResult IntrinsicCalibration::run() {
         result.rvecs = std::move(rvecs);
         result.tvecs = std::move(tvecs);
         result.frames_used = image_points_.size();
-        // Cache the calibrated intrinsics so precompute_undistort_lut() can
-        // build the LUT, and so it may be re-run with a different image size.
-        K_ = K;
-        dist_coeffs_ = dist;
-        // Precompute the undistort LUT for runtime O(1) remap (design §4.5.1).
-        precompute_undistort_lut(image_size_);
-        result.undistort_map_x = undistort_map_x_;
-        result.undistort_map_y = undistort_map_y_;
         // Set ok only after every potentially-throwing operation succeeded
         // (§四-低11): previously ok was set before the LUT precompute, so a
         // throwing step left ok==true together with an error message.
@@ -166,77 +158,10 @@ IntrinsicResult IntrinsicCalibration::run() {
     return result;
 }
 
-void IntrinsicCalibration::precompute_undistort_lut(cv::Size image_size) {
-    if (image_size.area() == 0) {
-        return;
-    }
-    // K/dist_coeffs are populated by run(); guard against unset intrinsics.
-    if (K_.empty() || dist_coeffs_.empty()) {
-        return;
-    }
-    // newK = K: keep the original principal-point/focal geometry so the LUT
-    // only undistorts (no rectification scaling). R = identity.
-    cv::Mat newK = K_.clone();
-    cv::initUndistortRectifyMap(newK, dist_coeffs_, cv::Mat(), newK,
-        image_size, CV_32FC1, undistort_map_x_, undistort_map_y_);
-    // Also build the forward (distorted→undistorted) per-event address LUT so
-    // individual event coordinates can be remapped without cv::remap.
-    build_event_undistort_lut(image_size);
-}
-
-void IntrinsicCalibration::build_event_undistort_lut(cv::Size image_size) {
-    event_undistort_lut_.clear();
-    event_lut_size_ = cv::Size(0, 0);
-    if (image_size.area() == 0) {
-        return;
-    }
-    if (K_.empty() || dist_coeffs_.empty()) {
-        return;
-    }
-    const int w = image_size.width;
-    const int h = image_size.height;
-    std::vector<cv::Point2f> src;
-    src.reserve(static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            src.emplace_back(static_cast<float>(x), static_cast<float>(y));
-        }
-    }
-    // cv::undistortPoints maps distorted → normalized → (with newCameraMatrix=K)
-    // back to undistorted pixel coordinates, matching SingleCameraCalibration
-    // L700-718 (which manually applies fx,fy,cx,cy). Indexed row-major.
-    std::vector<cv::Point2f> dst;
-    cv::undistortPoints(src, dst, K_, dist_coeffs_, cv::Mat(), K_);
-    event_undistort_lut_ = std::move(dst);
-    event_lut_size_ = image_size;
-}
-
-bool IntrinsicCalibration::undistort_point(int x, int y, float& ux, float& uy) const {
-    if (event_lut_size_.area() == 0) {
-        return false;
-    }
-    if (x < 0 || y < 0 ||
-        x >= event_lut_size_.width || y >= event_lut_size_.height) {
-        return false;
-    }
-    const cv::Point2f& p = event_undistort_lut_[
-        static_cast<std::size_t>(y) * static_cast<std::size_t>(event_lut_size_.width) +
-        static_cast<std::size_t>(x)];
-    ux = p.x;
-    uy = p.y;
-    return true;
-}
-
 void IntrinsicCalibration::reset() {
     image_points_.clear();
     object_points_.clear();
     image_size_ = cv::Size(0, 0);
-    K_.release();
-    dist_coeffs_.release();
-    undistort_map_x_.release();
-    undistort_map_y_.release();
-    event_undistort_lut_.clear();
-    event_lut_size_ = cv::Size(0, 0);
 }
 
 bool load_intrinsics_yml(const std::string& path,

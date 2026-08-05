@@ -3,6 +3,10 @@
 // Self-developed (design §4.3.9), inspired by the jAER rbodo optical-flow suite
 // and ClusterBasedOpticalFlow. Four modes:
 //   LocalPlanes  — local (x,y,t) plane fit (Benoit 2015); velocity = grad(T)/|grad(T)|².
+//                  注释定档（audit §一-2.2，有意不改实现）：jAER LocalPlanesFlow
+//                  对每个像素施加 50ms 不应期（同一像素 50ms 内只出一个流
+//                  向量）；本实现逐事件拟合，输出密度高 1-2 个数量级。这是
+//                  输出密度差异而非计算错误。
 //   LucasKanade  — ✅ 移植自 jAER LucasKanadeFlow (Benosman 2012).
 //                  Per-event flow from an event-count histogram: central
 //                  first-order spatial derivatives of the histogram, event

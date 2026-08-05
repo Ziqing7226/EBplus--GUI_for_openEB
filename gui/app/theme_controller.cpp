@@ -93,11 +93,6 @@ QString ThemeController::mode_name(Mode m) {
     return tr("Follow System");
 }
 
-QString ThemeController::effective_background_hex() const {
-    return theme_tokens::lookup(static_cast<int>(color_), is_dark_mode(),
-                                theme_tokens::Token::BgPrimary);
-}
-
 QString ThemeController::effective_panel_hex() const {
     return theme_tokens::lookup(static_cast<int>(color_), is_dark_mode(),
                                 theme_tokens::Token::BgPanel);

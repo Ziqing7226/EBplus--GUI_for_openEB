@@ -54,11 +54,9 @@ public:
 
     LineSegmentDetector(int width, int height,
                         int min_line_length_px = 20,
-                        float orientation_threshold = 0.7f,
                         int max_line_gap_px = 5)
         : width_(width), height_(height),
           min_line_length_px_(min_line_length_px),
-          orientation_threshold_(orientation_threshold),
           max_line_gap_px_(max_line_gap_px),
           on_ts_(static_cast<std::size_t>(width) * height, -1),
           off_ts_(static_cast<std::size_t>(width) * height, -1) {}
@@ -124,12 +122,10 @@ public:
 
     // Parameter accessors ---------------------------------------------------
     int min_line_length_px() const { return min_line_length_px_; }
-    float orientation_threshold() const { return orientation_threshold_; }  // legacy no-op
     int max_line_gap_px() const { return max_line_gap_px_; }
     int max_age_us() const { return max_age_us_; }
     int num_orientations() const { return num_orientations_; }
     void set_min_line_length_px(int v) { min_line_length_px_ = v; }
-    void set_orientation_threshold(float v) { orientation_threshold_ = v; }  // legacy no-op
     void set_max_line_gap_px(int v) { max_line_gap_px_ = v; }
     void set_max_age_us(int v) { max_age_us_ = v; }
     void set_num_orientations(int v) { num_orientations_ = v; }
@@ -310,7 +306,6 @@ private:
     int width_;
     int height_;
     int min_line_length_px_;
-    float orientation_threshold_;  ///< Legacy no-op (removed in dead-code commit).
     int max_line_gap_px_;
     int max_age_us_{kDefaultMaxAgeUs};
     int num_orientations_{kDefaultNumOrientations};

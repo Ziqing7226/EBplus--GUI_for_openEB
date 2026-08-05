@@ -90,6 +90,8 @@ target_compile_options(test_raw_algos PRIVATE -Wall -Wextra)
 gtest_discover_tests(test_raw_algos)
 
 # Standalone diagnostic: feed .raw events to EventToVideo and report stats.
+# Registered with CTest (audit §三-S7): all 7 diagnostics below assert via
+# their exit code and were verified to pass on algo/tests/sparklers.raw.
 add_executable(test_raw_e2v
     test_raw_e2v.cpp
 )
@@ -100,6 +102,7 @@ target_link_libraries(test_raw_e2v PRIVATE
     MetavisionSDK::stream
     ${OpenCV_LIBS}
 )
+add_test(NAME raw_e2v COMMAND test_raw_e2v ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
 # Standalone diagnostic: open a .raw file with real_time_playback(true/false)
 # and report event delivery + duration. Used to verify SDK behavior matches
@@ -112,6 +115,7 @@ target_link_libraries(test_raw_playback PRIVATE
     MetavisionSDK::core
     MetavisionSDK::stream
 )
+add_test(NAME raw_playback COMMAND test_raw_playback ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
 # Standalone diagnostic: simulate GUI file-playback path for EventToVideo.
 # Feeds events in small batches with scaled timestamps and reports frame
@@ -126,6 +130,7 @@ target_link_libraries(test_playback_e2v PRIVATE
     MetavisionSDK::stream
     ${OpenCV_LIBS}
 )
+add_test(NAME playback_e2v COMMAND test_playback_e2v ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
 # Standalone diagnostic: verify FileFrameGenerator produces frames at the
 # correct playback rate (fps * window / 1e6). Tests slow-motion, real-time,
@@ -146,6 +151,7 @@ target_link_libraries(test_file_frame_generator PRIVATE
     MetavisionSDK::stream
     ${OpenCV_LIBS}
 )
+add_test(NAME file_frame_generator COMMAND test_file_frame_generator ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
 # Diagnostic: verify FilterChain (flip_x) is applied in
 # FileFrameGenerator::render_frame() so display reflects flip toggles
@@ -165,6 +171,7 @@ target_link_libraries(test_filter_in_render PRIVATE
     MetavisionSDK::core
     ${OpenCV_LIBS}
 )
+add_test(NAME filter_in_render COMMAND test_filter_in_render)
 
 # Integration test: full file-playback flow with FilterChain using a real
 # .raw file. Verifies flip_x toggled DURING playback takes effect.
@@ -184,6 +191,7 @@ target_link_libraries(test_filter_integration PRIVATE
     MetavisionSDK::stream
     ${OpenCV_LIBS}
 )
+add_test(NAME filter_integration COMMAND test_filter_integration ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
 # Loop + flip test: verifies flip_x works during LOOP playback and survives
 # across loop wraps. Simulates the exact GUI scenario.
@@ -203,4 +211,5 @@ target_link_libraries(test_loop_flip PRIVATE
     MetavisionSDK::stream
     ${OpenCV_LIBS}
 )
+add_test(NAME loop_flip COMMAND test_loop_flip ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 

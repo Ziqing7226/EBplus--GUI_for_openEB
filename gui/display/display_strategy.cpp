@@ -45,6 +45,11 @@ QImage mat_to_qimage(const cv::Mat& mat) {
     } else if (mat.channels() == 3) {
         cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
     } else {
+        // Audit §五-G5: don't fail silently — a Replace-mode algorithm
+        // producing an unsupported channel count would otherwise show a
+        // black screen with no hint as to why.
+        qWarning("mat_to_qimage: unsupported channel count %d (need 1 or 3)",
+                 mat.channels());
         return QImage();
     }
     return QImage(rgb.data, rgb.cols, rgb.rows,
