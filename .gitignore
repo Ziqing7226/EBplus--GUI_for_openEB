@@ -50,7 +50,7 @@ ref/
 # ---- Pretrained models (large binaries, not committed) ----
 # The conversion script (models/convert_to_onnx.py) IS committed; the
 # downloaded .pth.tar and the exported .onnx / .onnx.data are not —
-# users regenerate them locally following doc/design.md §4.4.2.
+# users regenerate them locally following devlog/design.md §4.4.2.
 models/*.pth.tar
 models/*.pth
 models/*.onnx
@@ -59,6 +59,6 @@ models/*.bin
 
 # ---- Third-party prebuilt libraries (not committed) ----
 # ONNX Runtime C++ prebuilt package (CPU). Users download and extract it
-# to third_party/onnxruntime/ following doc/design.md §4.4.2. Only the
+# to third_party/onnxruntime/ following devlog/design.md §4.4.2. Only the
 # directory contents are ignored; the directory itself is kept via .gitkeep.
 third_party/onnxruntime/

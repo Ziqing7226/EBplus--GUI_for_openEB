@@ -5,13 +5,13 @@
 | Component | Version |
 |-----------|---------|
 | OS | Ubuntu 22.04+ (or compatible Linux) |
-| Compiler | GCC 13+ (GCC 15 supported, see [doc/compile.md](https://github.com/Ziqing7226/EBplus--GUI_for_openEB/blob/main/doc/compile.md) for the `<cstdint>` fix) |
+| Compiler | GCC 13+ (GCC 15 supported, see [devlog/compile.md](https://github.com/Ziqing7226/EBplus--GUI_for_openEB/blob/main/devlog/compile.md) for the `<cstdint>` fix) |
 | CMake | 3.16+ |
 | Qt | 6.x (Widgets, OpenGL, OpenGLWidgets) |
 | OpenCV | 4.x |
 | openEB SDK | 5.2.0 (included as a subtree under `openeb/`) |
 
-See [doc/compile.md](https://github.com/Ziqing7226/EBplus--GUI_for_openEB/blob/main/doc/compile.md) for the full build walkthrough (including Python 3.12 setup for building openEB from source, and the GCC 15 compatibility fix).
+See [devlog/compile.md](https://github.com/Ziqing7226/EBplus--GUI_for_openEB/blob/main/devlog/compile.md) for the full build walkthrough (including Python 3.12 setup for building openEB from source, and the GCC 15 compatibility fix).
 
 ## Build
 

@@ -193,7 +193,7 @@ GUI-for-openEB/
 ├── LICENSE
 ├── README.md
 ├── README_CN.md
-└── doc/
+└── devlog/
     ├── design.md                # 本文档（系统设计规格说明）
     ├── compile.md               # 编译指南（Ubuntu 26.04 + GCC 15 + Qt 6.6+）
     └── gui_optimization.md      # GUI 优化文档（VSCode 风格侧栏、BUG 修复记录）

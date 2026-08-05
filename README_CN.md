@@ -47,7 +47,7 @@ cmake --build build -- -j$(nproc)
 
 启动脚本会自动处理 Wayland 兼容、HAL 插件路径和 OpenGL 后端选择。
 
-> **环境要求**：Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4。详见 [doc/compile.md](doc/compile.md)。
+> **环境要求**：Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4。详见 [devlog/compile.md](devlog/compile.md)。
 
 ---
 
@@ -131,7 +131,7 @@ cmake --build build -- -j$(nproc)
 
 > **无 ONNX Runtime 时**：E2VID 自动回退到启发式模式（体素网格求和 + Sigmoid）。BardowVariational 和 InteractingMaps 模式无需任何额外依赖——BardowVariational 通过 Chambolle-Pock 原始-对偶优化联合估计光流与亮度（六个 λ 正则化项），InteractingMaps 使用六张互连图（I/G/V/F/C/R）交替松弛，旋转由线性最小二乘估计。
 
-详见 [doc/design.md §4.4.2](doc/design.md)。
+详见 [devlog/design.md §4.4.2](devlog/design.md)。
 
 ### 主题
 - **5 种背景色**：Gray、Green、Yellow、Pink、Blue（默认）
@@ -165,7 +165,7 @@ GUI-for-openEB/
 ├── openeb/            # openEB SDK（Apache 2.0，v5.2.0）
 ├── models/            # E2VID PyTorch → ONNX 转换
 ├── run.sh             # 启动脚本（环境变量设置）
-├── doc/               # 设计规格 + 编译指南 + wiki
+├── devlog/               # 设计规格 + 编译指南 + wiki
 └── pic/               # 截图
 ```
 

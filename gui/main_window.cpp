@@ -717,7 +717,7 @@ void MainWindow::wire_signals() {
         // This also covers the case where a new raw file starts at t=0 but
         // current_t_ is still at the previous file's end time → no new
         // events would update current_t_ (e.t > current_t_ is false) → the
-        // algorithm freezes on stale output. See doc/gui_optimization.md §8.
+        // algorithm freezes on stale output. See devlog/gui_optimization.md §8.
         //
         // Also update sensor dimensions on existing instances: when a new
         // file/camera connects with different dimensions, the ROI must be
@@ -1470,7 +1470,7 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
     //   status-bar/position display.
     //
     // This scaling is NOT a bug — it is an intentional adaptation for
-    // rate-controlled file playback. See doc/gui_optimization.md §8.
+    // rate-controlled file playback. See devlog/gui_optimization.md §8.
     // ======================================================================
 
     // Compute playback rate from FramePipeline's current parameters.

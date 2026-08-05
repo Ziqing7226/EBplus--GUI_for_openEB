@@ -2,7 +2,7 @@
 
 > 版本：1.0
 > 日期：2026-07-08
-> 基于：[design.md](file:///home/justin/GUI-for-openEB/doc/design.md) v2.0
+> 基于：[design.md](file:///home/justin/GUI-for-openEB/devlog/design.md) v2.0
 > 范围：`gui/` 目录的架构与视觉优化，不涉及 `algo/` 算法逻辑
 
 ---
@@ -22,7 +22,7 @@
 
 ### 1.2 设计原则
 
-1. **保留既有架构契约**——`AlgoBridge` 注册表 + 工厂 + `weak_ptr` live instances（[algo_bridge.h:121-177](file:///home/justin/GUI-for-openEB/gui/algo_bridge/algo_bridge.h#L121-L177)）、`FramePipeline` 线程边界、`AlgoParamSpec.mode_filter` 声明式参数、`AlgoInstance` 洪水保护（[design.md §5.6.7](file:///home/justin/GUI-for-openEB/doc/design.md)）全部保留
+1. **保留既有架构契约**——`AlgoBridge` 注册表 + 工厂 + `weak_ptr` live instances（[algo_bridge.h:121-177](file:///home/justin/GUI-for-openEB/gui/algo_bridge/algo_bridge.h#L121-L177)）、`FramePipeline` 线程边界、`AlgoParamSpec.mode_filter` 声明式参数、`AlgoInstance` 洪水保护（[design.md §5.6.7](file:///home/justin/GUI-for-openEB/devlog/design.md)）全部保留
 2. **保留粉彩主题**——本 GUI 是事件相机可视化工具，不是代码开发工具；彩色背景不干扰事件帧感知（事件帧在独立的 OpenGL 显示区，与窗口背景分离）。5 色 × 明暗共 10 个主题变体全部保留
 3. **演进式重构**——不推倒重来，每个阶段可独立交付、独立验证、独立回滚
 4. **不过度设计**——不引入 AppController 中介者（`design.md` §2.2 的设想，但实现已证明 MainWindow 直接持有 + 事件解耦更轻量）；不引入命令系统（当前规模不需要）
@@ -428,7 +428,7 @@ void MainWindow::process_algo_results(QImage& frame) {
 
 #### 3.6.3 菜单结构
 
-保留 [design.md §5.4](file:///home/justin/GUI-for-openEB/doc/design.md) 的菜单功能，但合并为 5 个下拉（已废弃的 Algorithm 菜单不恢复）：
+保留 [design.md §5.4](file:///home/justin/GUI-for-openEB/devlog/design.md) 的菜单功能，但合并为 5 个下拉（已废弃的 Algorithm 菜单不恢复）：
 - **文件**：Open Camera/File, Save/Load Settings, Export, File Tools, Exit
 - **视图**：Toggle Sidebar, Toggle Playback, Reset/Save/Load Layout, Fullscreen
 - **相机**：Connect/Disconnect, Device List, Platform Info, HAL Showcase
@@ -441,7 +441,7 @@ void MainWindow::process_algo_results(QImage& frame) {
 
 #### 3.7.1 回归 design.md §5.1
 
-[design.md §5.1](file:///home/justin/GUI-for-openEB/doc/design.md) 的布局图是**垂直堆叠**面板，实现变成了两个 tab。改为 VSCode 风格的可折叠 Section，回归原始设计：
+[design.md §5.1](file:///home/justin/GUI-for-openEB/devlog/design.md) 的布局图是**垂直堆叠**面板，实现变成了两个 tab。改为 VSCode 风格的可折叠 Section，回归原始设计：
 
 ```
 ▼ 相机设备        [Devices] [Information]
@@ -698,11 +698,11 @@ gui/tests/
 - ✅ 5 色粉彩主题（Gray/Green/Yellow/Pink/Blue × Light/Dark）
 - ✅ `ThemeController` 的 `FollowSystem` 模式
 - ✅ `AlgoBridge` 注册表 + 工厂 + `weak_ptr` 架构
-- ✅ `AlgoInstance` 洪水保护（[design.md §5.6.7](file:///home/justin/GUI-for-openEB/doc/design.md)）
+- ✅ `AlgoInstance` 洪水保护（[design.md §5.6.7](file:///home/justin/GUI-for-openEB/devlog/design.md)）
 - ✅ `FramePipeline` 线程边界划分
 - ✅ `AlgoParamSpec.mode_filter` 声明式参数可见性
-- ✅ `QDockWidget` 多窗口机制（[design.md §5.6.5](file:///home/justin/GUI-for-openEB/doc/design.md)）
-- ✅ 算法 ROI 全算法支持（[design.md §5.6.6](file:///home/justin/GUI-for-openEB/doc/design.md)）
+- ✅ `QDockWidget` 多窗口机制（[design.md §5.6.5](file:///home/justin/GUI-for-openEB/devlog/design.md)）
+- ✅ 算法 ROI 全算法支持（[design.md §5.6.6](file:///home/justin/GUI-for-openEB/devlog/design.md)）
 - ✅ 四种显示模式分类（Passive/Overlay/Replace/Standalone）
 
 ---
@@ -1510,4 +1510,4 @@ ActivityBar 的分组切换已经实现了"只看一组"的效果，group 内部
 
 ---
 
-*本文档与 [design.md](file:///home/justin/GUI-for-openEB/doc/design.md) 配合使用，design.md 定义"做什么"，本文档定义"怎么做得更好"。*
+*本文档与 [design.md](file:///home/justin/GUI-for-openEB/devlog/design.md) 配合使用，design.md 定义"做什么"，本文档定义"怎么做得更好"。*

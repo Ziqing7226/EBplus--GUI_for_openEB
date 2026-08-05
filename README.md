@@ -45,7 +45,7 @@ cmake --build build -- -j$(nproc)
 
 That's it. The launcher handles Wayland compatibility, HAL plugin paths, and OpenGL backend selection automatically.
 
-> **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [doc/compile.md](doc/compile.md) for details.
+> **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [devlog/compile.md](devlog/compile.md) for details.
 
 ---
 
@@ -129,7 +129,7 @@ After setup, launch EB plus and enable **Algorithm → Event → Video** — it 
 
 > **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps modes work without any setup — BardowVariational jointly estimates optical flow and intensity via Chambolle-Pock primal-dual optimization (all six λ terms), and InteractingMaps uses six interconnected maps (I/G/V/F/C/R) with rotation estimation via least squares.
 
-See [doc/design.md §4.4.2](doc/design.md) for full algorithm specifications.
+See [devlog/design.md §4.4.2](devlog/design.md) for full algorithm specifications.
 
 ### Theming
 - **5 background colors**: Gray, Green, Yellow, Pink, Blue (default)
@@ -163,7 +163,7 @@ GUI-for-openEB/
 ├── openeb/            # openEB SDK (Apache 2.0, v5.2.0)
 ├── models/            # E2VID PyTorch → ONNX conversion
 ├── run.sh             # Launcher (sets env vars)
-├── doc/               # Design spec + build guide + wiki
+├── devlog/               # Design spec + build guide + wiki
 └── pic/               # Screenshots
 ```
 
