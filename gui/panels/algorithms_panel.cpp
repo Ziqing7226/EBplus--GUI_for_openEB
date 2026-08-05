@@ -61,6 +61,16 @@ void AlgorithmsPanel::build_ui() {
         return;
     }
 
+    // Flood-guard sync (audit §五-E2): when an instance auto-disables on a
+    // sustained event-rate spike, the bridge invokes this callback from the
+    // SDK data thread; the queued signal unchecks the sidebar checkbox on
+    // the GUI thread so the UI cannot claim the algo is still running.
+    bridge_->set_overload_callback([this](const std::string& name) {
+        emit algorithm_overloaded(QString::fromStdString(name));
+    });
+    connect(this, &AlgorithmsPanel::algorithm_overloaded, this,
+            &AlgorithmsPanel::on_algorithm_overloaded, Qt::QueuedConnection);
+
     // Group algorithms by category. Only self-developed algorithms are shown
     // here: OpenEB-wrapped filters have no real backend in AlgoBridge and are
     // controlled via the Preprocess menu / PreprocessingPanel instead.
@@ -255,6 +265,21 @@ void AlgorithmsPanel::build_ui() {
                         // guaranteed to match the sidebar state even if no
                         // widget signal fired since app start.
                         apply_global_roi();
+                        // Auto-set 1/4 downsample based on algorithm type
+                        // (§11.2-I): coordinate-halving backends (E2VID,
+                        // ISI, TimeSurface, HoughLine, HoughCircle) default
+                        // ON per project memory; all others default OFF to
+                        // avoid 4× input loss (§五-F1). Only auto-set while
+                        // the user has not manually toggled the checkbox.
+                        if (!preproc_downsample_user_touched_) {
+                            const bool want = algo_halves_coords(algo_name);
+                            if (preproc_downsample_cb_->isChecked() != want) {
+                                QSignalBlocker b(preproc_downsample_cb_);
+                                preproc_downsample_cb_->setChecked(want);
+                                apply_global_preproc(
+                                    "preproc_downsample", want ? "true" : "false");
+                            }
+                        }
                         emit info_message(tr("Algorithm enabled: %1")
                                               .arg(QString::fromStdString(a->display_name)));
                         // Request MainWindow to open the AlgoWindow so Standalone
@@ -375,10 +400,17 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_cb_->setChecked(false);
     form->addRow(preproc_filter_cb_);
 
-    // 1/4 downsample (default ON to preserve v1.0.0 behaviour where
-    // event_to_video had downsample=true).
+    // 1/4 downsample (default OFF — audit §五-F1): for most backends this
+    // only THINS events (coordinates unchanged, 3/4 of the input silently
+    // discarded); only the E2VID/ISI/TimeSurface/Hough backends actually
+    // halve coordinates. The checkbox is auto-set on algorithm enable
+    // (§11.2-I): ON for coordinate-halving backends (project memory),
+    // OFF for all others. Once the user manually toggles, auto-setting
+    // stops.
     preproc_downsample_cb_ = new QCheckBox(tr("1/4 Downsample"), gb);
-    preproc_downsample_cb_->setChecked(true);
+    preproc_downsample_cb_->setChecked(false);
+    preproc_downsample_cb_->setToolTip(tr(
+        "对大多数算法仅抽稀事件（坐标不变）；仅 E2VID/ISI/TimeSurface/Hough 系做坐标减半"));
     form->addRow(preproc_downsample_cb_);
 
     // Undistort (default off). Applied AFTER filter + downsample. Loads the
@@ -426,6 +458,12 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
 
     // Parameter definitions: {key, display, type, def, lo, hi, mode}
     // type: "i"=int, "f"=float, "b"=bool
+    // SYNC (audit §五-F2): this table mirrors the preproc_params() registry in
+    // gui/algo_bridge/algo_bridge.cpp — the bridge registry is the single
+    // source of truth; any addition/removal/default change must be mirrored
+    // here. rep_period_us/rep_tolerance_us are intentionally absent (algo
+    // stores but never uses them); rep_averaging_samples is absent because
+    // the algo exposes no setter for it.
     struct PDef {
         const char* key;
         const char* disp;
@@ -447,7 +485,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         // Refractory (mode 2)
         {"preproc_filter_refractory_us", "Refractory (us)", 'i', "1000", "100", "100000", 2},
         // DWF (mode 3)
-        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "100", 3},
+        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "1024", 3},
         {"preproc_filter_dwf_dist_threshold", "DWF dist", 'i', "2", "1", "1024", 3},
         {"preproc_filter_dwf_min_correlated", "DWF min corr", 'i', "2", "1", "8", 3},
         {"preproc_filter_dwf_double_mode", "DWF double", 'b', "false", "", "", 3},
@@ -540,6 +578,9 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     });
     connect(preproc_downsample_cb_, &QCheckBox::toggled, this, [this](bool on) {
         apply_global_preproc("preproc_downsample", on ? "true" : "false");
+        // Mark as user-touched so the auto-toggle on algorithm enable
+        // (§11.2-I) stops overriding the user's explicit choice.
+        preproc_downsample_user_touched_ = true;
     });
     connect(preproc_undistort_cb_, &QCheckBox::toggled, this, [this](bool on) {
         apply_global_preproc("preproc_undistort_enabled", on ? "true" : "false");
@@ -617,7 +658,33 @@ void AlgorithmsPanel::apply_param(const std::string& algo_name,
                 }
             }
         }
+        // §五-H1: a failed ONNX load silently falls back to the heuristic
+        // path — warn once per panel session so the user does not mistake
+        // the heuristic output for "E2VID quality".
+        if (algo_name == "event_to_video" &&
+            it->second->get_param("model_loaded") == "false" &&
+            !e2vid_model_error_shown_) {
+            e2vid_model_error_shown_ = true;
+            emit error_message(tr("E2VID model failed to load — using the "
+                                  "heuristic fallback reconstruction."));
+        }
     }
+}
+
+void AlgorithmsPanel::on_algorithm_overloaded(const QString& name) {
+    // Flood guard tripped (audit §五-E2): the instance already disabled
+    // itself. Clear the overload flag (so MainWindow's per-frame statusBar
+    // warning stops), uncheck the sidebar checkbox, and notify once.
+    const std::string n = name.toStdString();
+    if (bridge_) {
+        if (auto inst = bridge_->find_live(n)) {
+            inst->clear_overload();
+        }
+    }
+    set_algo_enabled(n, false);
+    emit algorithm_toggled(name, false);
+    emit error_message(tr("Algorithm auto-disabled (event rate too high): %1. "
+                          "Re-enable it to retry.").arg(name));
 }
 
 void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
@@ -647,12 +714,11 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
 
     // Auto-set mode-appropriate ROI and output_fps only during initial build
     // (design §4.4.2): all three event_to_video modes default to a 128×128
-    // center ROI with 1/4 downsample enabled (effective reconstruction at
-    // 64×64). E2VID runs NN inference at this resolution; BardowVariational
-    // and InteractingMaps also downsample for the same throughput benefit
-    // (the output is upsampled back to the ROI size for display). 24 fps is
-    // a comfortable target across all modes.
-    // Only event_to_video has a "mode" enum, so this code only runs for it.
+    // center ROI. The shared 1/4 downsample defaults to OFF here; it is
+    // auto-enabled on algorithm enable via algo_halves_coords() (§11.2-I),
+    // NOT in this first_init_ path. 24 fps is a comfortable target across
+    // all modes. Only event_to_video has a "mode" enum, so this code only
+    // runs for it.
     // BUG-14 fix: skip ROI/fps reset on user-driven mode switches so
     // user-customised values are preserved.
     if (!first_init_) return;
@@ -765,6 +831,19 @@ void AlgorithmsPanel::refresh_param_values() {
         // Row visibility follows the (possibly updated) mode combo.
         if (state.mode_combo) refresh_mode_visibility(algo_name);
     }
+}
+
+bool AlgorithmsPanel::algo_halves_coords(const std::string& algo_name) {
+    // These backends set preproc_.halve_coords_ = true in their constructor,
+    // meaning 1/4 downsample halves event coordinates (correct behavior:
+    // the algorithm runs at half resolution). For all other backends,
+    // downsample only thins events (3/4 discarded, coordinates unchanged) —
+    // a silent 4× input loss (§五-F1).
+    return algo_name == "event_to_video" ||
+           algo_name == "isi_analyzer" ||
+           algo_name == "time_surface" ||
+           algo_name == "hough_line" ||
+           algo_name == "hough_circle";
 }
 
 } // namespace gui

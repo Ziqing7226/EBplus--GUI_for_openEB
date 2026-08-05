@@ -249,6 +249,12 @@ public:
         if (k == "im_iterations") return from_i(im_iterations_);
         if (k == "fov_deg") return from_d(fov_deg_);
         if (k == "model_path") return model_path_;
+        if (k == "model_loaded") {
+            // Pseudo-param (not registered) for the panel's one-shot error
+            // hint (§五-H1): only meaningful in E2VID mode; empty = N/A.
+            return (mode_ == gui_algo::EventToVideo::Mode::E2VID && algo_)
+                       ? from_b(algo_->e2vid_model_loaded()) : std::string{};
+        }
         if (k == "num_bins") return from_i(e2vid_num_bins_);
         if (k == "auto_hdr") return from_b(e2vid_auto_hdr_);
         if (k == "unsharp_amount") return from_d(unsharp_amount_);
@@ -305,6 +311,13 @@ public:
         r.status = "e2v: " + std::to_string(algo_->width()) + "x" +
                    std::to_string(algo_->height()) +
                    (roi_.enabled ? " (ROI)" : " (full)");
+        // §五-H1: a failed ONNX load silently falls back to the heuristic
+        // path — the status line must show which reconstruction is running
+        // so users don't mistake heuristic output for "E2VID quality".
+        if (algo_->mode() == gui_algo::EventToVideo::Mode::E2VID) {
+            r.status += algo_->e2vid_model_loaded() ? " model=loaded"
+                                                    : " model=heuristic";
+        }
         return r;
     }
     void reset() override {

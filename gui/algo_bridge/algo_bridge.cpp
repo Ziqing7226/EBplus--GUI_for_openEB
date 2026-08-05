@@ -86,7 +86,16 @@ void AlgoInstance::set_param(const std::string& key, const std::string& value) {
 std::string AlgoInstance::get_param(const std::string& key) const {
     std::lock_guard<std::mutex> lk(mutex_);
     auto it = param_values_.find(key);
-    return it == param_values_.end() ? std::string{} : it->second;
+    if (it != param_values_.end()) return it->second;
+    // Not a registered key: fall back to the backend so runtime pseudo-params
+    // (e.g. EventToVideo's "model_loaded", §五-H1) remain reachable. This
+    // cannot change the string format of registered params — every key in
+    // info_.params is initialised into param_values_ at construction, so the
+    // fallback only ever fires for unregistered keys, for which the backend
+    // is the only source (unknown keys still yield the backend's empty
+    // string, preserving the previous contract).
+    if (backend_) return backend_->get_param(key);
+    return {};
 }
 
 void AlgoInstance::set_enabled(bool e) {
@@ -105,9 +114,16 @@ void AlgoInstance::set_enabled(bool e) {
         // the InformationPanel shows fresh telemetry for the new session.
         overloaded_ = false;
         flood_strikes_ = 0;
+        rate_window_events_ = 0;
+        rate_window_start_ = {};
         total_pushed_ = 0;
         total_dropped_ = 0;
     }
+}
+
+void AlgoInstance::set_overload_callback(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    overload_callback_ = std::move(cb);
 }
 
 bool AlgoInstance::is_enabled() const {
@@ -138,42 +154,62 @@ std::size_t AlgoInstance::total_dropped() const {
 
 void AlgoInstance::push_events(const Metavision::EventCD* begin,
                                const Metavision::EventCD* end) {
-    std::lock_guard<std::mutex> lk(mutex_);
-    const std::size_t n = static_cast<std::size_t>(end - begin);
-    total_pushed_ += n;
-    if (!enabled_ || overloaded_) {
-        // Instance is disabled/overloaded — the entire batch is dropped.
-        total_dropped_ += n;
-        return;
-    }
-    if (backend_) {
-        // Flood guard (design §5.6.7): cap each batch to the most recent
-        // kMaxBatchEvents events. If a batch was capped, increment the strike
-        // counter; kFloodStrikes consecutive capped batches mean the algo is
-        // being fed faster than it can process → auto-disable to prevent
-        // memory blowup and GUI stalls. A non-capped batch resets the count.
-        const Metavision::EventCD* b = begin;
-        const Metavision::EventCD* e = end;
-        if (n > kMaxBatchEvents) {
-            // Keep the most recent events (drop older ones from the front).
-            b = end - kMaxBatchEvents;
-            const std::size_t dropped_front = n - kMaxBatchEvents;
-            total_dropped_ += dropped_front;
-            if (++flood_strikes_ >= kFloodStrikes) {
-                overloaded_ = true;
-                enabled_ = false;
-                // The capped batch is also dropped (backend never sees it).
-                total_dropped_ += kMaxBatchEvents;
-                return;
+    std::function<void()> tripped_cb;
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        const std::size_t n = static_cast<std::size_t>(end - begin);
+        total_pushed_ += n;
+        if (!enabled_ || overloaded_) {
+            // Instance is disabled/overloaded — the entire batch is dropped.
+            total_dropped_ += n;
+            return;
+        }
+        if (backend_) {
+            // Flood guard (design §5.6.7, rate-based, audit §五-E1): measure
+            // the wall-clock event rate over a sliding 1s window. When a full
+            // window completes, its rate is compared against
+            // kMaxEventRateEvPerSec; kFloodStrikes consecutive over-threshold
+            // windows auto-disable the instance to prevent memory blowup and
+            // GUI stalls. Batches are never truncated — every event is
+            // delivered until the guard trips. Using wall clock (not batch
+            // size or event timestamps) makes file playback (~1-2 Mev/s) and
+            // live streams subject to the same limit (previously the 50k/batch
+            // cap mis-fired on file playback, where one push is a whole 33ms
+            // window, and silently dropped window-front events).
+            const auto now = std::chrono::steady_clock::now();
+            if (rate_window_start_ == std::chrono::steady_clock::time_point{}) {
+                rate_window_start_ = now;
+            }
+            rate_window_events_ += n;
+            const double elapsed_s =
+                std::chrono::duration<double>(now - rate_window_start_).count();
+            if (elapsed_s >= 1.0) {
+                const double rate =
+                    static_cast<double>(rate_window_events_) / elapsed_s;
+                if (rate > kMaxEventRateEvPerSec) {
+                    if (++flood_strikes_ >= kFloodStrikes) {
+                        overloaded_ = true;
+                        enabled_ = false;
+                        total_dropped_ += n;
+                        tripped_cb = overload_callback_;
+                    }
+                } else {
+                    flood_strikes_ = 0;
+                }
+                rate_window_events_ = 0;
+                rate_window_start_ = now;
+            }
+            if (!overloaded_) {
+                backend_->push_events(begin, end);
             }
         } else {
-            flood_strikes_ = 0;
+            // OpenEB 包装算法：透传（由 filter_chain 处理）。
         }
-
-        backend_->push_events(b, e);
-    } else {
-        // OpenEB 包装算法：透传（由 filter_chain 处理）。
     }
+    // Invoke the overload callback outside the instance lock so the receiver
+    // (e.g. the AlgorithmsPanel, via a queued signal) can safely call back
+    // into this instance (clear_overload, set_enabled) without deadlocking.
+    if (tripped_cb) tripped_cb();
 }
 
 AlgoResult AlgoInstance::pull_result() {
@@ -254,8 +290,10 @@ std::vector<AlgoParamSpec> roi_params() {
 /// Returns the shared preprocessing parameters (v1.0.9): a stackable noise
 /// filter + 1/4 downsample applied AFTER the algorithm ROI, in the order
 /// ROI → filter → downsample. These overlay on top of any main algorithm and
-/// are NOT mutually exclusive with it. preproc_downsample defaults to "true"
-/// to preserve v1.0.0 behaviour (event_to_video had downsample=true).
+/// are NOT mutually exclusive with it. preproc_downsample defaults to "false"
+/// (audit §五-F1): for most backends it only thins events (coordinates
+/// unchanged), a silent 4× input loss for detection/tracking algorithms; the
+/// panel auto-enables it for coordinate-halving backends (§11.2-I).
 /// preproc_filter_enabled defaults to "false" (opt-in). The preproc_filter_*
 /// params mirror the standalone NoiseFilter params (§4.3.5) so the same 8
 /// denoiser modes are available as a preprocessing stage. NOTE: the noise
@@ -266,7 +304,7 @@ std::vector<AlgoParamSpec> roi_params() {
 std::vector<AlgoParamSpec> preproc_params() {
     return {
         pbool("preproc_filter_enabled", "Preproc: noise filter", "false"),
-        pbool("preproc_downsample", "Preproc: 1/4 downsample", "true"),
+        pbool("preproc_downsample", "Preproc: 1/4 downsample", "false"),
         penum("preproc_filter_mode", "Preproc: filter mode", "1",
               {"0=BAF", "1=STCF", "2=Refractory", "3=DWF",
                "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP"}),
@@ -342,6 +380,12 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create(const std::string& name) {
         return nullptr;
     }
     auto inst = std::make_shared<AlgoInstance>(it->second, sensor_w_, sensor_h_);
+    // Wire the flood-guard overload callback (§五-E2): when the guard trips,
+    // the registered receiver (AlgorithmsPanel) unchecks the sidebar checkbox.
+    if (overload_cb_) {
+        auto cb = overload_cb_;
+        inst->set_overload_callback([cb, name]() { cb(name); });
+    }
     {
         std::lock_guard<std::mutex> lk(live_mutex_);
         live_instances_[name] = inst;
@@ -500,6 +544,22 @@ std::vector<std::shared_ptr<AlgoInstance>> AlgoBridge::list_live() {
         }
     }
     return out;
+}
+
+void AlgoBridge::set_overload_callback(
+    std::function<void(const std::string& name)> cb) {
+    overload_cb_ = std::move(cb);
+    // Retro-wire instances that already exist (created before the panel
+    // registered the callback).
+    for (auto& inst : list_live()) {
+        if (overload_cb_) {
+            auto cb = overload_cb_;
+            const std::string name = inst->info().name;
+            inst->set_overload_callback([cb, name]() { cb(name); });
+        } else {
+            inst->set_overload_callback(nullptr);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,8 @@
 #ifndef GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
 #define GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
 
+#include <chrono>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -109,10 +111,16 @@ public:
     std::size_t total_dropped() const;
 
     /// Push events to the algorithm backend. Thread-safe.
-    /// A flood guard caps the batch size and auto-disables the instance if
-    /// events arrive far faster than the algo can process them, preventing
-    /// memory blowup and GUI freezes under high event rates.
+    /// A flood guard measures the wall-clock event rate over a sliding 1s
+    /// window and auto-disables the instance after several consecutive
+    /// windows above the threshold, preventing memory blowup and GUI freezes
+    /// under extreme event rates.
     void push_events(const Metavision::EventCD* begin, const Metavision::EventCD* end);
+
+    /// Sets a one-shot callback invoked (outside the instance lock) when the
+    /// flood guard auto-disables this instance. Called from the pushing
+    /// thread; receivers must marshal to the GUI thread themselves.
+    void set_overload_callback(std::function<void()> cb);
 
     /// Pull the latest result (filtered events + overlay + frame).
     AlgoResult pull_result();
@@ -147,20 +155,34 @@ private:
     // --- Flood guard (design §5.6.7) -------------------------------------
     // When event rates spike (e.g. 10-100 Mev/s) a slow algorithm cannot keep
     // up; without backpressure its internal buffers grow unbounded and the
-    // GUI thread stalls. The guard:
-    //   1. caps each batch to the most recent kMaxBatchEvents events,
-    //   2. counts consecutive capped batches; if that count exceeds
-    //      kFloodStrikes the instance is auto-disabled (overloaded_=true).
+    // GUI thread stalls. The guard measures the wall-clock event rate over a
+    // sliding 1s window (wall clock, not event timestamps, so fast file
+    // playback and live streams are judged by the same standard); when the
+    // rate exceeds kMaxEventRateEvPerSec for kFloodStrikes consecutive
+    // windows the instance is auto-disabled (overloaded_=true). Events are
+    // never silently dropped from a batch — a batch is either delivered in
+    // full or (once disabled) counted in total_dropped_.
+    //
+    // Threshold rationale: typical file playback runs at ~1-2 Mev/s and
+    // normal live scenes at <10 Mev/s. NOTE the guard measures the RAW
+    // full-sensor rate (before the backend's ROI/preproc), and pointing the
+    // camera at the calibration/focus blinking pattern is a LEGITIMATE scene
+    // that sustains ~20-40 Mev/s full-sensor — 30 Mev/s was too low and
+    // auto-disabled E2VID within seconds in exactly that scenario (regression
+    // vs. main). 100 Mev/s keeps headroom for legitimate blinking-target use
+    // while still catching true runaway storms.
     bool overloaded_{false};
     int flood_strikes_{0};
-    Metavision::timestamp last_batch_t_{0};
-    static constexpr std::size_t kMaxBatchEvents = 50000;
+    std::size_t rate_window_events_{0};
+    std::chrono::steady_clock::time_point rate_window_start_{};
+    static constexpr double kMaxEventRateEvPerSec = 100e6;  // 100 Mev/s
     static constexpr int kFloodStrikes = 4;
+    std::function<void()> overload_callback_;
 
     // --- Drop-rate telemetry (design §5.6.7) ----------------------------
     // total_pushed_ = events received via push_events (the denominator).
-    // total_dropped_ = events discarded by the flood guard (capped batches,
-    // auto-disable, or calls while disabled/overloaded). The ratio
+    // total_dropped_ = events discarded by the flood guard (auto-disable, or
+    // calls while disabled/overloaded). The ratio
     // total_dropped_/total_pushed_ is surfaced in InformationPanel as the
     // max drop rate across all live instances. Reset in set_enabled(true)
     // so re-enabling gives a fresh session.
@@ -230,6 +252,12 @@ public:
     /// @brief Returns all live instances (for batch event push / result pull).
     std::vector<std::shared_ptr<AlgoInstance>> list_live();
 
+    /// @brief Registers a callback invoked (from the pushing thread) whenever
+    /// the flood guard auto-disables an instance. New instances created after
+    /// this call inherit the callback; the AlgorithmsPanel uses it to uncheck
+    /// the corresponding sidebar checkbox so the UI stays in sync.
+    void set_overload_callback(std::function<void(const std::string& name)> cb);
+
 private:
     void register_openeb_filters();
     void register_self_cv();
@@ -258,6 +286,10 @@ private:
     /// Populated by ConfigManager::apply_algo_state when an algorithm has
     /// no live instance; replayed in create() so saved values are not lost.
     std::unordered_map<std::string, std::map<std::string, std::string>> algo_param_cache_;
+
+    /// Flood-guard overload callback, wired into every instance created by
+    /// create() (see set_overload_callback).
+    std::function<void(const std::string& name)> overload_cb_;
 };
 
 } // namespace gui

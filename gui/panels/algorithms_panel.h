@@ -64,6 +64,16 @@ signals:
     /// @brief Emitted when an algorithm is enabled from the sidebar and
     /// needs an AlgoWindow opened (Standalone/Overlay algos need a display).
     void open_algo_window_requested(const std::string& name);
+    /// @brief Emitted (from the SDK data thread, via the bridge's overload
+    /// callback) when the flood guard auto-disables an algorithm. Connected
+    /// queued to on_algorithm_overloaded so the checkbox sync runs on the
+    /// GUI thread (audit §五-E2).
+    void algorithm_overloaded(const QString& name);
+
+private slots:
+    /// Unchecks the sidebar checkbox of a flood-guard-disabled algorithm and
+    /// notifies the user once (audit §五-E2).
+    void on_algorithm_overloaded(const QString& name);
 
 private:
     void build_ui();
@@ -151,8 +161,9 @@ private:
     /// algorithm and are NOT mutually exclusive with it. These checkboxes
     /// are intentionally NOT stored in checkboxes_ (the algorithm-mutex map)
     /// so enabling preprocessing does not disable the main algorithm.
-    /// preproc_downsample defaults to checked (true) to preserve v1.0.0
-    /// behaviour (event_to_video had downsample=true).
+    /// preproc_downsample defaults to UNCHECKED (audit §五-F1): for most
+    /// backends it only thins events (coordinates unchanged), which is a
+    /// silent 4× input loss for detection/tracking algorithms.
     QCheckBox* preproc_filter_cb_{nullptr};
     QCheckBox* preproc_downsample_cb_{nullptr};
     QComboBox* preproc_filter_mode_combo_{nullptr};
@@ -181,6 +192,26 @@ private:
     /// default ROI/fps; set to false after build_ui completes so user-driven
     /// mode switches don't clobber user-customised ROI/fps (BUG-14 fix).
     bool first_init_{true};
+
+    /// One-shot guard for the E2VID model-load-failure warning (§五-H1):
+    /// emitted at most once per panel session so repeated model_path edits
+    /// don't spam the status bar.
+    bool e2vid_model_error_shown_{false};
+
+    /// Tracks whether the user has manually toggled preproc_downsample.
+    /// While false, enabling an algorithm auto-sets downsample based on
+    /// whether the algorithm's backend halves coordinates (§11.2-I):
+    ///   - event_to_video / isi_analyzer / time_surface / hough_line /
+    ///     hough_circle: downsample ON (halves coords, project memory)
+    ///   - all others: downsample OFF (avoids 4× input loss, §五-F1)
+    /// Once the user manually toggles, this flips true and auto-setting
+    /// stops — the user's choice is respected thereafter.
+    bool preproc_downsample_user_touched_{false};
+
+    /// Returns true if the named algorithm's backend halves event
+    /// coordinates when 1/4 downsample is enabled (vs. just thinning
+    /// events). Used by the auto-toggle logic (§11.2-I).
+    static bool algo_halves_coords(const std::string& algo_name);
 };
 
 } // namespace gui

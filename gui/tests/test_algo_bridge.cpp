@@ -1,16 +1,19 @@
 // gui/tests/test_algo_bridge.cpp — AlgoBridge unit tests (design §3.11.2).
 //
 // Covers: registry completeness, find_or_create idempotency, create()
-// freshness, find_live() visibility, the flood guard (4 consecutive capped
-// batches auto-disable the instance), and set_param/get_param round-trip.
+// freshness, find_live() visibility, the rate-based flood guard (sustained
+// event rate above threshold across consecutive 1s wall-clock windows
+// auto-disables the instance), and set_param/get_param round-trip.
 // All events are synthetic — no real camera or file I/O.
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <metavision/sdk/base/events/event_cd.h>
@@ -118,6 +121,21 @@ TEST(AlgoBridgeRegistry, EventToVideoIsRegistered) {
     EXPECT_FALSE(info->params.empty());
 }
 
+// §五-H1: the "model_loaded" pseudo-param is not a registered key — it is
+// served by the backend fallback in AlgoInstance::get_param that was added
+// for it. In E2VID mode (the default) the value is "true"/"false" depending
+// on whether the ONNX file at model_path could be loaded; it must never be
+// empty.
+TEST(AlgoBridgeInstances, EventToVideoModelLoadedPseudoParam) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("event_to_video");
+    ASSERT_NE(inst, nullptr);
+    const std::string v = inst->get_param("model_loaded");
+    EXPECT_TRUE(v == "true" || v == "false")
+        << "model_loaded must be reachable via the backend fallback, got: '"
+        << v << "'";
+}
+
 // ---------------------------------------------------------------------------
 // find_or_create() idempotency / create() freshness / find_live() visibility.
 // ---------------------------------------------------------------------------
@@ -215,65 +233,60 @@ TEST(AlgoBridgeInstances, EnableDisableState) {
 }
 
 // ---------------------------------------------------------------------------
-// Flood guard (design §5.6.7): kMaxBatchEvents = 50000, kFloodStrikes = 4.
-// Four consecutive batches each exceeding the cap auto-disable the instance.
+// Flood guard (design §5.6.7, rate-based): the instance measures the
+// wall-clock event rate over a sliding 1s window; when the rate exceeds
+// kMaxEventRateEvPerSec (30 Mev/s) for 4 consecutive windows the instance is
+// auto-disabled. Batches are never truncated (the old batch-cap guard that
+// silently dropped window-front events was removed, audit §五-E1).
 // ---------------------------------------------------------------------------
-TEST(AlgoBridgeFloodGuard, OverloadsAfterFourConsecutiveCappedBatches) {
+TEST(AlgoBridgeFloodGuard, OverloadsAfterSustainedHighRate) {
     AlgoBridge bridge;
-    auto inst = bridge.find_or_create("hot_pixel_filter");
+    // The overlay backend is the cheapest (ROI filter + copy), so a tight
+    // push loop sustains far more than the 30 Mev/s threshold.
+    auto inst = bridge.find_or_create("overlay");
     ASSERT_NE(inst, nullptr);
     inst->set_enabled(true);
     ASSERT_FALSE(inst->is_overloaded());
 
-    // Each batch exceeds kMaxBatchEvents (50000) → capped + strike counted.
-    auto batch = make_events(60000);
+    auto batch = make_events(1000000);
     EventCD* data = batch.data();
-    for (int i = 0; i < 3; ++i) {
+    // 4 consecutive 1s windows above threshold are needed; allow up to 15s.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!inst->is_overloaded() &&
+           std::chrono::steady_clock::now() < deadline) {
         inst->push_events(data, data + batch.size());
-        EXPECT_FALSE(inst->is_overloaded())
-            << "should not be overloaded after strike " << (i + 1);
     }
-    // The 4th consecutive capped batch trips the guard.
+    EXPECT_TRUE(inst->is_overloaded())
+        << "sustained >30 Mev/s input should trip the flood guard";
+    EXPECT_FALSE(inst->is_enabled());  // overloaded implies disabled
+
+    // Pushing more events while overloaded is a no-op (counted as dropped).
     inst->push_events(data, data + batch.size());
     EXPECT_TRUE(inst->is_overloaded());
-    EXPECT_FALSE(inst->is_enabled());  // overloaded implies disabled
 
     // clear_overload() resets the state.
     inst->clear_overload();
     EXPECT_FALSE(inst->is_overloaded());
 }
 
-TEST(AlgoBridgeFloodGuard, NonCappedBatchResetsStrikeCounter) {
+TEST(AlgoBridgeFloodGuard, ModerateRateDoesNotOverload) {
     AlgoBridge bridge;
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
     inst->set_enabled(true);
 
-    auto big = make_events(60000);   // capped (strike)
-    auto small = make_events(1000);  // not capped (resets strikes)
-    EventCD* d = big.data();
-    EventCD* s = small.data();
-
-    inst->push_events(d, d + big.size());    // strike 1
-    inst->push_events(d, d + big.size());    // strike 2
-    inst->push_events(s, s + small.size());  // reset
-    inst->push_events(d, d + big.size());    // strike 1 again
-    EXPECT_FALSE(inst->is_overloaded());     // only 1 strike since reset
-}
-
-TEST(AlgoBridgeFloodGuard, OverloadedInstanceIgnoresFurtherEvents) {
-    AlgoBridge bridge;
-    auto inst = bridge.find_or_create("hot_pixel_filter");
-    ASSERT_NE(inst, nullptr);
-    inst->set_enabled(true);
-
-    auto batch = make_events(60000);
-    EventCD* d = batch.data();
-    for (int i = 0; i < 4; ++i) {
-        inst->push_events(d, d + batch.size());
+    // ~50k ev/s for >1s — the same order as slow file playback (the audit
+    // requires 1.5 Mev/s playback to never trip; the threshold is 30 Mev/s).
+    auto batch = make_events(1000);
+    EventCD* data = batch.data();
+    for (int i = 0; i < 60; ++i) {
+        inst->push_events(data, data + batch.size());
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    ASSERT_TRUE(inst->is_overloaded());
-    // Pushing more events must be a no-op (no crash, still overloaded).
-    inst->push_events(d, d + batch.size());
-    EXPECT_TRUE(inst->is_overloaded());
+    EXPECT_FALSE(inst->is_overloaded());
+    EXPECT_TRUE(inst->is_enabled());
+    // Batches are never truncated: nothing was dropped.
+    EXPECT_EQ(inst->total_pushed(), 60000u);
+    EXPECT_EQ(inst->total_dropped(), 0u);
 }
