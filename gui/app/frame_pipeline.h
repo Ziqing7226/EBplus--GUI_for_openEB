@@ -78,6 +78,10 @@ public:
     void seek_file(Metavision::timestamp t_us);
     void set_file_loop(bool on);
     void set_file_duration_us(Metavision::timestamp us);
+    /// @brief Tells the FileFrameGenerator whether the file loader has
+    /// finished streaming the whole file into the buffer (audit §六-P2).
+    /// Called by CameraController when the SDK file camera hits EOF.
+    void set_file_loading_complete(bool complete);
     Metavision::timestamp file_position_us() const;
     Metavision::timestamp file_duration_us() const;
     bool file_is_playing() const;
@@ -112,6 +116,10 @@ signals:
     /// with the displayed frame. Emitted before frame_ready.
     void events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
                              Metavision::timestamp ts);
+
+    /// File mode: emitted once when the FileFrameGenerator's event buffer
+    /// hits its hard cap and further events are dropped (audit §六-C2).
+    void file_buffer_truncated();
 
 private:
     void recreate_window();

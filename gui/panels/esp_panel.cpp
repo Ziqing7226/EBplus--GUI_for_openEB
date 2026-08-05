@@ -169,8 +169,11 @@ EspPanel::EspPanel(QWidget* parent) : AbstractPanel(parent) {
             emit error_message(QString::fromUtf8(e.what()));
         }
     };
-    connect(af_low_,  QOverload<int>::of(&QSpinBox::valueChanged), this, apply_band);
-    connect(af_high_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_band);
+    // Validate/apply on editingFinished (Enter or focus-out) instead of
+    // valueChanged — per-keystroke validation popped a modal error box on
+    // every intermediate value while typing (audit §六-U2).
+    connect(af_low_,  &QSpinBox::editingFinished, this, apply_band);
+    connect(af_high_, &QSpinBox::editingFinished, this, apply_band);
     connect(af_duty_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double v) {
         if (!camera_) return;
         auto* af = camera_->anti_flicker_facility();
@@ -322,10 +325,13 @@ void EspPanel::populate_antiflicker() {
     const int maxfi = static_cast<int>(std::min<uint32_t>(max_f, INT_MAX));
     QSignalBlocker b2(af_low_);
     QSignalBlocker b3(af_high_);
-    af_low_->setValue(static_cast<int>(std::min<uint32_t>(low_f, INT_MAX)));
-    af_high_->setValue(static_cast<int>(std::min<uint32_t>(high_f, INT_MAX)));
+    // setRange BEFORE setValue: with the old (1..100000) range still active,
+    // a hardware value outside it would be silently clamped and the widget
+    // would show a wrong value (audit §六-U4).
     af_low_->setRange(minfi, maxfi);
     af_high_->setRange(minfi, maxfi);
+    af_low_->setValue(static_cast<int>(std::min<uint32_t>(low_f, INT_MAX)));
+    af_high_->setValue(static_cast<int>(std::min<uint32_t>(high_f, INT_MAX)));
     QSignalBlocker b4(af_duty_);
     af_duty_->setRange(duty_min, duty_max);
     af_duty_->setValue(duty);

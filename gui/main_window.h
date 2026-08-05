@@ -30,6 +30,7 @@
 #include <QMainWindow>
 #include <QPointer>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -236,6 +237,14 @@ private:
     std::atomic<Metavision::timestamp> algo_last_xyt_post_us_{0};
     FrameAnnotator annotator_;
     Metavision::timestamp prev_frame_ts_{0};
+    /// Wall-clock time of the previous displayed frame; drives the
+    /// file-mode "Display FPS" metric (event timestamps are meaningless
+    /// there — audit §六-P6).
+    std::chrono::steady_clock::time_point prev_frame_wall_{};
+
+    /// True while closeEvent() is tearing down; AlgoWindow `closing`
+    /// handlers skip modal report dialogs in that case (audit §六-M3).
+    bool closing_app_{false};
 
     /// Performance profiler: measures end-to-end latency (event arrival →
     /// frame display), total events/frames, and drop count. Fed from the

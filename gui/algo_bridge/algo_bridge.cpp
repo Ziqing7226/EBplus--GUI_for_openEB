@@ -257,7 +257,11 @@ std::vector<AlgoParamSpec> roi_params() {
 /// to preserve v1.0.0 behaviour (event_to_video had downsample=true).
 /// preproc_filter_enabled defaults to "false" (opt-in). The preproc_filter_*
 /// params mirror the standalone NoiseFilter params (§4.3.5) so the same 8
-/// denoiser modes are available as a preprocessing stage.
+/// denoiser modes are available as a preprocessing stage. NOTE: the noise
+/// defaults below (baf_dt 1000, stcf corr 0.005, dwf_wlen 2, agep_tau 3000,
+/// harm Q 5, rep_ratio 10, sbp_dt 10000, ...) are the intentional GUI working
+/// points from design §4.3.5 — they deliberately differ from both jAER and
+/// the algo member defaults. Do NOT "align" them.
 std::vector<AlgoParamSpec> preproc_params() {
     return {
         pbool("preproc_filter_enabled", "Preproc: noise filter", "false"),
@@ -852,7 +856,9 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Passive,
          {pint("window_us", "Window (us)", "10000", "1000", "1000000"),
           pint("t0_us", "T0 delay (us)", "500", "0", "1000"),
-          pint("trigger_channel", "Trigger channel", "0", "0", "7")}});
+          pint("trigger_channel", "Trigger channel", "0", "0", "7")},
+         "Requires an external trigger source; none is currently wired in "
+         "this GUI, so the output is always empty (§5-G3)."});
 
     // §4.3.22 Bandpass Filter
     add({"bandpass_filter", "Bandpass Filter", "cv", "self",

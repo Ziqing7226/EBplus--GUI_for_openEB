@@ -124,6 +124,9 @@ void EventDisplayWidget::cleanup_gl() {
 void EventDisplayWidget::paintGL() {
     const int widget_w = width() * devicePixelRatioF();
     const int widget_h = height() * devicePixelRatioF();
+    // Defensive: a zero-sized widget would divide by zero in the letterbox
+    // math below (unreachable while setMinimumSize holds — audit §六-D1).
+    if (widget_w <= 0 || widget_h <= 0) return;
 
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -308,7 +311,11 @@ bool EventDisplayWidget::widget_to_sensor(const QPoint& widget_pos, QPoint& sens
     const float sy = static_cast<float>(widget_pos.y() - vp.y()) / vp.height() * img_h;
     const int ix = static_cast<int>(sx);
     const int iy = static_cast<int>(sy);
-    sensor_pos = QPoint(std::clamp(ix, 0, img_w - 1), std::clamp(iy, 0, img_h - 1));
+    // Clamp to [0, img_w] / [0, img_h] (NOT img_w-1): this mapping is used
+    // for ROI drag corners, where the end corner is exclusive — clamping to
+    // img_w-1 made a full-width drag produce w=img_w-1, permanently
+    // excluding the rightmost/bottom-most pixel row (audit §六-D2).
+    sensor_pos = QPoint(std::clamp(ix, 0, img_w), std::clamp(iy, 0, img_h));
     return true;
 }
 

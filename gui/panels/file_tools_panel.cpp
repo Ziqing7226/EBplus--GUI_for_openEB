@@ -2,11 +2,13 @@
 
 #include "file_tools_panel.h"
 
+#include <QCursor>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
@@ -180,20 +182,32 @@ void FileToolsPanel::on_info() {
         this, tr("Source file"), QString(),
         tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
     if (src.isEmpty()) return;
+    // info() opens the file synchronously on the GUI thread — for a large
+    // file without a .tmp_index this can take seconds. Show a busy cursor
+    // and disable the button so the stall is visible and can't be
+    // re-triggered (audit §六-U6; not moving threads this round).
+    btn_info_->setEnabled(false);
+    QGuiApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
+    QString text;
+    QString err;
     try {
         const auto fi = converter_->info(src);
-        QMessageBox::information(this, tr("File Info"),
-            tr("Path: %1\nIntegrator: %2\nSerial: %3\nPlugin: %4\nEncoding: %5\n"
-               "Geometry: %6 x %7\nDuration: %8 s")
-                .arg(fi.path, fi.integrator, fi.serial, fi.plugin, fi.encoding)
-                .arg(fi.width).arg(fi.height)
-                .arg(fi.duration_us / 1.0e6, 0, 'f', 3));
+        text = tr("Path: %1\nIntegrator: %2\nSerial: %3\nPlugin: %4\nEncoding: %5\n"
+                  "Geometry: %6 x %7\nDuration: %8 s")
+                   .arg(fi.path, fi.integrator, fi.serial, fi.plugin, fi.encoding)
+                   .arg(fi.width).arg(fi.height)
+                   .arg(fi.duration_us / 1.0e6, 0, 'f', 3);
     } catch (const std::exception& e) {
-        QMessageBox::warning(this, tr("File Info"),
-            tr("Failed to read file info:\n%1").arg(QString::fromUtf8(e.what())));
+        err = tr("Failed to read file info:\n%1").arg(QString::fromUtf8(e.what()));
     } catch (...) {
-        QMessageBox::warning(this, tr("File Info"),
-            tr("Failed to read file info."));
+        err = tr("Failed to read file info.");
+    }
+    QGuiApplication::restoreOverrideCursor();
+    btn_info_->setEnabled(true);
+    if (err.isEmpty()) {
+        QMessageBox::information(this, tr("File Info"), text);
+    } else {
+        QMessageBox::warning(this, tr("File Info"), err);
     }
 }
 

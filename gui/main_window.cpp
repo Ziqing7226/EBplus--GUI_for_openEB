@@ -147,6 +147,16 @@ MainWindow::MainWindow(QWidget* parent)
         auto* grip = new ResizeGrip(p, this);
         resize_grips_.push_back(grip);
     }
+    // Position the grips immediately: resizeEvent() is the only other place
+    // that repositions them, and if the WM delivers no resize event after
+    // show() the grips would keep their default geometry (0,0,100,30) —
+    // raised above the title bar's File menu (audit §六-M1).
+    {
+        const QRect r = rect();
+        for (auto* grip : resize_grips_) {
+            if (grip) grip->reposition(r);
+        }
+    }
 
     // Capture the factory layout (all docks in their default positions) so
     // reset_layout() can restore it. Must be called before load_default()
@@ -194,6 +204,11 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (layout_manager_) layout_manager_->save_default();
+
+    // Mark shutdown in progress: the AlgoWindow `closing` handlers below
+    // consult this to skip modal report dialogs that would block the close
+    // sequence (audit §六-M3).
+    closing_app_ = true;
 
     // ---- Phase 1: stop all data sources BEFORE deleting child widgets. ----
     // The CD callback and frame pipeline run on the camera's data thread.
@@ -776,6 +791,7 @@ void MainWindow::wire_signals() {
         // members are destroyed.
         remove_algo_callback();
         prev_frame_ts_ = 0;
+        prev_frame_wall_ = {};
         perf_meter_.reset();
         last_rate_eps_ = 0.0;
         settings_->information_panel()->clear();
@@ -809,6 +825,10 @@ void MainWindow::wire_signals() {
         stop_rec_blink();
     });
     connect(&camera_, &CameraController::stopped, this, [this]() {
+        // File source: the SDK camera stopping after buffering all events is
+        // NOT playback stopping — the FileFrameGenerator keeps playing from
+        // its buffer (same exemption as PlaybackController, audit §六-P3).
+        if (camera_.is_file_source()) return;
         // Auto-stop the recorder when the camera stops (user stop, file EOF,
         // runtime error). Without this, the recorder keeps running with a
         // dead camera — the flush timer ticks but get_latest_raw_data()
@@ -842,7 +862,21 @@ void MainWindow::wire_signals() {
                 display_->set_frame(frame);
                 settings_->statistics_panel()->set_timestamp(ts);
                 status_ts_->setText(QStringLiteral("t: %1 s").arg(ts / 1.0e6, 0, 'f', 3));
-                if (prev_frame_ts_ > 0 && ts > prev_frame_ts_) {
+                if (camera_.is_file_source()) {
+                    // File mode: ts is the FILE's timestamp, so ts-delta FPS
+                    // is distorted by the playback rate (slow motion shows
+                    // absurd values like 10000 fps). Use the wall-clock
+                    // interval between displayed frames instead (audit §六-P6).
+                    const auto now = std::chrono::steady_clock::now();
+                    if (prev_frame_wall_.time_since_epoch().count() > 0) {
+                        const double dt =
+                            std::chrono::duration<double>(now - prev_frame_wall_).count();
+                        if (dt > 0.0) {
+                            settings_->statistics_panel()->set_fps(1.0 / dt);
+                        }
+                    }
+                    prev_frame_wall_ = now;
+                } else if (prev_frame_ts_ > 0 && ts > prev_frame_ts_) {
                     const double fps = 1.0e6 / static_cast<double>(ts - prev_frame_ts_);
                     settings_->statistics_panel()->set_fps(fps);
                 }
@@ -1100,8 +1134,9 @@ void MainWindow::on_file_opened_for_playback(const QString& path) {
     // Route through the playback controller so it can capture duration and
     // start the position probe timer.
     if (!playback_.open_file(path)) {
-        QMessageBox::warning(this, tr("Open file"),
-                             tr("Failed to open event file:\n%1").arg(path));
+        // The failure was already reported via CameraController::error /
+        // PlaybackController::error (message box / status bar) — showing a
+        // second dialog here would duplicate it (audit §六-C3).
         return;
     }
     add_recent_file(path);
@@ -1409,8 +1444,13 @@ void MainWindow::install_algo_callback() {
                                 if (xyt_algo_) {
                                     const auto tw = xyt_algo_->get_param("time_window_us");
                                     if (!tw.empty()) {
-                                        xyt_display_->set_time_window_ms(
-                                            static_cast<float>(std::stoi(tw)) / 1000.0f);
+                                        // Malformed param (hand-edited JSON)
+                                        // must not throw out of the slot —
+                                        // keep the current window (audit §六-U5).
+                                        try {
+                                            xyt_display_->set_time_window_ms(
+                                                static_cast<float>(std::stoi(tw)) / 1000.0f);
+                                        } catch (const std::exception&) {}
                                     }
                                 }
                                 xyt_display_->push_events(copy->data(),
@@ -1543,8 +1583,12 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
         if (xyt_algo_) {
             const auto tw = xyt_algo_->get_param("time_window_us");
             if (!tw.empty()) {
-                xyt_display_->set_time_window_ms(
-                    static_cast<float>(std::stoi(tw)) / 1000.0f);
+                // Malformed param (hand-edited JSON) must not throw out of
+                // the slot — keep the current window (audit §六-U5).
+                try {
+                    xyt_display_->set_time_window_ms(
+                        static_cast<float>(std::stoi(tw)) / 1000.0f);
+                } catch (const std::exception&) {}
             }
         }
         xyt_display_->push_events(copy->data(), copy->data() + copy->size());
@@ -1592,7 +1636,14 @@ void MainWindow::process_algo_results(QImage& frame) {
         } catch (...) {
             continue;
         }
-        inst->apply_strategy(frame, r, ctx);
+        // apply_strategy runs mat_to_qimage / frame.copy etc. — a
+        // cv::Exception escaping this Qt slot would terminate the app
+        // (audit §五-H2). Skip this algorithm's output for one frame instead.
+        try {
+            inst->apply_strategy(frame, r, ctx);
+        } catch (...) {
+            continue;
+        }
     }
 
     // Draw the ROI rectangle of any enabled self-developed algorithm so the
@@ -1863,8 +1914,12 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
             inst->set_param("__final_report", "1");
             auto r = inst->pull_result();
             inst->set_enabled(false);
-            QMessageBox::information(this, tr("Sensor Self-Test Report"),
-                QString::fromStdString(r.status));
+            // During application shutdown the modal report would block the
+            // close sequence — skip it (the window is going away anyway).
+            if (!closing_app_) {
+                QMessageBox::information(this, tr("Sensor Self-Test Report"),
+                    QString::fromStdString(r.status));
+            }
         } else {
             if (inst) inst->set_enabled(false);
         }
@@ -1906,8 +1961,12 @@ void MainWindow::on_open_xyt_view() {
         if (xyt_algo_) {
             const auto tw_us = xyt_algo_->get_param("time_window_us");
             if (!tw_us.empty()) {
-                xyt_display_->set_time_window_ms(
-                    static_cast<float>(std::stoi(tw_us)) / 1000.0f);
+                // Malformed param (hand-edited JSON) must not throw out of
+                // the slot — keep the display's default window (audit §六-U5).
+                try {
+                    xyt_display_->set_time_window_ms(
+                        static_cast<float>(std::stoi(tw_us)) / 1000.0f);
+                } catch (const std::exception&) {}
             }
         }
         // Sync the sidebar checkbox (blocked, no re-entry).

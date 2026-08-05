@@ -556,6 +556,14 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
                 live->set_param(kv.first, kv.second);
             }
             if (entry.contains("enabled")) {
+                // Enforce single-algorithm mutual exclusion (design §5.6.6):
+                // enabling one algorithm from a config must disable every
+                // other live instance, otherwise two algorithms run at once.
+                if (entry.value("enabled").toBool()) {
+                    for (auto& other : bridge->list_live()) {
+                        if (other != live) other->set_enabled(false);
+                    }
+                }
                 live->set_enabled(entry.value("enabled").toBool());
             }
         } else {

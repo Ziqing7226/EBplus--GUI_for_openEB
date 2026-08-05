@@ -110,7 +110,8 @@ public:
         // CURRENT frame's brightness by the inter-frame interval
         // (exp(-dt_frame/tau)). It is NOT cross-frame temporal smoothing
         // (the old comment claiming "extra smoothing" was wrong).
-        if (current_t_ > last_frame_t_ && decay_tau_ms_ > 0.0f) {
+        if (last_frame_t_ >= 0 && current_t_ > last_frame_t_ &&
+            decay_tau_ms_ > 0.0f) {
             const double dt_us =
                 static_cast<double>(current_t_ - last_frame_t_);
             const double tau_us =
@@ -254,7 +255,9 @@ public:
         e2vid_event_buffer_.clear();
         intensity_rescaler_.reset();
         current_t_ = 0;
-        last_frame_t_ = 0;
+        last_frame_t_ = -1;  // -1 = no frame yet: skip dimming on the first
+                             // frame after reset (dt vs 0 would be ~1e9 us on
+                             // live cameras, dimming the frame to black).
     }
 
     int width() const { return width_; }
@@ -893,7 +896,7 @@ private:
     std::vector<WindowedEvent> event_window_;  ///< Time-ordered event buffer.
     std::vector<double> log_intensity_;
     Metavision::timestamp current_t_{0};
-    Metavision::timestamp last_frame_t_{0};   ///< Last get_frame() timestamp
+    Metavision::timestamp last_frame_t_{-1};  ///< Last get_frame() timestamp (-1 = none)
     /// Per-frame dimming time constant (ms). Default 0 (disabled). Applied
     /// right after the sliding-window rebuild, so it dims the current frame
     /// by the inter-frame interval — NOT cross-frame temporal smoothing.

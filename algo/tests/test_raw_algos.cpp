@@ -387,7 +387,7 @@ TEST_F(RawAlgoTest, LineSegmentsAreFinite) {
 // =========================================================================
 TEST_F(RawAlgoTest, HoughCirclesAreFinite) {
     const auto& s = stream();
-    HoughCircleTracker hct(s.width(), s.height(), 5, 30, 30);
+    HoughCircleTracker hct(s.width(), s.height(), 30, 30);
     for (const auto& batch : s.batches(kBatchWindowUs)) {
         EventPacket pkt(batch.data(), batch.size());
         auto circles = hct.process(pkt);
