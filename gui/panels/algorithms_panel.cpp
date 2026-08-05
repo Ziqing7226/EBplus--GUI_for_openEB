@@ -800,14 +800,24 @@ void AlgorithmsPanel::refresh_param_values() {
     for (auto& [algo_name, state] : algo_panel_state_) {
         auto inst = bridge_->find_live(algo_name);
         for (auto& row : state.rows) {
-            // Live instance values win; fall back to the N1 cache that
-            // ConfigManager populated for algorithms without a live instance.
-            std::string val = inst ? inst->get_param(row.key) : std::string();
-            if (val.empty()) val = bridge_->get_cached_algo_param(algo_name, row.key);
-            if (val.empty()) continue;
+            // Live instance values win (registered keys always produce a
+            // value, possibly a meaningful empty string); fall back to the
+            // N1 cache for non-live algorithms. nullopt = not configured —
+            // keep the widget's current value instead of blanking it.
+            std::string val;
+            bool have_value = false;
+            if (inst) {
+                val = inst->get_param(row.key);
+                have_value = true;
+            } else if (auto cv = bridge_->get_cached_algo_param(algo_name, row.key)) {
+                val = std::move(*cv);
+                have_value = true;
+            }
+            if (!have_value) continue;
             if (!row.field) continue;
             const QSignalBlocker blk(row.field);
             if (auto* cmb = qobject_cast<QComboBox*>(row.field)) {
+                if (val.empty()) continue;
                 // Enum/bool combos: item text may be "idx=Label" — match the
                 // full text first, then the token before '='.
                 int idx = -1;
@@ -819,12 +829,25 @@ void AlgorithmsPanel::refresh_param_values() {
                         break;
                     }
                 }
+                // Bool combos ("false"/"true") also accept legacy 0/1 from
+                // hand-edited or older config files.
+                if (idx < 0 && cmb->count() == 2 &&
+                    cmb->itemText(0) == "false" && cmb->itemText(1) == "true") {
+                    if (val == "0") idx = 0;
+                    else if (val == "1") idx = 1;
+                }
                 if (idx >= 0) cmb->setCurrentIndex(idx);
             } else if (auto* sp = qobject_cast<QSpinBox*>(row.field)) {
+                if (val.empty()) continue;
                 sp->setValue(QString::fromStdString(val).toInt());
             } else if (auto* dsp = qobject_cast<QDoubleSpinBox*>(row.field)) {
+                if (val.empty()) continue;
                 dsp->setValue(QString::fromStdString(val).toDouble());
             } else if (auto* le = qobject_cast<QLineEdit*>(row.field)) {
+                // An empty string IS a meaningful value for text params
+                // (e.g. clearing model_path) — sync it too, otherwise the
+                // panel keeps displaying the pre-load path while the algo
+                // runs with none.
                 le->setText(QString::fromStdString(val));
             }
         }

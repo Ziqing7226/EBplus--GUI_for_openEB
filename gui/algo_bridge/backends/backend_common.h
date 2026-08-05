@@ -179,6 +179,11 @@ struct Preprocessor {
     std::vector<cv::Point2f> undistort_lut_;  ///< Forward LUT, row-major [y*eff_w + x]
     int undistort_eff_w_{0}, undistort_eff_h_{0};
     int last_roi_x_{-1}, last_roi_y_{-1}, last_factor_{-1};
+    /// Circuit breaker for repeated LUT rebuild failures (audit §五-F3
+    /// follow-up): while set, apply() does not retry rebuild_undistort_lut.
+    /// Cleared when any rebuild input changes (path/K via set_param,
+    /// downsample factor, ROI origin) so a fixed config gets ONE retry.
+    bool undistort_lut_failed_{false};
     bool undistort_lut_valid_{false};
 
     void init(int w, int h) {
@@ -214,6 +219,7 @@ struct Preprocessor {
         }
         if (k == "preproc_undistort_enabled") {
             undistort_enabled_ = to_b(v);
+            undistort_lut_failed_ = false;  // re-arm on toggle
             return true;
         }
         if (k == "preproc_undistort_path") {
@@ -236,6 +242,7 @@ struct Preprocessor {
                 undistort_image_size_ = cv::Size(0, 0);
             }
             undistort_lut_valid_ = false;
+            undistort_lut_failed_ = false;  // new K gets a fresh attempt
             return true;
         }
         static const std::string pfp = "preproc_filter_";
@@ -318,12 +325,20 @@ struct Preprocessor {
         // (mirrors JAER SingleCameraCalibration.undistortEvent).
         if (undistort_enabled_ && !undistort_K_.empty() && !undistort_dist_.empty()) {
             const int f = factor();
-            if (!undistort_lut_valid_ ||
-                roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_) {
+            // A geometry change re-arms the circuit breaker: the new inputs
+            // get exactly one rebuild attempt.
+            if (roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_) {
+                undistort_lut_failed_ = false;
+            }
+            if (!undistort_lut_failed_ &&
+                (!undistort_lut_valid_ ||
+                 roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_)) {
                 // cv::undistortPoints can throw on malformed K/dist; without a
                 // guard the exception escapes into the event pipeline and is
                 // swallowed by a catch(...) upstream, silently killing the
-                // stream (audit §五-F3).
+                // stream (audit §五-F3). A failure latches
+                // undistort_lut_failed_ so a deterministically-bad K doesn't
+                // retry + throw + log on every event batch.
                 try {
                     rebuild_undistort_lut(roi_x, roi_y, f);
                 } catch (const cv::Exception& e) {
@@ -331,6 +346,11 @@ struct Preprocessor {
                                  "Preprocessor: undistort LUT rebuild failed: %s\n",
                                  e.what());
                     undistort_lut_valid_ = false;
+                    undistort_lut_failed_ = true;
+                    // Anchor the geometry so the same inputs are not retried.
+                    last_roi_x_ = roi_x;
+                    last_roi_y_ = roi_y;
+                    last_factor_ = f;
                 }
             }
             if (undistort_lut_valid_ && undistort_eff_w_ > 0 && undistort_eff_h_ > 0) {

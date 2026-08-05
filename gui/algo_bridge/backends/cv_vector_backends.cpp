@@ -190,6 +190,15 @@ class HoughCircleBackend final : public AlgoBackend {
     // params (§三-32); the ctor no longer takes them.
     int max_radius_{30};
     int threshold_{50};
+    // Adaptive defaults: while the user hasn't explicitly set a param,
+    // rebuild() derives it from the WORKING resolution (post-ROI,
+    // post-downsample) so the detector stays sane across ROI sizes:
+    //   max_radius = min(w,h)/8  (45px at full 720p+downsample, 8px in a
+    //                            128px downsampled ROI)
+    //   threshold  = 0.25 * 2π * max_radius  (≈ a quarter of the circle
+    //                            perimeter in votes; ≈ jAER's 15 at r=8)
+    bool radius_user_set_{false};
+    bool threshold_user_set_{false};
     // jAER params (persisted so rebuild() preserves them)
     float decay_{1.0f};
     int buffer_length_{4000};
@@ -217,8 +226,19 @@ public:
         const int ah = roi_.enabled ? roi_.rh : sensor_h_;
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
+        const int w = aw / f, h = ah / f;
+        // Adaptive defaults for untouched params (see member comments):
+        // derive from the working resolution so a small ROI doesn't keep
+        // full-sensor parameters (and vice versa).
+        if (!radius_user_set_) {
+            max_radius_ = std::max(5, std::min(500, std::min(w, h) / 8));
+        }
+        if (!threshold_user_set_) {
+            threshold_ = std::max(2, std::min(500,
+                static_cast<int>(std::lround(0.25 * 2.0 * M_PI * max_radius_))));
+        }
         algo_ = std::make_unique<gui_algo::HoughCircleTracker>(
-            aw / f, ah / f, max_radius_, threshold_,
+            w, h, max_radius_, threshold_,
             decay_, buffer_length_, nr_max_, decay_mode_, loc_depression_);
     }
     void set_param(const std::string& k, const std::string& v) override {
@@ -235,8 +255,11 @@ public:
         const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
         bool roi_changed = false;
-        if (k == "max_radius") { max_radius_ = to_i(v); need_rebuild = true; }
-        else if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
+        // Note: AlgoInstance replays the REGISTRY DEFAULTS through set_param
+        // at construction — that must not count as "user set", so the flag
+        // only flips when the value differs from the registered default.
+        if (k == "max_radius") { max_radius_ = to_i(v); if (max_radius_ != 30) radius_user_set_ = true; need_rebuild = true; }
+        else if (k == "threshold") { threshold_ = to_i(v); if (threshold_ != 50) threshold_user_set_ = true; if (algo_) algo_->set_threshold(threshold_); }
         else if (k == "decay") { decay_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_decay(decay_); }
         else if (k == "buffer_length") { buffer_length_ = to_i(v); if (algo_) algo_->set_buffer_length(buffer_length_); }
         else if (k == "nr_max") { nr_max_ = to_i(v); if (algo_) algo_->set_nr_max(nr_max_); }
@@ -345,7 +368,12 @@ public:
             }
         }
         r.status = "hough_circle: " + std::to_string(last_.size()) + " circles" +
-                   std::string(roi_.enabled ? " (ROI)" : " (full)");
+                   std::string(roi_.enabled ? " (ROI)" : " (full)") +
+                   // Effective params may be resolution-adaptive (when the
+                   // user hasn't set them) — surface them so the status line
+                   // shows what the detector actually runs with.
+                   " r=" + std::to_string(max_radius_) +
+                   " thr=" + std::to_string(threshold_);
         return r;
     }
     void reset() override {

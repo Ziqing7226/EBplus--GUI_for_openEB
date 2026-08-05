@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -71,6 +72,15 @@ struct AlgoInfo {
     /// limitations such as "requires an external trigger source"). Empty =
     /// no tooltip. Kept last so aggregate initialisers are unaffected.
     std::string description;
+    /// Whether the algorithm's user-visible output honours the global
+    /// Algorithm ROI. False when the visible output bypasses the backend
+    /// ROI path (xyt_visualizer: SpaceTimeDisplay is fed raw events in
+    /// MainWindow, so its backend's RoiFilter only affects the status
+    /// text). The main display hides the ROI frame while such an
+    /// algorithm is active — drawing it would falsely imply the output is
+    /// ROI-cropped. Kept last (with default) so aggregate initialisers
+    /// are unaffected.
+    bool uses_algo_roi{true};
 };
 
 /// A live algorithm instance. Holds a real AlgoBackend that wraps an algo/ class.
@@ -238,11 +248,13 @@ public:
                            const std::map<std::string, std::string>& params);
 
     /// @brief Reads a cached parameter for an algorithm with no live
-    /// instance (the N1 cache above). Returns an empty string when neither
-    /// the algorithm nor the key is cached. Used by AlgorithmsPanel to
-    /// refresh its controls after a config load (audit §5.9-疑点4).
-    std::string get_cached_algo_param(const std::string& name,
-                                      const std::string& key) const;
+    /// instance (the N1 cache above). Returns std::nullopt when neither
+    /// the algorithm nor the key is cached — distinct from a cached empty
+    /// string, which is a meaningful value (e.g. a cleared model_path).
+    /// Used by AlgorithmsPanel to refresh its controls after a config load
+    /// (audit §5.9-疑点4).
+    std::optional<std::string> get_cached_algo_param(
+        const std::string& name, const std::string& key) const;
 
     /// @brief Looks up a live instance by name. Returns nullptr if no live
     /// instance exists (either never created or already destroyed).

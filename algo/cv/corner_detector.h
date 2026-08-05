@@ -381,14 +381,34 @@ private:
     }
 
     void detect_harris(std::vector<Detected>& out) {
+        // Restrict the dense scan to the active region: cornerHarris +
+        // dilate + the per-pixel collect_maxima loop are O(W×H) per
+        // accumulation window, which at full sensor (1280×720) saturates the
+        // pipeline every 10 ms window regardless of event count — the GUI
+        // froze (latent defect exposed by the §五-A1 label fix; the true
+        // Harris path had never run in the GUI before). Cost must be
+        // proportional to activity, not resolution.
+        cv::Mat active8;
+        cv::compare(accum_, 0.0F, active8, cv::CMP_GT);
+        cv::Rect bb = cv::boundingRect(active8);
+        if (bb.empty()) return;
+        // Pad so the 3x3 Sobel taps and the dilate kernel see the same
+        // neighbourhood a full-frame scan would (clamped to the frame).
+        constexpr int kPad = 8;
+        bb = cv::Rect(std::max(0, bb.x - kPad), std::max(0, bb.y - kPad),
+                      std::min(width_ - bb.x, bb.width + 2 * kPad),
+                      std::min(height_ - bb.y, bb.height + 2 * kPad));
         cv::Mat strength;
-        cv::cornerHarris(accum_, strength, 3, 3, 0.04);
+        cv::cornerHarris(accum_(bb), strength, 3, 3, 0.04);
         cv::normalize(strength, strength, 0.0, 1.0, cv::NORM_MINMAX);
-        collect_maxima(strength, out);
+        collect_maxima(strength, out, bb.x, bb.y);
     }
 
-    void collect_maxima(const cv::Mat& strength, std::vector<Detected>& out) {
+    void collect_maxima(const cv::Mat& strength, std::vector<Detected>& out,
+                        int x_off = 0, int y_off = 0) {
         const double thr = threshold_;
+        const int sw = strength.cols;
+        const int sh = strength.rows;
         int ksize = std::min(15, std::max(3, track_radius_px_ * 2 + 1));
         if ((ksize & 1) == 0) ++ksize;  // ensure odd
         const cv::Mat kernel = cv::getStructuringElement(
@@ -396,11 +416,11 @@ private:
         cv::Mat dil;
         cv::dilate(strength, dil, kernel);
         cv::Mat mask = (strength == dil) & (strength > thr);
-        for (int y = 0; y < height_; ++y) {
-            for (int x = 0; x < width_; ++x) {
+        for (int y = 0; y < sh; ++y) {
+            for (int x = 0; x < sw; ++x) {
                 if (mask.at<uchar>(y, x)) {
-                    out.push_back(Detected{static_cast<float>(x),
-                                           static_cast<float>(y),
+                    out.push_back(Detected{static_cast<float>(x + x_off),
+                                           static_cast<float>(y + y_off),
                                            strength.at<float>(y, x)});
                 }
             }

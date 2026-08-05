@@ -3,7 +3,9 @@
 // ✅ 移植自 jAER HoughCircleTracker (net.sf.jaer.eventprocessing.tracking.
 // HoughCircleTracker, by Jan Funke / Lorenz Muller). 本实现忠实复刻 jAER 的
 // 算法结构：单固定半径 + 2D 累加器 (width×height) + 非指数衰减
-// 1/(0.0001*decay*dt) + FIFO 事件历史 + 整数椭圆绘制 (8 扇区) + 位置抑制
+// 1/(0.0001*decay*dt)（dt 小于参考周期 T 时按 exp((dt-T)/T) 续延，见
+// accumulate_only 注释——jAER 原公式在该区间会放大，但其渲染周期包节奏
+// 下永不触发）+ FIFO 事件历史 + 整数椭圆绘制 (8 扇区) + 位置抑制
 // (locDepression) NMS，无持久航迹 ID。对应设计 §4.3.15。Header-only.
 //
 // 与 jAER 的少量差异（为兼容既有 backend/test API 所做，不影响算法语义）：
@@ -48,10 +50,11 @@ struct HoughCircle {
 /// Maintains a single fixed-radius 2D accumulator. Each event votes for all
 /// circle centers on the integer ellipse of radius `max_radius_px` around it
 /// (8-sector integer ellipse drawing). The accumulator decays each packet by
-/// the non-exponential factor 1/(0.0001*decay*dt). A FIFO event history is
-/// kept; when `decay_mode` is off, the least recent event's votes are
-/// subtracted. Local maxima above `threshold` are reported, and their
-/// neighborhoods are suppressed via `loc_depression`.
+/// the non-exponential factor 1/(0.0001*decay*dt) for dt >= T (jAER-exact)
+/// and exp((dt-T)/T) below T, where T = 1/(0.0001*decay). A FIFO event
+/// history is kept; when `decay_mode` is off, the least recent event's
+/// votes are subtracted. Local maxima above `threshold` are reported, and
+/// their neighborhoods are suppressed via `loc_depression`.
 class HoughCircleTracker {
 public:
     /// @brief Constructor.
@@ -103,13 +106,27 @@ public:
             cur_t = packet[packet.size() - 1].t;
         }
 
-        // jAER non-exponential decay: factor = 1/(0.0001*decay*dt).
+        // jAER non-exponential decay: factor = 1/(0.0001*decay*dt) = T/dt
+        // with T = 1/(0.0001*decay) (10 ms at decay=1).
         // Apply even when the packet is empty (cur_t provided) so last_t_
         // stays monotonic across ROI-filtered empty packets (§11.2-H).
+        //
+        // 与 jAER 的文档化差异（cadence 自适应）：jAER 原公式在 dt < T 时
+        // factor > 1（放大而非衰减），但 jAER 的包节奏是渲染周期（~30ms），
+        // 该分支永远不会触发；本 GUI 的包节奏是 SDK 批次（live ~1-5ms）或
+        // 显示窗（文件 33ms），G4 修复后每包都衰减：
+        //   - dt >= T：factor = T/dt，与 jAER 逐位一致；
+        //   - dt <  T：factor = exp((dt-T)/T)，在 dt=T 处连续、dt→0 时
+        //     趋于 e^-1——真实衰减。直接 clamp 到 1 曾导致小 dt 下零衰减、
+        //     票数只增不减，表现为满屏误检圆；不 clamp 则累加器指数饱和，
+        //     平局裁决产生右下角幻影圆。
         if (width_ > 0 && height_ > 0 && decay_mode_ && decay_ > 0.0f) {
             const float dt = static_cast<float>(cur_t - last_t_);
             if (dt > 0.0f) {
-                const float decay_factor = 1.0f / (0.0001f * decay_ * dt);
+                const float ref_us = 1.0f / (0.0001f * decay_);  // jAER "T"
+                const float decay_factor =
+                    (dt >= ref_us) ? (ref_us / dt)
+                                   : std::exp((dt - ref_us) / ref_us);
                 for (float& v : accum_) v *= decay_factor;
             }
         }

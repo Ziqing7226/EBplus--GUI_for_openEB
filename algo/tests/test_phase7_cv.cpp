@@ -494,3 +494,43 @@ TEST(CornerDetectorTest, ProcessWithEvents) {
     d.process(pkt);
     SUCCEED();
 }
+
+TEST(CornerDetectorTest, HarrisDetectsAtCorrectCoordinates) {
+    // Harris on a large frame with a small active region: detection is
+    // restricted to the activity bounding box (performance), but reported
+    // coordinates must stay in frame space — this guards the sub-image
+    // offset (a missing offset would report bb-relative coords near (8,8)).
+    CornerDetector d(128, 128, CornerDetector::Mode::Harris);
+    d.set_min_track_len(3);
+    d.set_track_radius_px(8);
+    std::vector<Event> ev;
+    // L-shaped corner at (90,90): horizontal arm y=90 x∈[86,94], vertical
+    // arm x=90 y∈[86,94]. Re-feed the pattern every 10 ms accumulation
+    // window for 12 windows (accumulation frames reset after each window).
+    // Feed one packet PER window: process() evaluates the window boundary
+    // once per call, so a single giant packet would only trigger one
+    // detection/track cycle.
+    for (int w = 0; w < 12; ++w) {
+        const Metavision::timestamp base = w * 10000;
+        ev.clear();
+        for (int i = -4; i <= 4; ++i) {
+            for (int r = 0; r < 3; ++r) {
+                ev.emplace_back(static_cast<std::uint16_t>(90 + i),
+                                static_cast<std::uint16_t>(90), 1, base + 100 + r * 100);
+                ev.emplace_back(static_cast<std::uint16_t>(90),
+                                static_cast<std::uint16_t>(90 + i), 1, base + 200 + r * 100);
+            }
+        }
+        auto pkt = make_packet(ev);
+        d.process(pkt);
+    }
+    bool found = false;
+    for (const auto& c : d.corners()) {
+        if (std::abs(c.x - 90.0F) <= 4.0F && std::abs(c.y - 90.0F) <= 4.0F) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "Harris corner not found near (90,90); got "
+                       << d.corners().size() << " corners";
+}

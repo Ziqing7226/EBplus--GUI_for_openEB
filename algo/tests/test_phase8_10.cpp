@@ -181,6 +181,76 @@ TEST(HoughCircleTrackerTest, ProcessEmpty) {
     EXPECT_TRUE(result.empty());
 }
 
+TEST(HoughCircleTrackerTest, SmallDtPacketsDoNotAmplifyAccumulator) {
+    // Regression: the jAER decay formula 1/(0.0001*decay*dt) is > 1 for
+    // dt < 10 ms. jAER never hits that branch (render-cycle packets), but
+    // the GUI feeds SDK batches (~1-5 ms) — the accumulator was amplified
+    // every packet until all cells saturated to the same value, and the
+    // scan-order tie-break then reported a phantom circle at the bottom-
+    // right interior cell, persisted by maxCoordinate. The factor is now
+    // jAER-exact for dt >= T and exp((dt-T)/T) below T.
+    HoughCircleTracker t(64, 48);
+    t.set_max_radius_px(8);
+    // Many small-dt packets, one event each at the center.
+    for (int i = 0; i < 500; ++i) {
+        std::vector<Event> ev;
+        ev.emplace_back(32, 24, 1, 1000 + i * 1000);  // 1 ms apart
+        auto pkt = make_packet(ev);
+        t.accumulate_only(pkt);
+    }
+    const auto& accum = t.accum();
+    const float mx = *std::max_element(accum.begin(), accum.end());
+    ASSERT_TRUE(std::isfinite(mx));
+    // No phantom detection at the bottom-right interior cell (62,46) —
+    // the saturated-tiebreak artifact. (A legitimate detection near the
+    // center is fine.)
+    for (const auto& c : t.find_peaks()) {
+        EXPECT_FALSE(std::abs(c.center.x - 62.0F) <= 1.0F &&
+                     std::abs(c.center.y - 46.0F) <= 1.0F)
+            << "phantom bottom-right circle detected";
+    }
+}
+
+TEST(HoughCircleTrackerTest, DecayAppliesAtSmallPacketCadence) {
+    // The earlier clamp-to-1 fix stalled decay below T (factor == 1 for
+    // dt < 10 ms): votes never expired and every persistent structure
+    // became a false-positive circle. The exp continuation must really
+    // shrink the accumulator at small packet cadence.
+    HoughCircleTracker t(64, 48);
+    t.set_max_radius_px(8);
+    std::vector<Event> ev;
+    ev.emplace_back(32, 24, 1, 1000);
+    auto pkt = make_packet(ev);
+    t.accumulate_only(pkt);
+    const float v0 = *std::max_element(t.accum().begin(), t.accum().end());
+    ASSERT_GT(v0, 0.0f);
+    for (int i = 0; i < 20; ++i) {  // +1 ms per empty packet
+        std::vector<Event> empty;
+        auto ep = make_packet(empty);
+        t.accumulate_only(ep, 1000 + (i + 1) * 1000);
+    }
+    const float v1 = *std::max_element(t.accum().begin(), t.accum().end());
+    EXPECT_LT(v1, v0 * 0.5f);
+}
+
+TEST(HoughCircleTrackerTest, DecayMatchesJaeRAtRenderCadence) {
+    // jAER parity must be exact in jAER's operating range (dt >= T):
+    // decay=1, dt=30 ms → factor 1/(0.0001*1*30000) = 1/3.
+    HoughCircleTracker t(64, 48);
+    t.set_max_radius_px(8);
+    std::vector<Event> ev;
+    ev.emplace_back(32, 24, 1, 1000);
+    auto pkt = make_packet(ev);
+    t.accumulate_only(pkt);
+    const float v0 = *std::max_element(t.accum().begin(), t.accum().end());
+    ASSERT_GT(v0, 0.0f);
+    std::vector<Event> empty;
+    auto ep = make_packet(empty);
+    t.accumulate_only(ep, 31000);  // dt = 30000 us
+    const float v1 = *std::max_element(t.accum().begin(), t.accum().end());
+    EXPECT_NEAR(v1 / v0, 1.0f / 3.0f, 0.01f);
+}
+
 // --- 4.3.17 OrientationCluster ---
 TEST(OrientationClusterTest, Construction) {
     OrientationCluster c(64, 48);

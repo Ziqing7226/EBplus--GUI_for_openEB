@@ -9,6 +9,8 @@
 
 #include "display/display_strategy.h"
 
+#include <atomic>
+
 #include <QColor>
 #include <QLineF>
 #include <QMetaObject>
@@ -47,9 +49,15 @@ QImage mat_to_qimage(const cv::Mat& mat) {
     } else {
         // Audit §五-G5: don't fail silently — a Replace-mode algorithm
         // producing an unsupported channel count would otherwise show a
-        // black screen with no hint as to why.
-        qWarning("mat_to_qimage: unsupported channel count %d (need 1 or 3)",
-                 mat.channels());
+        // black screen with no hint as to why. Throttled: first occurrence,
+        // then every 300th, so a persistently-misbehaving algorithm doesn't
+        // flood the log at display rate.
+        static std::atomic<int> bad_channels{0};
+        const int c = ++bad_channels;
+        if (c == 1 || c % 300 == 0) {
+            qWarning("mat_to_qimage: unsupported channel count %d (need 1 or 3) (x%d)",
+                     mat.channels(), c);
+        }
         return QImage();
     }
     return QImage(rgb.data, rgb.cols, rgb.rows,

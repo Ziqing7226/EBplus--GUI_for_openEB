@@ -1446,7 +1446,10 @@ void MainWindow::install_algo_callback() {
                     const Metavision::timestamp cur_ts = (pe - 1)->t;
                     const Metavision::timestamp last =
                         algo_last_xyt_post_us_.load(std::memory_order_relaxed);
-                    if (cur_ts - last >= 16000) {  // 16ms ≈ 60 FPS
+                    // 8ms post cadence (halved from 16ms): batches posted
+                    // between posts are DROPPED, so this constant is also the
+                    // t-axis gap between point-cloud sheets in live mode.
+                    if (cur_ts - last >= 8000) {
                         algo_last_xyt_post_us_.store(cur_ts, std::memory_order_relaxed);
                         const std::size_t count = static_cast<std::size_t>(pe - pb);
                         auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
@@ -1711,6 +1714,11 @@ void MainWindow::draw_roi_overlays(
         // Only self-developed algorithms carry the roi_* params (design §5.6.6).
         const AlgoInfo& info = inst->info();
         if (info.source != "self") continue;
+        // Skip algorithms whose visible output bypasses the backend ROI path
+        // (uses_algo_roi == false, e.g. xyt_visualizer — its SpaceTimeDisplay
+        // is fed raw events in MainWindow). Drawing the frame for them falsely
+        // implies their output is ROI-cropped.
+        if (!info.uses_algo_roi) continue;
         const std::string en = inst->get_param("roi_enabled");
         if (en != "true" && en != "1") continue;
         const int rx = parse(inst->get_param("roi_x"), -1);

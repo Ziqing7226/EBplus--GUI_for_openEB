@@ -512,13 +512,14 @@ void AlgoBridge::cache_algo_params(
     algo_param_cache_[name] = params;
 }
 
-std::string AlgoBridge::get_cached_algo_param(const std::string& name,
-                                              const std::string& key) const {
+std::optional<std::string> AlgoBridge::get_cached_algo_param(
+    const std::string& name, const std::string& key) const {
     std::lock_guard<std::mutex> lk(live_mutex_);
     const auto ait = algo_param_cache_.find(name);
-    if (ait == algo_param_cache_.end()) return {};
+    if (ait == algo_param_cache_.end()) return std::nullopt;
     const auto pit = ait->second.find(key);
-    return (pit != ait->second.end()) ? pit->second : std::string();
+    if (pit == ait->second.end()) return std::nullopt;
+    return pit->second;
 }
 
 std::shared_ptr<AlgoInstance> AlgoBridge::find_live(const std::string& name) {
@@ -801,7 +802,8 @@ void AlgoBridge::register_self_cv() {
     // instance, so the control had no effect on anything (§五-A3).
     add({"xyt_visualizer", "XYT 3D Visualizer", "cv", "self",
          AlgoDisplayMode::Standalone,
-         {pint("time_window_us", "Time window (us)", "500000", "10000", "10000000")}});
+         {pint("time_window_us", "Time window (us)", "500000", "10000", "10000000")},
+         /*description=*/"", /*uses_algo_roi=*/false});
 
     // §4.3.26 Overlay
     add({"overlay", "Overlay", "cv", "self",

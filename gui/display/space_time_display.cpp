@@ -346,8 +346,11 @@ void SpaceTimeDisplay::rebuild_vbo() {
     if (!gl_ready_ || !vbo_) return;
 
     // Build a flat float buffer of normalized positions + colors.
-    // X = pixel column / sensor_w, Y = pixel row / sensor_h (no flip),
-    // Z = t_norm (0=oldest, 1=newest).
+    // X = pixel column / sensor_w, Z = t_norm (0=oldest, 1=newest).
+    // Y = 1 - pixel_row / sensor_h: the box +y end is the sensor's TOP row
+    // (y=0), matching the main display's top-down image rows (axis mapping
+    // (t, 1-y, x)). Previously the row index went straight to +y, so the
+    // cloud was vertically flipped relative to the main display.
     const float sx = (sensor_w_ > 0) ? 1.0f / static_cast<float>(sensor_w_) : 1.0f;
     const float sy = (sensor_h_ > 0) ? 1.0f / static_cast<float>(sensor_h_) : 1.0f;
 
@@ -356,7 +359,7 @@ void SpaceTimeDisplay::rebuild_vbo() {
     vbo_data_.reserve(static_cast<std::size_t>(point_count_) * 6);
     for (const auto& p : points_) {
         vbo_data_.push_back(p.x * sx);
-        vbo_data_.push_back(p.y * sy);
+        vbo_data_.push_back(1.0f - p.y * sy);
         vbo_data_.push_back(p.t);
         vbo_data_.push_back(p.r);
         vbo_data_.push_back(p.g);
@@ -474,11 +477,13 @@ void SpaceTimeDisplay::draw_axes_overlay(const QMatrix4x4& mvp) {
 
     // Label positions matching jAER maybeRegenerateAxesDisplayList():
     //   "x=sx"  at (1.05, 0, 1) — beyond right edge, bottom, front (newest)
-    //   "y=sy"  at (0, 1.05, 1) — left, beyond top, front
+    //   "y=sy"  at (0, -0.05, 1) — left, beyond BOTTOM, front: data Y is
+    //           written as 1 - row/sensor_h, so the sensor's max row sits
+    //           at the -y end of the box.
     //   "t=0"   at (-0.05, 0, 1) — beyond left, bottom, front (t=now)
     //   "t=-Xms" at (1.05, 0, 0) — beyond right, bottom, back (oldest) — RED
     const QPointF x_pos = project(1.05f, 0.0f, 1.0f);
-    const QPointF y_pos = project(0.0f, 1.05f, 1.0f);
+    const QPointF y_pos = project(0.0f, -0.05f, 1.0f);
     const QPointF t0_pos = project(-0.05f, 0.0f, 1.0f);
     const QPointF t1_pos = project(1.05f, 0.0f, 0.0f);
 
