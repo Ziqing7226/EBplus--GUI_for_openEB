@@ -23,7 +23,6 @@
 #include "algo/cv/trigger_synced_filter.h"
 #include "algo/cv/bandpass_filter.h"
 #include "algo/cv/optical_gyro.h"
-#include "algo/cv/ultra_slow_motion.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
 #include "algo/analytics/active_marker.h"
@@ -51,7 +50,6 @@ using gui_algo::BackgroundMaskFilter;
 using gui_algo::TriggerSyncedFilter;
 using gui_algo::BandpassFilter;
 using gui_algo::OpticalGyro;
-using gui_algo::UltraSlowMotion;
 using gui_algo::XYTVisualizer;
 using gui_algo::TimeSurface;
 using gui_algo::ActiveMarker;
@@ -383,33 +381,6 @@ TEST(OpticalGyroTest, Params) {
 // =========================================================================
 // Phase 9: algo/cv/ §4.3.24–4.3.27
 // =========================================================================
-
-// --- 4.3.24 UltraSlowMotion ---
-TEST(UltraSlowMotionTest, Construction) {
-    UltraSlowMotion m;
-    EXPECT_FLOAT_EQ(m.dilation_factor(), 10.0f);
-    EXPECT_EQ(m.min_accumulation_us(), 5);
-}
-TEST(UltraSlowMotionTest, Params) {
-    UltraSlowMotion m;
-    m.set_dilation_factor(100.0f);
-    EXPECT_FLOAT_EQ(m.dilation_factor(), 100.0f);
-    m.set_min_accumulation_us(10);
-    EXPECT_EQ(m.min_accumulation_us(), 10);
-}
-TEST(UltraSlowMotionTest, EquivalentFps) {
-    UltraSlowMotion m;
-    // Default min_accumulation_us=5 -> 1e6/5 = 200000 fps
-    EXPECT_DOUBLE_EQ(m.equivalent_fps(), 200000.0);
-}
-TEST(UltraSlowMotionTest, Process) {
-    UltraSlowMotion m(10.0f, 5);
-    auto ev = make_events(32, 32, 10);
-    auto out = m.process(ev.data(), ev.size());
-    EXPECT_EQ(out.size(), ev.size());
-    // Timestamps should be dilated.
-    EXPECT_GT(out.back().t, ev.front().t);
-}
 
 // --- 4.3.25 XYTVisualizer ---
 TEST(XYTVisualizerTest, Construction) {

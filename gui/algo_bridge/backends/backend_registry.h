@@ -35,7 +35,7 @@ std::unique_ptr<AlgoBackend> create_analytics_backend(const std::string& name,
 std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& name,
                                                              int width, int height);
 
-/// Display: time_surface, ultra_slow_motion, xyt_visualizer, overlay.
+/// Display: time_surface, xyt_visualizer, overlay.
 std::unique_ptr<AlgoBackend> create_display_backend(const std::string& name,
                                                      int width, int height);
 

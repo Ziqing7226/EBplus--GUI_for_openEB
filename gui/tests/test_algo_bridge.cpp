@@ -50,19 +50,21 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 // OpenEB frame/preproc/util/roi_mask/adaptive_rate_split registrations were
 // removed (audit §三-B6/7), leaving the 8 FilterChain event-transform stages
 // (roi_filter, polarity_filter, polarity_invert, flip_x, flip_y, rotate,
-// transpose, rescale). Live registry: 28 self-developed + 8 OpenEB = 36.
+// transpose, rescale). ultra_slow_motion was removed in Phase 2.5 (broken
+// Replace-display promise, no downstream consumer).
+// Live registry: 27 self-developed + 8 OpenEB = 35.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 36u);
+    EXPECT_EQ(algos.size(), 35u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
         if (a.source == "self") ++self_count;
         else if (a.source == "openeb") ++openeb_count;
     }
-    EXPECT_EQ(self_count, 28u);
+    EXPECT_EQ(self_count, 27u);
     EXPECT_EQ(openeb_count, 8u);
 }
 

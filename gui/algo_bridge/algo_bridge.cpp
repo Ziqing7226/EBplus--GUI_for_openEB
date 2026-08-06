@@ -792,10 +792,9 @@ void AlgoBridge::register_self_cv() {
           pbool("rotation_enabled", "Rotation estimation", "false"),
           pfloat("smoothing_window_ms", "Smoothing window (ms)", "100", "10", "1000")}});
 
-    // §4.3.24 Ultra Slow Motion
-    add({"ultra_slow_motion", "Ultra Slow Motion", "cv", "self",
-         AlgoDisplayMode::Passive,
-         {pint("factor", "Dilation factor", "10", "1", "1000")}});
+    // §4.3.24 Ultra Slow Motion — REMOVED (Phase 2.5): its Replace-display
+    // promise was never implemented, and time dilation is meaningless as a
+    // GUI display without a downstream slow-motion consumer.
 
     // §4.3.25 XYT Visualizer. max_points is NOT registered: the backend only
     // stored it and the 3D display uses SpaceTimeDisplay's own XYTVisualizer

@@ -39,7 +39,6 @@
 #include "algo/cv/hough_circle_tracker.h"
 #include "algo/cv/background_mask_filter.h"
 #include "algo/cv/optical_gyro.h"
-#include "algo/cv/ultra_slow_motion.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
 #include "algo/analytics/active_marker.h"
@@ -65,7 +64,6 @@ using gui_algo::CornerDetector;
 using gui_algo::LineSegmentDetector;
 using gui_algo::HoughCircleTracker;
 using gui_algo::OpticalGyro;
-using gui_algo::UltraSlowMotion;
 using gui_algo::XYTVisualizer;
 using gui_algo::TimeSurface;
 using gui_algo::ActiveMarker;
@@ -448,27 +446,6 @@ TEST_F(RawAlgoTest, OpticalGyroMotionIsFinite) {
     EXPECT_TRUE(is_finite(m.dx));
     EXPECT_TRUE(is_finite(m.dy));
     EXPECT_TRUE(is_finite(m.dtheta));
-}
-
-// =========================================================================
-// 16. UltraSlowMotion — dilated timestamps stay monotonic and finite.
-// =========================================================================
-TEST_F(RawAlgoTest, UltraSlowMotionDilatesMonotonically) {
-    const auto& s = stream();
-    UltraSlowMotion usm(10.0f, 5);
-    Metavision::timestamp prev = -1;
-    std::size_t total_out = 0;
-    for (const auto& batch : s.batches(kBatchWindowUs)) {
-        auto out = usm.process(batch.data(), batch.size());
-        for (const auto& e : out) {
-            // Real events share timestamps (multiple events at the same t),
-            // so dilated output is non-decreasing, not strictly increasing.
-            EXPECT_GE(e.t, prev);
-            prev = e.t;
-        }
-        total_out += out.size();
-    }
-    EXPECT_EQ(total_out, s.size());
 }
 
 // =========================================================================

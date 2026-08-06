@@ -1,4 +1,4 @@
-// gui/algo_bridge/backends/display_backends.cpp — TimeSurface, UltraSlowMotion,
+// gui/algo_bridge/backends/display_backends.cpp — TimeSurface,
 // XYTVisualizer, Overlay (design §3.4). Split from the former algo_backend.cpp monolith.
 
 #include "algo_bridge/algo_backend.h"
@@ -11,7 +11,6 @@
 #include <opencv2/imgproc.hpp>
 
 #include "algo/cv/time_surface.h"
-#include "algo/cv/ultra_slow_motion.h"
 #include "algo/cv/xyt_visualizer.h"
 
 using namespace gui::backend_detail;
@@ -140,44 +139,6 @@ public:
     }
 };
 
-class UltraSlowMotionBackend final : public AlgoBackend {
-    gui_algo::UltraSlowMotion algo_;
-    std::vector<Metavision::EventCD> last_out_;
-    std::vector<Metavision::EventCD> passthrough_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
-public:
-    UltraSlowMotionBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
-    void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "factor") algo_.set_dilation_factor(static_cast<float>(to_d(v)));
-    }
-    std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "factor") return from_d(algo_.dilation_factor());
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()), passthrough_.size(), roi_buf_);
-        auto out = algo_.process(ev, n);
-        last_out_.assign(out.begin(), out.end());
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = last_out_;
-        r.status = "slow_motion: " + std::to_string(last_out_.size()) + " events" +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
-        return r;
-    }
-    void reset() override { algo_.reset(); last_out_.clear(); passthrough_.clear(); roi_buf_.clear(); }
-    void set_sensor_dimensions(int w, int h) override {
-        // The algo holds no sensor-sized state (timestamp dilator) — only
-        // the ROI geometry needs updating (audit §五-D1).
-        roi_.set_sensor_dimensions(w, h);
-    }
-};
-
 
 // ===========================================================================
 // Group G: Visualization
@@ -288,7 +249,6 @@ public:
 std::unique_ptr<AlgoBackend> create_display_backend(const std::string& name,
                                           int width, int height) {
     if (name == "time_surface")                return std::make_unique<TimeSurfaceBackend>(width, height);
-    if (name == "ultra_slow_motion")           return std::make_unique<UltraSlowMotionBackend>(width, height);
     if (name == "xyt_visualizer")              return std::make_unique<XYTVisualizerBackend>(width, height);
     if (name == "overlay")                     return std::make_unique<OverlayBackend>(width, height);
     return nullptr;
