@@ -33,6 +33,9 @@ set(GUI_LIB_SOURCES
     panels/display_panel.cpp
     panels/esp_panel.cpp
     panels/file_tools_panel.cpp
+    panels/file_op_dialog.cpp
+    panels/file_info_dialog.cpp
+    recorder/record_dialog.cpp
     panels/information_panel.cpp
     panels/preprocessing_panel.cpp
     panels/roi_panel.cpp

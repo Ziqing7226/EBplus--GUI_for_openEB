@@ -15,6 +15,7 @@
 #include <QString>
 #include <QJsonObject>
 #include <atomic>
+#include <functional>
 #include <thread>
 
 #include <metavision/sdk/base/utils/timestamp.h>
@@ -47,6 +48,22 @@ public:
     /// @brief Queries metadata for @p src (synchronous, fast).
     FileInfo info(const QString& src) const;
 
+    /// @brief Provides a known total duration (us) for a source path, or 0
+    /// when unknown. Set by MainWindow so that operations on the currently
+    /// open (fully buffered) file skip the blocking OSC duration query,
+    /// which would otherwise freeze progress reporting and cancellation.
+    void set_duration_provider(
+        std::function<Metavision::timestamp(const QString&)> provider) {
+        duration_provider_ = std::move(provider);
+    }
+
+    /// @brief Returns the provider's known duration for @p src, or 0.
+    /// Used by dialogs to display the source duration without a blocking
+    /// OSC query.
+    Metavision::timestamp duration_of(const QString& src) const {
+        return duration_provider_ ? duration_provider_(src) : 0;
+    }
+
     void cancel();
 
 signals:
@@ -59,6 +76,7 @@ private:
     void run_cut(const QString& src, const QString& dst,
                  Metavision::timestamp start_us, Metavision::timestamp end_us);
 
+    std::function<Metavision::timestamp(const QString&)> duration_provider_;
     std::atomic<bool> running_{false};
     std::atomic<bool> cancel_{false};
     std::thread worker_;

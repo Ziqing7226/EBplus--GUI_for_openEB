@@ -43,6 +43,7 @@
 #include "panels/trigger_panel.h"
 #include "recorder/playback_controls.h"
 #include "exporter/export_dialog.h"
+#include "recorder/record_dialog.h"
 #include "calibration/calibration_wizard.h"
 #include "calibration/sharpness_dialog.h"
 #include "app/icon_provider.h"
@@ -79,6 +80,17 @@ MainWindow::MainWindow(QWidget* parent)
     theme_.set_target(this);
 
     settings_ = new SettingsPanel(&algo_bridge_, &file_converter_, this);
+    // Let file operations (convert/cut) skip the blocking OSC duration query
+    // when operating on the currently-open, fully buffered file.
+    file_converter_.set_duration_provider(
+        [this](const QString& src) -> Metavision::timestamp {
+            return (src == playback_.current_file()) ? playback_.duration_us() : 0;
+        });
+    // Let the file-operation dialogs prefill the source path with the
+    // currently open file (same pattern as ExportDialog::set_source).
+    if (auto* ft = settings_->file_tools_panel()) {
+        ft->set_source_provider([this]() { return playback_.current_file(); });
+    }
     settings_dock_ = new QDockWidget(tr("Settings"), this);
     settings_dock_->setObjectName("SettingsDock");
     settings_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
@@ -1286,35 +1298,44 @@ void MainWindow::on_toggle_roi_drag(bool on) {
 
 void MainWindow::on_record_start() {
     if (recorder_.is_recording()) return;
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Record to file"), QString(),
-        tr("RAW files (*.raw);;All files (*)"));
-    if (path.isEmpty()) return;
-    // Ensure the .raw extension is present so downstream tools and the SDK
-    // can identify the file format. QFileDialog's static overload does not
-    // auto-append a suffix from the filter.
-    QString raw_path = path;
-    if (!raw_path.endsWith(".raw", Qt::CaseInsensitive))
-        raw_path += ".raw";
+    if (!record_dialog_) {
+        record_dialog_ = new RecordDialog(this);
+        record_dialog_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(record_dialog_, &QObject::destroyed, this, [this]() {
+            record_dialog_ = nullptr;
+        });
+        connect(record_dialog_, &RecordDialog::start_recording, this,
+                [this](const QString& path, bool save_biases) {
+                    do_record_start(path, save_biases);
+                });
+    }
+    record_dialog_->show();
+    record_dialog_->raise();
+    record_dialog_->activateWindow();
+}
+
+void MainWindow::do_record_start(const QString& path, bool save_biases) {
     // Save the current bias configuration alongside the RAW recording so
     // the file is reproducible — the event stream depends on the bias
     // settings at record time (matching Metavision Viewer behavior).
     // This is best-effort: cameras without a bias facility are silently
     // skipped.
-    auto* biases = camera_.biases_facility();
-    if (biases) {
-        QFileInfo fi(raw_path);
-        QString bias_path = fi.absolutePath() + "/" + fi.completeBaseName() + ".bias";
-        try {
-            biases->save_to_file(std::filesystem::path(bias_path.toStdString()));
-            statusBar()->showMessage(
-                tr("Biases saved to %1").arg(bias_path), 5000);
-        } catch (const std::exception& e) {
-            statusBar()->showMessage(
-                tr("Warning: could not save biases: %1").arg(QString::fromUtf8(e.what())), 5000);
+    if (save_biases) {
+        auto* biases = camera_.biases_facility();
+        if (biases) {
+            QFileInfo fi(path);
+            QString bias_path = fi.absolutePath() + "/" + fi.completeBaseName() + ".bias";
+            try {
+                biases->save_to_file(std::filesystem::path(bias_path.toStdString()));
+                statusBar()->showMessage(
+                    tr("Biases saved to %1").arg(bias_path), 5000);
+            } catch (const std::exception& e) {
+                statusBar()->showMessage(
+                    tr("Warning: could not save biases: %1").arg(QString::fromUtf8(e.what())), 5000);
+            }
         }
     }
-    recorder_.start(&camera_, raw_path);
+    recorder_.start(&camera_, path);
 }
 
 void MainWindow::on_record_stop() {

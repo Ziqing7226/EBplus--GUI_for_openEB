@@ -95,6 +95,7 @@ private slots:
 
     // Phase 3 — recording / playback.
     void on_record_start();
+    void do_record_start(const QString& path, bool save_biases);
     void on_record_stop();
     void on_record_elapsed(std::chrono::seconds s);
 
@@ -203,6 +204,7 @@ private:
     ExporterController exporter_;
     ConfigManager config_;
     ExportDialog* export_dialog_{nullptr};
+    class RecordDialog* record_dialog_{nullptr};
 
     // Phase 5.
     FileConverter file_converter_;

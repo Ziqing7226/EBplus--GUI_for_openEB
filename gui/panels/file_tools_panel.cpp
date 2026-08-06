@@ -24,25 +24,6 @@
 
 namespace gui {
 
-namespace {
-// True when src and dst resolve to the same file (audit §六-E2: converting/
-// cutting onto the source would overwrite the very file being read).
-bool same_file(const QString& src, const QString& dst) {
-    const QFileInfo s(src);
-    const QString s_canon = s.canonicalFilePath();
-    if (s_canon.isEmpty()) return false;
-    const QFileInfo d(dst);
-    QString d_canon = d.canonicalFilePath();
-    if (d_canon.isEmpty()) {
-        // dst doesn't exist yet — canonicalize its directory instead.
-        const QString cdir = d.dir().canonicalPath();
-        if (cdir.isEmpty()) return false;
-        d_canon = cdir + QLatin1Char('/') + d.fileName();
-    }
-    return s_canon == d_canon;
-}
-} // namespace
-
 FileToolsPanel::FileToolsPanel(FileConverter* converter, QWidget* parent)
     : AbstractPanel(parent), converter_(converter) {
     auto* outer = new QVBoxLayout(this);
@@ -120,131 +101,45 @@ void FileToolsPanel::set_export_enabled(bool enabled) {
 }
 
 void FileToolsPanel::on_convert_hdf5() {
-    if (!converter_) return;
-    const QString src = QFileDialog::getOpenFileName(
-        this, tr("Source file"), QString(),
-        tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
-    if (src.isEmpty()) return;
-    const QString dst = QFileDialog::getSaveFileName(
-        this, tr("Output HDF5"), QString(), tr("HDF5 (*.h5);;All files (*)"));
-    if (dst.isEmpty()) return;
-    // Ensure .h5 extension so HDF5EventFileWriter can identify the format.
-    QString final_dst = dst;
-    if (!final_dst.endsWith(".h5", Qt::CaseInsensitive))
-        final_dst += ".h5";
-    if (same_file(src, final_dst)) {
-        QMessageBox::warning(this, tr("Convert to HDF5"),
-            tr("Output path must differ from the source file (it would be overwritten)."));
-        return;
-    }
-    progress_->setVisible(true);
-    progress_->setValue(0);
-    lbl_status_->setText(tr("Converting to HDF5..."));
-    set_buttons_enabled(false);
-    converter_->convert(src, final_dst, FileConverter::Format::HDF5);
+    open_op_dialog(FileOpDialog::Mode::ConvertHdf5);
 }
 
 void FileToolsPanel::on_convert_csv() {
-    if (!converter_) return;
-    const QString src = QFileDialog::getOpenFileName(
-        this, tr("Source file"), QString(),
-        tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
-    if (src.isEmpty()) return;
-    const QString dst = QFileDialog::getSaveFileName(
-        this, tr("Output CSV"), QString(), tr("CSV (*.csv);;All files (*)"));
-    if (dst.isEmpty()) return;
-    QString final_dst = dst;
-    if (!final_dst.endsWith(".csv", Qt::CaseInsensitive))
-        final_dst += ".csv";
-    if (same_file(src, final_dst)) {
-        QMessageBox::warning(this, tr("Convert to CSV"),
-            tr("Output path must differ from the source file (it would be overwritten)."));
-        return;
-    }
-    progress_->setVisible(true);
-    progress_->setValue(0);
-    lbl_status_->setText(tr("Converting to CSV..."));
-    set_buttons_enabled(false);
-    converter_->convert(src, final_dst, FileConverter::Format::CSV);
+    open_op_dialog(FileOpDialog::Mode::ConvertCsv);
 }
 
 void FileToolsPanel::on_cutter() {
+    open_op_dialog(FileOpDialog::Mode::Cut);
+}
+
+void FileToolsPanel::open_op_dialog(FileOpDialog::Mode mode) {
     if (!converter_) return;
-    const QString src = QFileDialog::getOpenFileName(
-        this, tr("Source file"), QString(),
-        tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
-    if (src.isEmpty()) return;
-    // Simple cut dialog: ask start/end in seconds.
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("File Cutter"));
-    auto* form = new QFormLayout(&dlg);
-    auto* spStart = new QDoubleSpinBox(&dlg); spStart->setRange(0, 1e6); spStart->setSuffix(" s");
-    auto* spEnd = new QDoubleSpinBox(&dlg); spEnd->setRange(0, 1e6); spEnd->setSuffix(" s");
-    form->addRow(tr("Start:"), spStart);
-    form->addRow(tr("End:"), spEnd);
-    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    form->addRow(bb);
-    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    if (dlg.exec() != QDialog::Accepted) return;
-    if (spEnd->value() <= spStart->value()) {
-        QMessageBox::warning(this, tr("File Cutter"),
-            tr("End time must be greater than start time."));
-        return;
+    if (!op_dialog_) {
+        op_dialog_ = new FileOpDialog(mode, converter_, this);
+        op_dialog_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(op_dialog_, &QObject::destroyed, this, [this]() {
+            op_dialog_ = nullptr;
+        });
     }
-    const QString dst = QFileDialog::getSaveFileName(
-        this, tr("Output RAW"), QString(), tr("RAW (*.raw);;All files (*)"));
-    if (dst.isEmpty()) return;
-    QString final_dst = dst;
-    if (!final_dst.endsWith(".raw", Qt::CaseInsensitive))
-        final_dst += ".raw";
-    if (same_file(src, final_dst)) {
-        QMessageBox::warning(this, tr("File Cutter"),
-            tr("Output path must differ from the source file (it would be overwritten)."));
-        return;
-    }
-    const auto start_us = static_cast<Metavision::timestamp>(spStart->value() * 1e6);
-    const auto end_us = static_cast<Metavision::timestamp>(spEnd->value() * 1e6);
-    progress_->setVisible(true);
-    progress_->setValue(0);
-    lbl_status_->setText(tr("Cutting..."));
-    set_buttons_enabled(false);
-    converter_->cut(src, final_dst, start_us, end_us);
+    op_dialog_->set_source(source_provider_ ? source_provider_() : QString());
+    op_dialog_->show();
+    op_dialog_->raise();
+    op_dialog_->activateWindow();
 }
 
 void FileToolsPanel::on_info() {
     if (!converter_) return;
-    const QString src = QFileDialog::getOpenFileName(
-        this, tr("Source file"), QString(),
-        tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
-    if (src.isEmpty()) return;
-    // info() opens the file synchronously on the GUI thread — for a large
-    // file without a .tmp_index this can take seconds. Show a busy cursor
-    // and disable the button so the stall is visible and can't be
-    // re-triggered (audit §六-U6; not moving threads this round).
-    btn_info_->setEnabled(false);
-    QGuiApplication::setOverrideCursor(QCursor(Qt::WaitCursor));
-    QString text;
-    QString err;
-    try {
-        const auto fi = converter_->info(src);
-        text = tr("Path: %1\nIntegrator: %2\nSerial: %3\nPlugin: %4\nEncoding: %5\n"
-                  "Geometry: %6 x %7\nDuration: %8 s")
-                   .arg(fi.path, fi.integrator, fi.serial, fi.plugin, fi.encoding)
-                   .arg(fi.width).arg(fi.height)
-                   .arg(fi.duration_us / 1.0e6, 0, 'f', 3);
-    } catch (const std::exception& e) {
-        err = tr("Failed to read file info:\n%1").arg(QString::fromUtf8(e.what()));
-    } catch (...) {
-        err = tr("Failed to read file info.");
+    if (!info_dialog_) {
+        info_dialog_ = new FileInfoDialog(converter_, this);
+        info_dialog_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(info_dialog_, &QObject::destroyed, this, [this]() {
+            info_dialog_ = nullptr;
+        });
     }
-    QGuiApplication::restoreOverrideCursor();
-    btn_info_->setEnabled(true);
-    if (err.isEmpty()) {
-        QMessageBox::information(this, tr("File Info"), text);
-    } else {
-        QMessageBox::warning(this, tr("File Info"), err);
-    }
+    info_dialog_->set_source(source_provider_ ? source_provider_() : QString());
+    info_dialog_->show();
+    info_dialog_->raise();
+    info_dialog_->activateWindow();
 }
 
 void FileToolsPanel::on_completed(const QString& out) {

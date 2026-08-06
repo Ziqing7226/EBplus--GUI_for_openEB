@@ -18,6 +18,8 @@
 #include <metavision/sdk/stream/offline_streaming_control.h>
 #include <metavision/sdk/stream/raw_evt2_event_file_writer.h>
 
+#include "app/duration_query.h"
+
 namespace gui {
 
 FileConverter::FileConverter(QObject* parent) : QObject(parent) {}
@@ -105,11 +107,12 @@ FileInfo FileConverter::info(const QString& src) const {
 }
 
 void FileConverter::run_convert(const QString& src, const QString& dst, Format fmt) {
-    Metavision::Camera cam;
+    std::shared_ptr<Metavision::Camera> cam;
     try {
         Metavision::FileConfigHints hints;
         hints.real_time_playback(false);
-        cam = Metavision::Camera::from_file(src.toStdString(), hints);
+        cam = std::make_shared<Metavision::Camera>(
+            Metavision::Camera::from_file(src.toStdString(), hints));
     } catch (const Metavision::CameraException& e) {
         QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
             emit failed(msg);
@@ -117,7 +120,7 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
         return;
     }
 
-    // Note: cam.geometry() is not needed here — the HDF5 writer extracts
+    // Note: cam->geometry() is not needed here — the HDF5 writer extracts
     // geometry from camera metadata internally, and CSV events carry their
     // own coordinates. Avoiding the call eliminates a segfault when the
     // source file format does not provide a geometry facility.
@@ -145,7 +148,7 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
     // (acquire).
     std::string callback_error_msg;
     std::atomic<bool> callback_error{false};
-    auto id = cam.cd().add_callback(
+    auto id = cam->cd().add_callback(
         [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             if (cancel_) return;
             try {
@@ -164,37 +167,40 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
                 callback_error.store(true, std::memory_order_release);
             }
         });
-    // Query total duration so the polling loop can report progress. Files
-    // without OfflineStreamingControl (e.g. live streams — though convert is
-    // offline-only) simply leave duration at 0 and no progress is emitted.
-    Metavision::timestamp duration_us = 0;
-    try {
-        auto& osc = cam.offline_streaming_control();
-        if (osc.is_ready()) duration_us = osc.get_duration();
-    } catch (...) {}
+    // Query total duration so the polling loop can report progress. Use the
+    // caller-provided value when known (operation on the currently-open
+    // file); otherwise query the OSC duration ASYNCHRONOUSLY — a synchronous
+    // get_duration() blocks while building the raw index, freezing progress
+    // and cancel for the entire build (see app/duration_query.h).
+    auto duration_us = std::make_shared<std::atomic<Metavision::timestamp>>(
+        duration_provider_ ? duration_provider_(src) : 0);
 
-    cam.start();
+    cam->start();
+    if (duration_us->load(std::memory_order_relaxed) == 0) {
+        query_duration_async(cam, duration_us);
+    }
     while (!cancel_) {
         if (callback_error.load(std::memory_order_acquire)) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (!cam.is_running()) break;
+        if (!cam->is_running()) break;
         // Report progress based on the last decoded timestamp. Emitting from
         // a std::thread is safe: AutoConnection queues the call to the
         // FileConverter's thread (the main thread).
-        if (duration_us > 0) {
+        const Metavision::timestamp dur = duration_us->load(std::memory_order_relaxed);
+        if (dur > 0) {
             try {
-                const auto last = cam.get_last_timestamp();
+                const auto last = cam->get_last_timestamp();
                 if (last > 0) {
                     double r = static_cast<double>(last)
-                               / static_cast<double>(duration_us);
+                               / static_cast<double>(dur);
                     if (r < 0) r = 0; else if (r > 1.0) r = 1.0;
                     emit progress(r);
                 }
             } catch (...) {}
         }
     }
-    try { cam.stop(); } catch (...) {}
-    cam.cd().remove_callback(id);
+    try { cam->stop(); } catch (...) {}
+    cam->cd().remove_callback(id);
     // hdf5->close() may throw if the ECF compression plugin is missing.
     if (hdf5) {
         try {
@@ -264,15 +270,17 @@ void FileConverter::run_cut(const QString& src, const QString& dst,
         return;
     }
     Metavision::RAWEvt2EventFileWriter writer(w, h, dst.toStdString());
-    bool seeked = false;
     try {
         if (start_us > 0) {
             auto& osc = cam.offline_streaming_control();
             if (osc.is_ready()) {
-                // osc.seek() returns bool: true if the seek succeeded. Only
-                // trust the seek when it returns true; otherwise fall back to
-                // the lower-bound filter in the callback to drop early events.
-                seeked = osc.seek(start_us);
+                // Seek skips decoding the prefix. The return value is
+                // intentionally ignored: regardless of whether the seek
+                // succeeded, the callback below still filters events
+                // < start_us, because the SDK seeks to an index point at or
+                // BEFORE the target — trusting the seek alone included
+                // pre-start events in the output (wrong cut start).
+                osc.seek(start_us);
             }
         }
     } catch (const Metavision::CameraException&) {
@@ -288,10 +296,11 @@ void FileConverter::run_cut(const QString& src, const QString& dst,
         [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             if (cancel_) return;
             try {
-                // Lower bound: drop events before start_us when seek was not
-                // available (or not supported by this file).
+                // Lower bound: always applied (see the comment above) —
+                // a successful seek does NOT guarantee the first batch
+                // starts at or after start_us.
                 auto it_begin = b;
-                if (!seeked && start_us > 0) {
+                if (start_us > 0) {
                     while (it_begin != e && it_begin->t < start_us) ++it_begin;
                     if (it_begin == e) return;
                 }

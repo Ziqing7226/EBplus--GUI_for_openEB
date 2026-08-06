@@ -19,32 +19,9 @@
 
 #include <opencv2/imgproc.hpp>
 
-namespace gui {
+#include "app/duration_query.h"
 
-namespace {
-/// Queries the OSC duration on a detached thread. osc.get_duration() can
-/// block for seconds-to-minutes on raw files (it builds the .tmp_index
-/// synchronously); calling it on the export worker freezes progress
-/// reporting until the whole export is done (user report: progress bar
-/// jumps 0 -> 100). The Metavision::Camera handle is ref-counted and the
-/// duration target is shared_ptr-held, so both outlive run_*() safely.
-void query_duration_async(std::shared_ptr<Metavision::Camera> cam,
-                          std::shared_ptr<std::atomic<Metavision::timestamp>> dur_us) {
-    std::thread([cam = std::move(cam), dur_us = std::move(dur_us)]() mutable {
-        try {
-            auto& osc = cam->offline_streaming_control();
-            for (int i = 0; i < 200; ++i) {  // wait for readiness, ≤10 s
-                if (osc.is_ready()) {
-                    const auto d = osc.get_duration();
-                    if (d > 0) dur_us->store(d, std::memory_order_relaxed);
-                    return;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            }
-        } catch (...) {}
-    }).detach();
-}
-} // namespace
+namespace gui {
 
 ExporterController::ExporterController(QObject* parent) : QObject(parent) {}
 
