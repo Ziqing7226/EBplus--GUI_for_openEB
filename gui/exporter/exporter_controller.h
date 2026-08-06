@@ -16,6 +16,8 @@
 #include <memory>
 #include <thread>
 
+#include <metavision/sdk/base/utils/timestamp.h>
+
 namespace gui {
 
 struct ExportParams {
@@ -27,6 +29,12 @@ struct ExportParams {
     int accumulation_us{33000};
     int quality{90};          // 1..100 (codec selection heuristic)
     bool color{true};
+    // Total source duration if already known (e.g. exporting the file that
+    // is currently open for playback — the GUI has fully buffered it).
+    // 0 = unknown; the exporter then queries the OSC duration ASYNCHRONOUSLY
+    // (osc.get_duration() can block for minutes building the raw index —
+    // calling it on the worker thread freezes progress reporting).
+    Metavision::timestamp duration_us{0};
 };
 
 class ExporterController : public QObject {

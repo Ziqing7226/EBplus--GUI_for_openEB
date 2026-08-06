@@ -4,6 +4,7 @@
 #define GUI_EXPORTER_EXPORT_DIALOG_H
 
 #include <QDialog>
+#include <functional>
 #include "exporter_controller.h"
 
 class QLineEdit;
@@ -24,6 +25,15 @@ public:
     /// @brief Pre-fills the source path (e.g. the currently open file).
     void set_source(const QString& path);
 
+    /// @brief Provides a known total duration (us) for a source path, or 0
+    /// when unknown. Set by MainWindow so that exporting the currently-open
+    /// (fully buffered) file skips the blocking OSC duration query, which
+    /// would otherwise freeze progress reporting (see query_duration_async).
+    void set_duration_provider(
+        std::function<Metavision::timestamp(const QString&)> provider) {
+        duration_provider_ = std::move(provider);
+    }
+
 private slots:
     void on_browse_source();
     void on_browse_output();
@@ -35,6 +45,7 @@ private slots:
 
 private:
     ExporterController* controller_;
+    std::function<Metavision::timestamp(const QString&)> duration_provider_;
     QLineEdit* edt_source_{nullptr};
     QLineEdit* edt_output_{nullptr};
     QComboBox* cmb_format_{nullptr};

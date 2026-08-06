@@ -5,17 +5,39 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
 namespace gui {
+
+namespace {
+// True when src and dst resolve to the same file (audit §六-E2: exporting
+// onto the source would overwrite the very file being read).
+bool same_file(const QString& src, const QString& dst) {
+    const QFileInfo s(src);
+    const QString s_canon = s.canonicalFilePath();
+    if (s_canon.isEmpty()) return false;
+    const QFileInfo d(dst);
+    QString d_canon = d.canonicalFilePath();
+    if (d_canon.isEmpty()) {
+        // dst doesn't exist yet — canonicalize its directory instead.
+        const QString cdir = d.dir().canonicalPath();
+        if (cdir.isEmpty()) return false;
+        d_canon = cdir + QLatin1Char('/') + d.fileName();
+    }
+    return s_canon == d_canon;
+}
+} // namespace
 
 ExportDialog::ExportDialog(ExporterController* controller, QWidget* parent)
     : QDialog(parent), controller_(controller) {
@@ -40,8 +62,10 @@ ExportDialog::ExportDialog(ExporterController* controller, QWidget* parent)
     connect(btn_out, &QPushButton::clicked, this, &ExportDialog::on_browse_output);
 
     cmb_format_ = new QComboBox(this);
-    cmb_format_->addItem(tr("HDF5 (.h5)"), static_cast<int>(ExportParams::Format::HDF5));
     cmb_format_->addItem(tr("AVI (.avi)"),  static_cast<int>(ExportParams::Format::AVI));
+    cmb_format_->addItem(tr("HDF5 (.h5)"), static_cast<int>(ExportParams::Format::HDF5));
+    // AVI first = default: HDF5 export needs the HDF5 ECF plugin, which is
+    // not available in every deployment (user report), while AVI always works.
     form->addRow(tr("Format:"), cmb_format_);
     connect(cmb_format_, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &ExportDialog::on_format_changed);
@@ -95,7 +119,19 @@ ExportDialog::ExportDialog(ExporterController* controller, QWidget* parent)
         lbl_status_->setText(tr("Cancelling..."));
         btn_cancel_->setEnabled(false);
     });
-    connect(btn_close, &QPushButton::clicked, this, &QDialog::reject);
+    connect(btn_close, &QPushButton::clicked, this, [this]() {
+        // Closing while an export is running would leave the background
+        // worker going with no way to cancel it — ask first (audit §六-M4).
+        // btn_cancel_ is enabled exactly while an export is in flight.
+        if (btn_cancel_->isEnabled()) {
+            const auto r = QMessageBox::question(this, tr("Export Recording"),
+                tr("An export is still running. Cancel it and close?"),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (r != QMessageBox::Yes) return;
+            controller_->cancel();
+        }
+        reject();
+    });
 
     auto* lay = new QVBoxLayout(this);
     lay->addLayout(form);
@@ -165,10 +201,20 @@ void ExportDialog::on_start() {
     if (!p.output_path.endsWith(expected_suffix, Qt::CaseInsensitive))
         p.output_path += expected_suffix;
     edt_output_->setText(p.output_path);
+    if (same_file(p.source_path, p.output_path)) {
+        lbl_status_->setText(
+            tr("Output path must differ from the source file (it would be overwritten)."));
+        return;
+    }
     p.fps = spn_fps_->value();
     p.accumulation_us = spn_accum_->value();
     p.quality = spn_quality_->value();
     p.color = chk_color_->isChecked();
+    // Skip the blocking OSC duration query when the duration is already
+    // known (e.g. exporting the currently-open, fully buffered file).
+    if (duration_provider_) {
+        p.duration_us = duration_provider_(p.source_path);
+    }
     progress_->setValue(0);
     lbl_status_->setText(tr("Exporting..."));
     btn_start_->setEnabled(false);

@@ -116,6 +116,13 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Phase 4: export dialog (lazy-shown via menu).
     export_dialog_ = new ExportDialog(&exporter_, this);
+    // Let the exporter skip the blocking OSC duration query when the user
+    // exports the file that is currently open (already fully buffered —
+    // the playback controller knows its duration).
+    export_dialog_->set_duration_provider(
+        [this](const QString& src) -> Metavision::timestamp {
+            return (src == playback_.current_file()) ? playback_.duration_us() : 0;
+        });
 
     playback_.set_camera(&camera_);
 

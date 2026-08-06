@@ -2,12 +2,14 @@
 
 #include "exporter_controller.h"
 
+#include <QFile>
 #include <QMetaObject>
 
 #include <algorithm>
+#include <mutex>
 
 #include <metavision/sdk/base/events/event_cd.h>
-#include <metavision/sdk/core/utils/cd_frame_generator.h>
+#include <metavision/sdk/core/algorithms/periodic_frame_generation_algorithm.h>
 #include <metavision/sdk/core/utils/colors.h>
 #include <metavision/sdk/core/utils/cv_video_recorder.h>
 #include <metavision/sdk/stream/camera.h>
@@ -18,6 +20,31 @@
 #include <opencv2/imgproc.hpp>
 
 namespace gui {
+
+namespace {
+/// Queries the OSC duration on a detached thread. osc.get_duration() can
+/// block for seconds-to-minutes on raw files (it builds the .tmp_index
+/// synchronously); calling it on the export worker freezes progress
+/// reporting until the whole export is done (user report: progress bar
+/// jumps 0 -> 100). The Metavision::Camera handle is ref-counted and the
+/// duration target is shared_ptr-held, so both outlive run_*() safely.
+void query_duration_async(std::shared_ptr<Metavision::Camera> cam,
+                          std::shared_ptr<std::atomic<Metavision::timestamp>> dur_us) {
+    std::thread([cam = std::move(cam), dur_us = std::move(dur_us)]() mutable {
+        try {
+            auto& osc = cam->offline_streaming_control();
+            for (int i = 0; i < 200; ++i) {  // wait for readiness, ≤10 s
+                if (osc.is_ready()) {
+                    const auto d = osc.get_duration();
+                    if (d > 0) dur_us->store(d, std::memory_order_relaxed);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        } catch (...) {}
+    }).detach();
+}
+} // namespace
 
 ExporterController::ExporterController(QObject* parent) : QObject(parent) {}
 
@@ -42,6 +69,10 @@ bool ExporterController::start(const ExportParams& params) {
             QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
                 emit failed(msg);
             }, Qt::QueuedConnection);
+        } catch (...) {
+            QMetaObject::invokeMethod(this, [this]() {
+                emit failed(tr("Export failed with an unknown error."));
+            }, Qt::QueuedConnection);
         }
         running_ = false;
     });
@@ -53,11 +84,12 @@ void ExporterController::cancel() {
 }
 
 void ExporterController::run_hdf5(const ExportParams& p) {
-    Metavision::Camera cam;
+    std::shared_ptr<Metavision::Camera> cam;
     try {
         Metavision::FileConfigHints hints;
         hints.real_time_playback(false); // as fast as possible
-        cam = Metavision::Camera::from_file(p.source_path.toStdString(), hints);
+        cam = std::make_shared<Metavision::Camera>(
+            Metavision::Camera::from_file(p.source_path.toStdString(), hints));
     } catch (const Metavision::CameraException& e) {
         QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
             emit failed(msg);
@@ -65,13 +97,12 @@ void ExporterController::run_hdf5(const ExportParams& p) {
         return;
     }
 
-    // Query total duration once for progress reporting. The OSC is only
-    // available for file sources, which is always the case for export.
-    Metavision::timestamp dur_us = 0;
-    try {
-        auto& osc = cam.offline_streaming_control();
-        if (osc.is_ready()) dur_us = osc.get_duration();
-    } catch (...) {}
+    // Total duration for progress reporting: use the caller-provided value
+    // when known (exporting the currently-open file), otherwise query the
+    // OSC duration ASYNCHRONOUSLY — get_duration() blocks while building
+    // the raw index, which would freeze progress reporting (see
+    // query_duration_async).
+    auto dur_us = std::make_shared<std::atomic<Metavision::timestamp>>(p.duration_us);
 
     // callback_error captures the first exception message from the writer
     // callback (e.g. missing HDF5 ECF compression plugin). It is written
@@ -81,7 +112,7 @@ void ExporterController::run_hdf5(const ExportParams& p) {
     std::string callback_error;
     Metavision::HDF5EventFileWriter writer(p.output_path.toStdString());
     std::atomic<Metavision::timestamp> last_ts{0};
-    auto id = cam.cd().add_callback(
+    auto id = cam->cd().add_callback(
         [&writer, &last_ts, &callback_error, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             try {
                 if (cancel_) return;
@@ -95,16 +126,20 @@ void ExporterController::run_hdf5(const ExportParams& p) {
                 cancel_.store(true, std::memory_order_release);
             }
         });
-    cam.start();
+    cam->start();
+    if (dur_us->load(std::memory_order_relaxed) == 0) {
+        query_duration_async(cam, dur_us);
+    }
     // Spin until EOF or cancel. Emit incremental progress so the progress bar
     // does not sit at 0% for the entire export (only jumping to 100% at the end).
     while (!cancel_) {
         try {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            if (!cam.is_running()) break;
-            if (dur_us > 0) {
+            if (!cam->is_running()) break;
+            const Metavision::timestamp dur = dur_us->load(std::memory_order_relaxed);
+            if (dur > 0) {
                 const double r = std::min(1.0, static_cast<double>(
-                    last_ts.load(std::memory_order_relaxed)) / dur_us);
+                    last_ts.load(std::memory_order_relaxed)) / dur);
                 QMetaObject::invokeMethod(this, [this, r]() { emit progress(r); },
                                           Qt::QueuedConnection);
             }
@@ -112,8 +147,8 @@ void ExporterController::run_hdf5(const ExportParams& p) {
             break;
         }
     }
-    try { cam.stop(); } catch (...) {}
-    cam.cd().remove_callback(id);
+    try { cam->stop(); } catch (...) {}
+    cam->cd().remove_callback(id);
     // writer.close() may throw if the ECF compression plugin is missing or
     // the file system is full. Capture the error so the user sees the cause
     // rather than a generic abort.
@@ -128,8 +163,10 @@ void ExporterController::run_hdf5(const ExportParams& p) {
     }
 
     // Distinguish cancel from completion: a cancelled export must not emit
-    // completed (the output file is partial/truncated).
+    // completed (the output file is partial/truncated). Delete the partial
+    // file so the user can't mistake it for a valid recording (audit §六-E4).
     if (cancel_.load(std::memory_order_acquire)) {
+        QFile::remove(p.output_path);
         QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
             emit failed(msg.empty() ? tr("Export cancelled.")
                                     : QString::fromUtf8(msg.c_str()));
@@ -143,11 +180,12 @@ void ExporterController::run_hdf5(const ExportParams& p) {
 }
 
 void ExporterController::run_avi(const ExportParams& p) {
-    Metavision::Camera cam;
+    std::shared_ptr<Metavision::Camera> cam;
     try {
         Metavision::FileConfigHints hints;
         hints.real_time_playback(false);
-        cam = Metavision::Camera::from_file(p.source_path.toStdString(), hints);
+        cam = std::make_shared<Metavision::Camera>(
+            Metavision::Camera::from_file(p.source_path.toStdString(), hints));
     } catch (const Metavision::CameraException& e) {
         QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
             emit failed(msg);
@@ -155,12 +193,10 @@ void ExporterController::run_avi(const ExportParams& p) {
         return;
     }
 
-    // Query total duration once for progress reporting.
-    Metavision::timestamp dur_us = 0;
-    try {
-        auto& osc = cam.offline_streaming_control();
-        if (osc.is_ready()) dur_us = osc.get_duration();
-    } catch (...) {}
+    // Total duration for progress reporting: caller-provided when known,
+    // otherwise queried asynchronously (see query_duration_async — a
+    // synchronous get_duration() would freeze progress reporting).
+    auto dur_us = std::make_shared<std::atomic<Metavision::timestamp>>(p.duration_us);
 
     // Geometry may be unavailable for certain file formats (e.g. DAT without
     // embedded geometry metadata). Querying it outside a try/catch would
@@ -168,7 +204,7 @@ void ExporterController::run_avi(const ExportParams& p) {
     // would make cv::VideoWriter segfault on cv::Size(0,0).
     int w = 0, h = 0;
     try {
-        const auto& g = cam.geometry();
+        const auto& g = cam->geometry();
         w = g.get_width();
         h = g.get_height();
     } catch (const std::exception& e) {
@@ -186,107 +222,213 @@ void ExporterController::run_avi(const ExportParams& p) {
         return;
     }
 
-    const int fourcc = (p.quality >= 50) ? cv::VideoWriter::fourcc('H', '2', '6', '4')
-                                         : cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
-    Metavision::CvVideoRecorder recorder(p.output_path.toStdString(), fourcc,
-                                         static_cast<uint32_t>(p.fps), cv::Size(w, h), p.color);
-    if (!recorder.start()) {
-        QMetaObject::invokeMethod(this, [this]() {
-            emit failed(tr("Failed to open AVI writer. Check the output path and codec."));
+    // Direct cv::VideoWriter (synchronous), NOT Metavision::CvVideoRecorder:
+    // the SDK recorder is THREADED with a small bounded object pool (~8
+    // frames) and silently discards frames when production outruns encoding —
+    // at slow-motion frame rates (gen fps = 1e6/acc, e.g. 3333 fps at
+    // acc=300us) nearly every frame was dropped ("video does not contain all
+    // of the raw content"). A synchronous writer blocks the frame callback
+    // during encoding, which naturally propagates backpressure through the
+    // generator thread -> last_frame_ts -> the event-callback throttle.
+    cv::VideoWriter recorder;
+    int fourcc = (p.quality >= 50) ? cv::VideoWriter::fourcc('H', '2', '6', '4')
+                                   : cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+    if (!recorder.open(p.output_path.toStdString(), fourcc,
+                       static_cast<double>(p.fps), cv::Size(w, h),
+                       /*isColor=*/p.color) && p.quality >= 50) {
+        // H264 encoders are often missing from Linux OpenCV builds (no
+        // openh264/FFmpeg backend) — the default quality=90 would otherwise
+        // always fail. Fall back to MJPG (widely available) and say so,
+        // instead of dying with a misleading path/permission-style error.
+        qWarning("AVI export: H264 encoder unavailable, falling back to MJPG");
+        fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+        recorder.open(p.output_path.toStdString(), fourcc,
+                      static_cast<double>(p.fps), cv::Size(w, h), p.color);
+    }
+    if (!recorder.isOpened()) {
+        QMetaObject::invokeMethod(this, [this, fourcc]() {
+            emit failed(tr("Failed to open AVI writer (codec %1 unavailable or path not writable).")
+                            .arg(fourcc == cv::VideoWriter::fourcc('M','J','P','G')
+                                     ? QStringLiteral("MJPG") : QStringLiteral("H264")));
         }, Qt::QueuedConnection);
         return;
     }
 
-    auto gen = std::make_unique<Metavision::CDFrameGenerator>(w, h);
-    gen->set_color_palette(p.color ? Metavision::ColorPalette::Dark : Metavision::ColorPalette::Gray);
-    gen->set_display_accumulation_time_us(
-        static_cast<Metavision::timestamp>(p.accumulation_us));
+    // PeriodicFrameGenerationAlgorithm used DIRECTLY (synchronously): the cd
+    // callback calls process_events(), which invokes the output callback —
+    // and thus the encoder — on the SAME SDK read thread. Encoding throttles
+    // reading naturally: no events_back_ queue, no backpressure sleeps, and
+    // no drain phase (every frame is produced by the time the read finishes).
+    //
+    // Crucially, the algorithm takes the accumulation time directly, so small
+    // windows are exact. CDFrameGenerator::start() takes uint16 fps (and the
+    // previous code additionally capped it at 10000): any accumulation below
+    // 100us silently collapsed to a 100us frame period, making 10us and 50us
+    // windows produce identical 31s videos (user report).
+    Metavision::PeriodicFrameGenerationAlgorithm gen(
+        w, h,
+        static_cast<std::uint32_t>(std::max<Metavision::timestamp>(p.accumulation_us, 1)),
+        /*fps=*/0.,  // 0 = derive from the accumulation time (exact period)
+        p.color ? Metavision::ColorPalette::Dark : Metavision::ColorPalette::Gray);
+    const Metavision::timestamp frame_period_us =
+        std::max<Metavision::timestamp>(p.accumulation_us, 1);
 
     // callback_error captures the first exception message from any callback.
     // It is written before cancel_ is set (release), so the polling loop
     // observes it after reading cancel_ (acquire). This lets us distinguish
     // a real error from a user-initiated cancel and show the actual cause.
-    std::string callback_error;
-    std::atomic<bool> done{false};
-    // start() takes (fps, callback). The callback receives (timestamp, frame).
-    // It returns false if the generator thread failed to start.
     //
-    // Color handling: CDFrameGenerator defaults to single-channel (grayscale)
-    // output regardless of the palette; set_color_palette only selects the
-    // lookup table, not the channel count. CvVideoRecorder was constructed
-    // with p.color as its `colored` flag, so we must hand it a frame whose
-    // channel count matches: 3-channel BGR when p.color, 1-channel gray
-    // otherwise. cv::VideoWriter with isColor=false fed a 3-channel image
-    // (or vice versa) produces corrupted output or an OpenCV assertion.
-    if (!gen->start(static_cast<std::uint16_t>(p.fps),
-                    [&recorder, &done, &callback_error, this, color = p.color](Metavision::timestamp, cv::Mat& frame) {
-                        try {
-                            if (cancel_ || done) return;
-                            if (frame.empty()) return;
-                            cv::Mat out;
-                            if (color) {
-                                if (frame.channels() == 1) {
-                                    cv::cvtColor(frame, out, cv::COLOR_GRAY2BGR);
-                                } else {
-                                    out = frame;
-                                }
-                            } else {
-                                if (frame.channels() == 3) {
-                                    cv::cvtColor(frame, out, cv::COLOR_BGR2GRAY);
-                                } else {
-                                    out = frame;
-                                }
-                            }
-                            recorder.write(out);
-                        } catch (const std::exception& e) {
-                            callback_error = e.what();
-                            cancel_.store(true, std::memory_order_release);
-                        } catch (...) {
-                            callback_error = "Unknown error in frame writer";
-                            cancel_.store(true, std::memory_order_release);
-                        }
-                    })) {
-        QMetaObject::invokeMethod(this, [this]() {
-            emit failed(tr("Failed to start CD frame generator."));
-        }, Qt::QueuedConnection);
-        recorder.stop();
-        return;
-    }
+    // Mutex-guarded: the frame callback and the event callback can both catch
+    // exceptions and write callback_error (the output callback fires inside
+    // process_events on the read thread, but cancel paths race) — an
+    // unsynchronized std::string write is a data race (UB).
+    std::string callback_error;
+    std::mutex callback_error_mtx;
 
-    std::atomic<Metavision::timestamp> last_ts{0};
-    auto id = cam.cd().add_callback(
-        [&gen, &last_ts, &callback_error, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+    // Timestamp of the last frame actually written to the AVI — drives the
+    // progress bar (tracks the real bottleneck: frame production + encoding).
+    std::atomic<Metavision::timestamp> last_frame_ts{0};
+
+    // Color handling: CvVideoRecorder was constructed with p.color as its
+    // `colored` flag, so we must hand it a frame whose channel count matches:
+    // 3-channel BGR when p.color, 1-channel gray otherwise. cv::VideoWriter
+    // with isColor=false fed a 3-channel image (or vice versa) produces
+    // corrupted output or an OpenCV assertion.
+    // Expected timestamp of the NEXT frame, for gap filling: the generator
+    // only produces frames when events arrive, so quiet stretches of the
+    // recording produce NO frames and the video's time axis would compress
+    // (user report: "video does not contain all of the raw content"). We
+    // insert black frames for every missing period so 1 s of event time
+    // always maps to exactly (1e6/acc) frames in the output.
+    Metavision::timestamp next_frame_ts = -1;
+    cv::Mat black_frame;
+    gen.set_output_callback(
+        [&recorder, &callback_error, &callback_error_mtx, this, color = p.color,
+         &last_frame_ts, frame_period_us,
+         &next_frame_ts, &black_frame](Metavision::timestamp ts, cv::Mat& frame) {
             try {
-                gen->add_events(b, e);
-                if (b != e) last_ts.store((e - 1)->t, std::memory_order_relaxed);
-            } catch (const std::exception& e2) {
-                callback_error = e2.what();
+                // Publish frame timestamp for progress reporting.
+                last_frame_ts.store(ts, std::memory_order_relaxed);
+                // Only a real cancel skips writing.
+                if (cancel_) return;
+                auto write_frame = [&](const cv::Mat& f) {
+                    cv::Mat out;
+                    if (color) {
+                        if (f.channels() == 1) {
+                            cv::cvtColor(f, out, cv::COLOR_GRAY2BGR);
+                        } else {
+                            out = f;
+                        }
+                    } else {
+                        if (f.channels() == 3) {
+                            cv::cvtColor(f, out, cv::COLOR_BGR2GRAY);
+                        } else {
+                            out = f;
+                        }
+                    }
+                    recorder.write(out);
+                };
+                if (black_frame.empty() && !frame.empty()) {
+                    black_frame = cv::Mat::zeros(frame.rows, frame.cols,
+                                                 frame.type());
+                }
+                // Fill quiet-gap periods with black frames so the
+                // output time axis is complete.
+                if (next_frame_ts < 0) next_frame_ts = ts;
+                while (next_frame_ts < ts && !black_frame.empty()) {
+                    write_frame(black_frame);
+                    next_frame_ts += frame_period_us;
+                }
+                next_frame_ts = ts + frame_period_us;
+                if (frame.empty()) return;
+                write_frame(frame);
+            } catch (const std::exception& e) {
+                {
+                    std::lock_guard<std::mutex> lk(callback_error_mtx);
+                    callback_error = e.what();
+                }
                 cancel_.store(true, std::memory_order_release);
             } catch (...) {
-                callback_error = "Unknown error in event callback";
+                {
+                    std::lock_guard<std::mutex> lk(callback_error_mtx);
+                    callback_error = "Unknown error in frame writer";
+                }
                 cancel_.store(true, std::memory_order_release);
             }
         });
 
-    cam.start();
+    auto id = cam->cd().add_callback(
+        [&gen, &callback_error, &callback_error_mtx, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            try {
+                if (cancel_.load(std::memory_order_acquire)) return;
+                // Synchronous: process_events() runs frame production AND
+                // encoding on this read thread, so reading is throttled by
+                // the encoder automatically — no queue to bound.
+                gen.process_events(b, e);
+            } catch (const std::exception& e2) {
+                {
+                    std::lock_guard<std::mutex> lk(callback_error_mtx);
+                    callback_error = e2.what();
+                }
+                cancel_.store(true, std::memory_order_release);
+            } catch (...) {
+                {
+                    std::lock_guard<std::mutex> lk(callback_error_mtx);
+                    callback_error = "Unknown error in event callback";
+                }
+                cancel_.store(true, std::memory_order_release);
+            }
+        });
+
+    // Wrap cam->start()..polling in a try/catch: if anything throws after
+    // add_callback (above), remove_callback must run before gen is destructed
+    // — otherwise the CD callback dereferences a dangling &gen (use-after-free).
+    try {
+    cam->start();
+    // Query the duration asynchronously if the caller didn't provide it —
+    // a synchronous get_duration() here would block the worker for the
+    // whole index build (the entire export for short files), making the
+    // progress bar jump 0 -> 100 (user report).
+    if (dur_us->load(std::memory_order_relaxed) == 0) {
+        query_duration_async(cam, dur_us);
+    }
     while (!cancel_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (!cam.is_running()) break;
-        if (dur_us > 0) {
+        if (!cam->is_running()) break;
+        const Metavision::timestamp dur = dur_us->load(std::memory_order_relaxed);
+        if (dur > 0) {
+            // Progress = timestamp of the last frame actually WRITTEN to the
+            // AVI — tracks the real bottleneck (frame production + encoding).
             const double r = std::min(1.0, static_cast<double>(
-                last_ts.load(std::memory_order_relaxed)) / dur_us);
+                last_frame_ts.load(std::memory_order_relaxed)) / dur);
             QMetaObject::invokeMethod(this, [this, r]() { emit progress(r); },
                                       Qt::QueuedConnection);
         }
     }
-    done = true;
-    try { cam.stop(); } catch (...) {}
-    cam.cd().remove_callback(id);
-    gen->stop();
-    recorder.stop();
+    try { cam->stop(); } catch (...) {}
+    } catch (...) {
+        try { cam->stop(); } catch (...) {}
+        try { cam->cd().remove_callback(id); } catch (...) {}
+        throw;
+    }
+    try { cam->cd().remove_callback(id); } catch (...) {}
+    // Everything read so far has already been framed and encoded
+    // (process_events is synchronous). Flush the trailing partial
+    // accumulation window as a final frame so the tail isn't cut short.
+    if (!cancel_.load(std::memory_order_acquire)) {
+        try { gen.force_generate(); } catch (...) {}
+    }
+    recorder.release();
 
     if (cancel_.load(std::memory_order_acquire)) {
-        QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
+        // Partial/truncated AVI — delete it (audit §六-E4).
+        QFile::remove(p.output_path);
+        std::string err_msg;
+        {
+            std::lock_guard<std::mutex> lk(callback_error_mtx);
+            err_msg = callback_error;
+        }
+        QMetaObject::invokeMethod(this, [this, msg = std::move(err_msg)]() {
             emit failed(msg.empty() ? tr("Export cancelled.")
                                     : QString::fromUtf8(msg.c_str()));
         }, Qt::QueuedConnection);

@@ -219,9 +219,10 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
     }
 
     // Distinguish cancel from completion: a cancelled run must not report
-    // success (the output file is partial). The caller can decide whether
-    // to delete the partial file.
+    // success (the output file is partial). Delete the partial file so the
+    // user can't mistake it for a valid recording (audit §六-E4).
     if (cancel_) {
+        QFile::remove(dst);
         QMetaObject::invokeMethod(this, [this]() {
             emit failed(tr("Conversion cancelled."));
         }, Qt::QueuedConnection);
@@ -349,6 +350,8 @@ void FileConverter::run_cut(const QString& src, const QString& dst,
     }
 
     if (cancel_) {
+        // Partial RAW cut — delete it (audit §六-E4).
+        QFile::remove(dst);
         QMetaObject::invokeMethod(this, [this]() {
             emit failed(tr("Cut cancelled."));
         }, Qt::QueuedConnection);
