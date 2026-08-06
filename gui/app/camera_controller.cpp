@@ -290,6 +290,18 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
             if (status == Metavision::CameraStatus::STARTED) {
                 emit started();
             } else {
+                // A file source stopping on its own means EOF: everything
+                // the file will ever yield is now buffered. Signal
+                // loading-complete so the FileFrameGenerator's EOF handling
+                // (stop / loop wrap) can engage. The runtime-error EOF path
+                // (above) also does this, but the SDK does not guarantee an
+                // error callback at EOF — relying on it alone left
+                // loading_complete_ unset and loop playback stalled at the
+                // buffer top forever. Idempotent; on user-initiated stops
+                // the pipeline is being torn down anyway.
+                if (is_file_) {
+                    frame_pipeline_.set_file_loading_complete(true);
+                }
                 emit stopped();
             }
         });
