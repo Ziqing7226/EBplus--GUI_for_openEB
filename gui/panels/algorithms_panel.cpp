@@ -226,32 +226,11 @@ void AlgorithmsPanel::build_ui() {
                 params_host->setVisible(on);
                 if (on) {
                     // Algorithm mutex (design §5.6.6 — exclusive mode): only
-                    // one algorithm may be enabled at a time. Uncheck every
-                    // other checkbox (with signals blocked so we don't
-                    // re-enter this handler) and disable its live instance.
-                    // The AlgoWindow for the previously-enabled algorithm is
-                    // closed by MainWindow via the algorithm_toggled signal
-                    // emitted below for each disabled algo.
-                    for (auto& [other_name, other_cb] : checkboxes_) {
-                        if (other_name == algo_name) continue;
-                        if (!other_cb || !other_cb->isChecked()) continue;
-                        QSignalBlocker b(other_cb);
-                        other_cb->setChecked(false);
-                        // Hide the other algo's parameter editor. Because
-                        // QSignalBlocker suppresses the toggled signal, the
-                        // other algo's toggled handler (which would normally
-                        // hide its params_host) never runs. We must hide it
-                        // explicitly here (BUG-M2).
-                        auto st = algo_panel_state_.find(other_name);
-                        if (st != algo_panel_state_.end() && st->second.params_host) {
-                            st->second.params_host->setVisible(false);
-                        }
-                        auto it = live_instances_.find(other_name);
-                        if (it != live_instances_.end() && it->second) {
-                            it->second->set_enabled(false);
-                        }
-                        emit algorithm_toggled(QString::fromStdString(other_name), false);
-                    }
+                    // one algorithm may be enabled at a time. Covers panel
+                    // checkboxes AND checkbox-less instances (e.g.
+                    // sensor_self_test from the Devices button) — see
+                    // mutex_disable_others.
+                    mutex_disable_others(algo_name);
                     // Reuse the live instance if one already exists (e.g. the
                     // user edited a parameter before enabling). create() would
                     // discard those parameters by building a fresh instance.
@@ -759,7 +738,13 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
 
 void AlgorithmsPanel::set_algo_enabled(const std::string& name, bool on) {
     auto it = checkboxes_.find(name);
-    if (it == checkboxes_.end() || !it->second) return;
+    if (it == checkboxes_.end() || !it->second) {
+        // Checkbox-less entries (e.g. sensor_self_test from the Devices
+        // panel button): no checkbox to sync, but the algorithm mutex still
+        // applies — enabling it must disable every other algorithm.
+        if (on) mutex_disable_others(name);
+        return;
+    }
     // Block signals so this programmatic change does not re-enter the toggled
     // handler (which would create/enable instances and emit algorithm_toggled,
     // causing sync loops with the Algorithm menu / AlgoWindow).
@@ -778,24 +763,41 @@ void AlgorithmsPanel::set_algo_enabled(const std::string& name, bool on) {
     // on_open_algo_window), uncheck every other algo so only one is live at
     // a time. The toggled-handler path enforces mutex itself; this covers
     // the programmatic path.
-    if (on) {
-        for (auto& [other_name, other_cb] : checkboxes_) {
-            if (other_name == name) continue;
-            if (!other_cb || !other_cb->isChecked()) continue;
-            QSignalBlocker ob(other_cb);
-            other_cb->setChecked(false);
-            // Hide the other algo's parameter editor (BUG-M2: QSignalBlocker
-            // suppresses the toggled handler that would normally hide it).
-            auto ost = algo_panel_state_.find(other_name);
-            if (ost != algo_panel_state_.end() && ost->second.params_host) {
-                ost->second.params_host->setVisible(false);
-            }
-            auto oi = live_instances_.find(other_name);
-            if (oi != live_instances_.end() && oi->second) {
-                oi->second->set_enabled(false);
-            }
-            emit algorithm_toggled(QString::fromStdString(other_name), false);
+    if (on) mutex_disable_others(name);
+}
+
+void AlgorithmsPanel::mutex_disable_others(const std::string& winner) {
+    // Algorithm mutex (design §5.6.6 — exclusive mode): only one algorithm
+    // may be enabled at a time. Covers two kinds of participants:
+    //   (a) panel algorithms (checkboxes) — uncheck + hide params + disable;
+    //   (b) checkbox-less instances created outside the panel (e.g.
+    //       sensor_self_test from the Devices button) — disable + emit
+    //       algorithm_toggled so MainWindow closes their windows.
+    for (auto& [other_name, other_cb] : checkboxes_) {
+        if (other_name == winner) continue;
+        if (!other_cb || !other_cb->isChecked()) continue;
+        QSignalBlocker ob(other_cb);
+        other_cb->setChecked(false);
+        // Hide the other algo's parameter editor (BUG-M2: QSignalBlocker
+        // suppresses the toggled handler that would normally hide it).
+        auto ost = algo_panel_state_.find(other_name);
+        if (ost != algo_panel_state_.end() && ost->second.params_host) {
+            ost->second.params_host->setVisible(false);
         }
+        auto oi = live_instances_.find(other_name);
+        if (oi != live_instances_.end() && oi->second) {
+            oi->second->set_enabled(false);
+        }
+        emit algorithm_toggled(QString::fromStdString(other_name), false);
+    }
+    if (!bridge_) return;
+    for (const auto& inst : bridge_->list_live()) {
+        if (!inst || !inst->is_enabled()) continue;
+        const auto& other = inst->info().name;
+        if (other == winner) continue;
+        if (checkboxes_.find(other) != checkboxes_.end()) continue;  // handled above
+        inst->set_enabled(false);
+        emit algorithm_toggled(QString::fromStdString(other), false);
     }
 }
 

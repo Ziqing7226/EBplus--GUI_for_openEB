@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSet>
@@ -1956,6 +1957,12 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     // user cannot easily inspect the algorithm's result inside the small ROI
     // on the main (sensor-scale) display.
     const auto* info = algo_bridge_.find(algo_name);
+    if (!info && w->instance()) {
+        // Unregistered workflow (sensor_self_test from the Devices button):
+        // use the window's built-in AlgoInfo so the display widget is still
+        // installed (the registry lookup only works for real algorithms).
+        info = &w->info();
+    }
     if (info && info->display_mode == AlgoDisplayMode::Standalone) {
         // Note: background_mask is registered as Replace, not Standalone —
         // listing it here was a dead branch (audit §五-G5).
@@ -2021,8 +2028,24 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
             // During application shutdown the modal report would block the
             // close sequence — skip it (the window is going away anyway).
             if (!closing_app_) {
-                QMessageBox::information(this, tr("Sensor Self-Test Report"),
-                    QString::fromStdString(r.status));
+                // Scrollable, fixed-size report dialog: with many suspected
+                // bad pixels the coordinate list is long, and a plain
+                // QMessageBox would grow to an unusable height.
+                QDialog dlg(this);
+                dlg.setWindowTitle(tr("Sensor Self-Test Report"));
+                dlg.resize(560, 460);
+                auto* lay = new QVBoxLayout(&dlg);
+                auto* text = new QPlainTextEdit(QString::fromStdString(r.status), &dlg);
+                text->setReadOnly(true);
+                QFont mono(QStringLiteral("Monospace"));
+                mono.setStyleHint(QFont::TypeWriter);
+                mono.setPointSize(9);
+                text->setFont(mono);
+                lay->addWidget(text);
+                auto* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+                connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+                lay->addWidget(bb);
+                dlg.exec();
             }
         } else {
             if (inst) inst->set_enabled(false);

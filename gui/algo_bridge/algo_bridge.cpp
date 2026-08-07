@@ -379,7 +379,12 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create(const std::string& name) {
     if (it == registry_.end()) {
         return nullptr;
     }
-    auto inst = std::make_shared<AlgoInstance>(it->second, sensor_w_, sensor_h_);
+    return create_with_info(it->second);
+}
+
+std::shared_ptr<AlgoInstance> AlgoBridge::create_with_info(const AlgoInfo& info) {
+    const auto& name = info.name;
+    auto inst = std::make_shared<AlgoInstance>(info, sensor_w_, sensor_h_);
     // Wire the flood-guard overload callback (§五-E2): when the guard trips,
     // the registered receiver (AlgorithmsPanel) unchecks the sidebar checkbox.
     if (overload_cb_) {
@@ -405,7 +410,7 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create(const std::string& name) {
             }
             algo_param_cache_.erase(pit);
         }
-        if (it->second.source == "self") {
+        if (info.source == "self") {
             for (const auto& [k, v] : preproc_cache_) {
                 inst->set_param(k, v);
             }
@@ -422,6 +427,13 @@ std::shared_ptr<AlgoInstance> AlgoBridge::find_or_create(const std::string& name
         return existing;
     }
     return create(name);
+}
+
+std::shared_ptr<AlgoInstance> AlgoBridge::find_or_create_with_info(const AlgoInfo& info) {
+    if (auto existing = find_live(info.name)) {
+        return existing;
+    }
+    return create_with_info(info);
 }
 
 void AlgoBridge::set_sensor_dimensions(int width, int height) {
@@ -907,15 +919,12 @@ void AlgoBridge::register_self_analytics() {
     // detection. Registered WITHOUT roi_params/preproc_params (the self-test
     // must cover the full sensor, not a 128×128 ROI). No user-tunable params.
     // Triggered from the Devices panel (hardware module) as a sensor diagnostic.
-    {
-        AlgoInfo a;
-        a.name = "sensor_self_test";
-        a.display_name = "Sensor Self-Test";
-        a.category = "analytics";
-        a.source = "self";
-        a.display_mode = AlgoDisplayMode::Standalone;
-        registry_[a.name] = std::move(a);
-    }
+    // NOTE: sensor_self_test is intentionally NOT registered here. It is a
+    // hardware diagnostic launched from the Devices panel button, not an
+    // algorithm — registering it (as e0439b7 did, category="analytics")
+    // made it appear as a checkable algorithm in the Algorithms panel,
+    // which was never the intent. AlgoWindow creates its instance from a
+    // built-in AlgoInfo via AlgoBridge::create_with_info instead.
 }
 
 } // namespace gui

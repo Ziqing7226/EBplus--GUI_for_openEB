@@ -52,6 +52,10 @@ public:
     /// @brief Returns the algorithm name this window manages.
     const std::string& algo_name() const { return algo_name_; }
 
+    /// @brief Returns the algorithm's info (built-in fallback for
+    /// unregistered workflows like sensor_self_test).
+    const AlgoInfo& info() const { return info_; }
+
     /// @brief Returns the live instance managed by this window (may be null
     /// if the algorithm was unknown).
     std::shared_ptr<AlgoInstance> instance() const { return instance_; }

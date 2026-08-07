@@ -50,6 +50,12 @@ public:
     /// panel in sync with the Algorithm menu and AlgoWindow.
     void set_algo_enabled(const std::string& name, bool on);
 
+    /// @brief Enforces the one-algorithm-at-a-time mutex: disables every
+    /// enabled algorithm except @p winner — both panel checkboxes and
+    /// checkbox-less instances created outside the panel (e.g.
+    /// sensor_self_test from the Devices panel button).
+    void mutex_disable_others(const std::string& winner);
+
     /// @brief Re-syncs every parameter control with the values the algorithm
     /// instances actually hold (live instance first, then the bridge's N1
     /// param cache for non-live algorithms). Called after a config file is

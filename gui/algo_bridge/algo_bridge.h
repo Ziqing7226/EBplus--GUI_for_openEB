@@ -222,6 +222,13 @@ public:
     /// parameters that were set before the instance was enabled.
     std::shared_ptr<AlgoInstance> find_or_create(const std::string& name);
 
+    /// @brief Creates/registers a live instance from an explicit AlgoInfo,
+    /// bypassing the registry. Used by non-algorithm workflows
+    /// (sensor_self_test from the Devices panel button) that are not
+    /// registered algorithms but still need a backend instance.
+    std::shared_ptr<AlgoInstance> create_with_info(const AlgoInfo& info);
+    std::shared_ptr<AlgoInstance> find_or_create_with_info(const AlgoInfo& info);
+
     /// @brief Sets the actual sensor dimensions so new instances are created
     /// with the correct width/height instead of the 1280x720 default.
     void set_sensor_dimensions(int width, int height);
