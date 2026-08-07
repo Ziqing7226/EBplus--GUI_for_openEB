@@ -137,20 +137,24 @@ void FramePipeline::add_events(const Metavision::EventCD* begin,
         file_generator_.add_events(begin, end);
     } else if (generator_) {
         // Display-path preprocessing (Phase 2.5): apply the Preprocessing
-        // panel's noise filter to the DISPLAY stream only. gui_algo::Event
-        // and Metavision::EventCD are layout-compatible (static_assert in
+        // panel's stages to the DISPLAY stream. gui_algo::Event and
+        // Metavision::EventCD are layout-compatible (static_assert in
         // algo/common/event.h), so the reinterpret_cast is safe.
+        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
+        const Metavision::EventCD* out_b = begin;
+        const Metavision::EventCD* out_e = end;
         if (display_preproc_.active()) {
-            std::lock_guard<std::mutex> lk(display_preproc_mutex_);
             const auto n = static_cast<std::size_t>(end - begin);
             auto [p, m] = display_preproc_.apply(
                 reinterpret_cast<const gui_algo::Event*>(begin), n);
-            generator_->add_events(
-                reinterpret_cast<const Metavision::EventCD*>(p),
-                reinterpret_cast<const Metavision::EventCD*>(p) + m);
-        } else {
-            generator_->add_events(begin, end);
+            out_b = reinterpret_cast<const Metavision::EventCD*>(p);
+            out_e = reinterpret_cast<const Metavision::EventCD*>(p) + m;
         }
+        // Processed-stream recording (Phase 2.5 step 5): the listener gets
+        // the same span the display sees (raw when all stages are off, so
+        // the recording stays continuous across preproc toggles).
+        if (processed_listener_) processed_listener_(out_b, out_e);
+        generator_->add_events(out_b, out_e);
     }
 }
 

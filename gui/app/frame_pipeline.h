@@ -85,6 +85,22 @@ public:
     /// surfaces would suppress events).
     void reset_display_preproc_filter();
 
+    /// @brief True when any display-path preprocessing stage is enabled.
+    /// Used by RecorderController to choose processed-stream recording.
+    bool display_preproc_active() const { return display_preproc_.active(); }
+
+    /// @brief Registers a listener for the display-path-processed event
+    /// stream (Phase 2.5 step 5, processed-stream recording). The listener
+    /// receives every batch AFTER preprocessing (the raw span when all
+    /// stages are off, so recording stays continuous across toggles), on
+    /// the SDK CD thread under display_preproc_mutex_. Live mode only
+    /// (file-source recording is blocked upstream).
+    void set_processed_events_listener(
+        std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)> cb) {
+        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
+        processed_listener_ = std::move(cb);
+    }
+
     // --- File playback control (file mode only) ---
 
     void play_file();
@@ -158,6 +174,10 @@ private:
     // same parameters via set_display_preproc_param().
     gui::backend_detail::Preprocessor display_preproc_;
     std::mutex display_preproc_mutex_;
+    /// Processed-stream listener (processed-stream recording), invoked under
+    /// display_preproc_mutex_.
+    std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)>
+        processed_listener_;
 };
 
 } // namespace gui

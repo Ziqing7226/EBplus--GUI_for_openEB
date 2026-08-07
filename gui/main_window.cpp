@@ -1051,7 +1051,14 @@ void MainWindow::wire_signals() {
                 settings_->file_tools_panel()->set_record_enabled(
                     camera_.is_connected() && !camera_.is_file_source());
                 settings_->file_tools_panel()->set_stop_enabled(false);
-                statusBar()->showMessage(tr("Recording saved: %1").arg(path), 5000);
+                if (recorder_.is_processed_recording() || recorder_.events_written() > 0) {
+                    statusBar()->showMessage(
+                        tr("Recording saved: %1 (%2 events)")
+                            .arg(path)
+                            .arg(recorder_.events_written()), 5000);
+                } else {
+                    statusBar()->showMessage(tr("Recording saved: %1").arg(path), 5000);
+                }
             });
     connect(&recorder_, &RecorderController::elapsed, this, &MainWindow::on_record_elapsed);
     connect(&recorder_, &RecorderController::error, this, [this](const QString& msg) {
@@ -1345,7 +1352,15 @@ void MainWindow::do_record_start(const QString& path, bool save_biases) {
             }
         }
     }
-    recorder_.start(&camera_, path);
+    // Processed-stream recording (Phase 2.5 step 5): when any display-path
+    // preprocessing stage is active, record the PROCESSED event stream
+    // (what the display sees); otherwise keep the SDK raw log.
+    auto* fp = camera_.frame_pipeline();
+    if (fp && fp->display_preproc_active()) {
+        recorder_.start_processed(&camera_, path, fp);
+    } else {
+        recorder_.start(&camera_, path);
+    }
 }
 
 void MainWindow::on_record_stop() {
@@ -1357,11 +1372,17 @@ void MainWindow::on_record_elapsed(std::chrono::seconds s) {
     const auto mins = std::chrono::duration_cast<std::chrono::minutes>(s).count() % 60;
     const auto secs = s.count() % 60;
     const QString base = tr("REC");
-    status_rec_->setText(QStringLiteral("%1 %2:%3:%4")
-                             .arg(base)
-                             .arg(hrs, 2, 10, QLatin1Char('0'))
-                             .arg(mins, 2, 10, QLatin1Char('0'))
-                             .arg(secs, 2, 10, QLatin1Char('0')));
+    QString text = QStringLiteral("%1 %2:%3:%4")
+                       .arg(base)
+                       .arg(hrs, 2, 10, QLatin1Char('0'))
+                       .arg(mins, 2, 10, QLatin1Char('0'))
+                       .arg(secs, 2, 10, QLatin1Char('0'));
+    // Processed-mode telemetry: the live written-event count makes an
+    // empty/failed recording immediately visible (user report).
+    if (recorder_.is_processed_recording()) {
+        text += QStringLiteral(" · %1 ev").arg(recorder_.events_written());
+    }
+    status_rec_->setText(text);
 }
 
 void MainWindow::on_export_dialog() {

@@ -11,11 +11,16 @@
 #include <QPointer>
 #include <QString>
 #include <QTimer>
+#include <atomic>
 #include <chrono>
+#include <memory>
+
+#include <metavision/sdk/stream/raw_evt2_event_file_writer.h>
 
 namespace gui {
 
 class CameraController;
+class FramePipeline;
 
 class RecorderController : public QObject {
     Q_OBJECT
@@ -26,6 +31,12 @@ public:
     /// @brief Starts recording the live camera stream to @p path (RAW format).
     /// @return true on success.
     bool start(CameraController* controller, const QString& path);
+    /// @brief Starts processed-stream recording (Phase 2.5 step 5): writes
+    /// the display-path-preprocessed events (filter/undistort/downsample as
+    /// currently configured) instead of the SDK raw log. Falls back to raw
+    /// spans when all stages are off mid-recording (continuous output).
+    bool start_processed(CameraController* controller, const QString& path,
+                         FramePipeline* fp);
     void stop();
 
     bool is_recording() const { return recording_; }
@@ -38,11 +49,26 @@ signals:
 
 private:
     bool recording_{false};
+    bool processed_mode_{false};
     QString path_;
     QTimer timer_;           ///< Emits elapsed() once per second.
     QTimer flush_timer_;     ///< Calls I_EventsStream::get_latest_raw_data() to flush buffers.
     QPointer<CameraController> controller_;
+    /// Processed-stream recording (Phase 2.5 step 5).
+    FramePipeline* fp_{nullptr};
+    std::unique_ptr<Metavision::RAWEvt2EventFileWriter> writer_;
+    bool writer_error_reported_{false};
+    /// Events written in processed mode (telemetry: the status line shows
+    /// the live count so an empty/failed recording is visible immediately).
+    std::atomic<std::uint64_t> written_events_{0};
     std::chrono::steady_clock::time_point start_time_;
+
+public:
+    /// @brief Events written so far (processed mode; 0 in raw mode).
+    std::uint64_t events_written() const { return written_events_.load(); }
+    /// @brief True while a processed-mode recording is active.
+    bool is_processed_recording() const { return recording_ && processed_mode_; }
+private:
 };
 
 } // namespace gui
