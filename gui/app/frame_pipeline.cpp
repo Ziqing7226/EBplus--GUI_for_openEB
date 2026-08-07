@@ -48,6 +48,13 @@ bool FramePipeline::start(long width, long height,
     fps_    = clamp_fps(fps);
     accumulation_us_ = accumulation_time_us;
     file_mode_ = false;
+    {
+        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
+        display_preproc_.init(static_cast<int>(width_), static_cast<int>(height_));
+        // Source restart: temporal state of the display filter must not
+        // carry over (timestamps may jump backward).
+        display_preproc_.reset_filter();
+    }
     generator_ = std::make_unique<gui_algo::FrameGenerator>(width_, height_);
     recreate_window();
     return window_id_ >= 0;
@@ -129,8 +136,39 @@ void FramePipeline::add_events(const Metavision::EventCD* begin,
     if (file_mode_) {
         file_generator_.add_events(begin, end);
     } else if (generator_) {
-        generator_->add_events(begin, end);
+        // Display-path preprocessing (Phase 2.5): apply the Preprocessing
+        // panel's noise filter to the DISPLAY stream only. gui_algo::Event
+        // and Metavision::EventCD are layout-compatible (static_assert in
+        // algo/common/event.h), so the reinterpret_cast is safe.
+        if (display_preproc_.active()) {
+            std::lock_guard<std::mutex> lk(display_preproc_mutex_);
+            const auto n = static_cast<std::size_t>(end - begin);
+            auto [p, m] = display_preproc_.apply(
+                reinterpret_cast<const gui_algo::Event*>(begin), n);
+            generator_->add_events(
+                reinterpret_cast<const Metavision::EventCD*>(p),
+                reinterpret_cast<const Metavision::EventCD*>(p) + m);
+        } else {
+            generator_->add_events(begin, end);
+        }
     }
+}
+
+void FramePipeline::set_display_preproc_param(const std::string& key,
+                                              const std::string& value) {
+    {
+        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
+        display_preproc_.set_param(key, value);
+    }
+    file_generator_.set_display_preproc_param(key, value);
+}
+
+void FramePipeline::reset_display_preproc_filter() {
+    {
+        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
+        display_preproc_.reset_filter();
+    }
+    file_generator_.reset_display_preproc_filter();
 }
 
 void FramePipeline::set_accumulation_time_us(Metavision::timestamp us) {

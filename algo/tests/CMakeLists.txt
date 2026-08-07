@@ -139,9 +139,11 @@ add_executable(test_file_frame_generator
     test_file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
 target_include_directories(test_file_frame_generator PRIVATE
     ${CMAKE_SOURCE_DIR}/gui
+    ${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(test_file_frame_generator PRIVATE
     Qt6::Core
@@ -160,9 +162,12 @@ add_executable(test_filter_in_render
     test_filter_in_render.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
+    ${CMAKE_SOURCE_DIR}/algo/calibration/intrinsic.cpp
 )
 target_include_directories(test_filter_in_render PRIVATE
     ${CMAKE_SOURCE_DIR}/gui
+    ${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(test_filter_in_render PRIVATE
     Qt6::Core
@@ -179,9 +184,11 @@ add_executable(test_filter_integration
     test_filter_integration.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
 target_include_directories(test_filter_integration PRIVATE
     ${CMAKE_SOURCE_DIR}/gui
+    ${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(test_filter_integration PRIVATE
     Qt6::Core
@@ -199,9 +206,11 @@ add_executable(test_loop_flip
     test_loop_flip.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
 target_include_directories(test_loop_flip PRIVATE
     ${CMAKE_SOURCE_DIR}/gui
+    ${CMAKE_SOURCE_DIR}
 )
 target_link_libraries(test_loop_flip PRIVATE
     Qt6::Core

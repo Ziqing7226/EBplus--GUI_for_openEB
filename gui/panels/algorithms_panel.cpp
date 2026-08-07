@@ -388,6 +388,10 @@ void AlgorithmsPanel::apply_global_preproc(const std::string& key,
     // Preprocessor / RoiFilter member recognises the key. Preprocessing is
     // stackable and NOT mutually exclusive with the main algorithm.
     if (bridge_) bridge_->apply_global_preproc(key, value);
+    // Also forward to the display-path preprocessing (Phase 2.5): the main
+    // display applies the same noise filter to the rendered stream.
+    emit preproc_display_param_changed(QString::fromStdString(key),
+                                       QString::fromStdString(value));
 }
 
 void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {

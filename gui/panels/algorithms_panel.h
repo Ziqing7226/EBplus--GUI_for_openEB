@@ -64,6 +64,10 @@ signals:
     /// @brief Emitted when an algorithm is enabled from the sidebar and
     /// needs an AlgoWindow opened (Standalone/Overlay algos need a display).
     void open_algo_window_requested(const std::string& name);
+    /// @brief Emitted when a Preprocessing panel parameter changes
+    /// (preproc_* key + value). MainWindow forwards it to the display-path
+    /// preprocessing in FramePipeline (Phase 2.5).
+    void preproc_display_param_changed(const QString& key, const QString& value);
     /// @brief Emitted (from the SDK data thread, via the bridge's overload
     /// callback) when the flood guard auto-disables an algorithm. Connected
     /// queued to on_algorithm_overloaded so the checkbox sync runs on the

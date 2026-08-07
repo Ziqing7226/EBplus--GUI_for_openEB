@@ -35,6 +35,8 @@
 #include <opencv2/core.hpp>
 
 #include <metavision/sdk/base/utils/timestamp.h>
+
+#include "algo_bridge/backends/backend_common.h"
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/core/utils/colors.h>
 
@@ -209,6 +211,20 @@ private:
     // rendered pixels and the events emitted via events_window_ready, so
     // algorithm output matches the display orientation.
     FilterChain* filter_chain_{nullptr};
+
+    // Display-path preprocessing (Phase 2.5). Applied in render_frame() to
+    // the RENDERED pixels only — events_window_ready keeps the un-noise-
+    // filtered stream for algorithm instances (they own their Preprocessor
+    // stage). GUI thread only (render_frame runs there).
+    gui::backend_detail::Preprocessor display_preproc_;
+public:
+    /// @brief Applies a display-path preprocessing parameter (Phase 2.5).
+    void set_display_preproc_param(const std::string& key, const std::string& value) {
+        display_preproc_.set_param(key, value);
+    }
+    /// @brief Clears the display filter's temporal state (seek/loop).
+    void reset_display_preproc_filter() { display_preproc_.reset_filter(); }
+private:
 };
 
 } // namespace gui

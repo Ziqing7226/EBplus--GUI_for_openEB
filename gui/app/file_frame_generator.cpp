@@ -63,6 +63,7 @@ void FileFrameGenerator::set_geometry(long width, long height) {
     width_ = width;
     height_ = height;
     frame_.create(static_cast<int>(height_), static_cast<int>(width_), CV_8UC3);
+    display_preproc_.init(static_cast<int>(width), static_cast<int>(height));
 }
 
 void FileFrameGenerator::set_fps(std::uint16_t fps) {
@@ -124,6 +125,9 @@ void FileFrameGenerator::seek(Metavision::timestamp t_us) {
     const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
     if (dur > 0 && t_us > dur) t_us = dur;
     cursor_us_ = t_us;
+    // Display filter temporal state must not span a backward time jump
+    // (Phase 2.5) — stale timestamp surfaces would suppress events.
+    display_preproc_.reset_filter();
     // Notify listeners so stateful algorithms can reset their temporal state
     // before the new (possibly earlier) events arrive. Without this, a
     // backward seek leaves algorithm timestamps ahead of the new events,
@@ -202,6 +206,9 @@ void FileFrameGenerator::on_timer() {
         }
         if (loop_) {
             cursor_us_ = 0;
+            // Display filter temporal state must not span the loop wrap
+            // (Phase 2.5) — event time jumps back to the start of the file.
+            display_preproc_.reset_filter();
             emit looped();
         } else {
             timer_.stop();
@@ -293,7 +300,22 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
                                filtered);
         *window_events = std::move(filtered);
     }
-    for (const auto& ev : *window_events) {
+    // Display-path preprocessing (Phase 2.5): apply the Preprocessing panel's
+    // noise filter to the RENDERED pixels only. The events emitted to
+    // algorithm instances below are intentionally NOT noise-filtered here —
+    // each algorithm owns its Preprocessor stage with the same config.
+    const std::vector<Metavision::EventCD>* draw_events = window_events.get();
+    std::vector<Metavision::EventCD> display_filtered;
+    if (display_preproc_.active() && !window_events->empty()) {
+        auto [p, m] = display_preproc_.apply(
+            reinterpret_cast<const gui_algo::Event*>(window_events->data()),
+            window_events->size());
+        display_filtered.assign(
+            reinterpret_cast<const Metavision::EventCD*>(p),
+            reinterpret_cast<const Metavision::EventCD*>(p) + m);
+        draw_events = &display_filtered;
+    }
+    for (const auto& ev : *draw_events) {
         if (ev.x < 0 || ev.x >= w || ev.y < 0 || ev.y >= h) continue;
         frame_.ptr<cv::Vec3b>(static_cast<int>(ev.y))[ev.x] = ev.p ? on : off;
     }

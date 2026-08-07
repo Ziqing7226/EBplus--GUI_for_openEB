@@ -3,7 +3,9 @@
 // also flipped when a Replace-mode algorithm is running).
 #include <QCoreApplication>
 #include <cstdio>
+#include <cmath>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/calib3d.hpp>
 
 #include <metavision/sdk/base/events/event_cd.h>
 
@@ -93,9 +95,163 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "PASS: events_window_ready emitted flipped event x=89\n");
     }
 
-    if (ok) {
-        std::fprintf(stderr, "PASS: flip_x correctly applied in render_frame() and events_window_ready\n");
-        return 0;
+    if (!ok) return 1;
+
+    // --- Test 3: display-path noise filter (Phase 2.5) ---
+    // An isolated event (no spatial-temporal neighbours) must be filtered
+    // from the RENDERED frame, while events_window_ready keeps the
+    // un-noise-filtered stream for algorithm instances.
+    {
+        FileFrameGenerator gen2;
+        gen2.set_geometry(W, H);
+        gen2.set_fps(60);
+        gen2.set_accumulation_time_us(1000);
+        gen2.set_display_preproc_param("preproc_filter_enabled", "true");
+        gen2.set_display_preproc_param("preproc_filter_mode", "1");  // STCF
+        gen2.set_display_preproc_param("preproc_filter_correlation_time_s", "0.001");
+        gen2.set_display_preproc_param("preproc_filter_min_neighbors", "1");
+
+        QImage rendered2;
+        QObject::connect(&gen2, &FileFrameGenerator::frame_ready,
+                         [&](QImage f, Metavision::timestamp) { rendered2 = f; });
+        std::shared_ptr<std::vector<Metavision::EventCD>> emitted2;
+        QObject::connect(&gen2, &FileFrameGenerator::events_window_ready,
+                         [&](std::shared_ptr<std::vector<Metavision::EventCD>> evs,
+                             Metavision::timestamp) { emitted2 = evs; });
+
+        // Isolated event at (10,50) t=100 + a supported pair at (60,60) t=200/300.
+        std::vector<Metavision::EventCD> evs;
+        evs.push_back(Metavision::EventCD{10, 50, 100, 1});
+        evs.push_back(Metavision::EventCD{60, 60, 200, 1});
+        evs.push_back(Metavision::EventCD{61, 60, 300, 1});
+        gen2.add_events(evs.data(), evs.data() + evs.size());
+        gen2.set_duration_us(2000);
+        gen2.seek(0);
+
+        if (rendered2.isNull()) {
+            std::fprintf(stderr, "FAIL: no frame rendered with display filter\n");
+            return 1;
+        }
+        const QRgb bg = rendered2.pixel(0, 0);
+        if (rendered2.pixel(10, 50) != bg) {
+            std::fprintf(stderr, "FAIL: isolated event should be display-filtered\n");
+            return 1;
+        }
+        if (rendered2.pixel(60, 60) == bg && rendered2.pixel(61, 60) == bg) {
+            std::fprintf(stderr, "FAIL: supported pair should pass the display filter\n");
+            return 1;
+        }
+        if (!emitted2 || emitted2->size() != 3) {
+            std::fprintf(stderr, "FAIL: events_window_ready must stay un-noise-filtered "
+                                 "(expected 3 events, got %zu)\n",
+                         emitted2 ? emitted2->size() : 0);
+            return 1;
+        }
+        std::fprintf(stderr, "PASS: display noise filter — render filtered, algo stream kept\n");
     }
-    return 1;
+
+    // --- Test 4: display-path undistort (Phase 2.5 step 3) ---
+    // With a distortion calibration loaded, an event must be RENDERED at the
+    // undistorted coordinate (matching cv::undistortPoints ground truth).
+    {
+        const std::string yml = "/tmp/gui_test_calib.yml";
+        cv::FileStorage fs(yml, cv::FileStorage::WRITE);
+        fs << "image_width" << W << "image_height" << H;
+        cv::Mat K = (cv::Mat_<double>(3, 3) << 80, 0, 50, 0, 80, 50, 0, 0, 1);
+        cv::Mat dist = (cv::Mat_<double>(1, 5) << -0.25, 0.08, 0.0, 0.0, 0.0);
+        fs << "camera_matrix" << K << "distortion_coefficients" << dist;
+        fs.release();
+
+        // Ground truth for (10, 10).
+        std::vector<cv::Point2f> in{{10, 10}}, gt;
+        cv::undistortPoints(in, gt, K, dist, cv::noArray(), K);
+
+        FileFrameGenerator gen3;
+        gen3.set_geometry(W, H);
+        gen3.set_fps(60);
+        gen3.set_accumulation_time_us(1000);
+        gen3.set_display_preproc_param("preproc_undistort_path", yml);
+        gen3.set_display_preproc_param("preproc_undistort_enabled", "true");
+
+        QImage rendered3;
+        QObject::connect(&gen3, &FileFrameGenerator::frame_ready,
+                         [&](QImage f, Metavision::timestamp) { rendered3 = f; });
+        Metavision::EventCD ev3{10, 10, 100, 1};
+        gen3.add_events(&ev3, &ev3 + 1);
+        gen3.set_duration_us(2000);
+        gen3.seek(0);
+
+        if (rendered3.isNull()) {
+            std::fprintf(stderr, "FAIL: no frame rendered with undistort\n");
+            return 1;
+        }
+        const QRgb bg = rendered3.pixel(0, 0);
+        const int gx = static_cast<int>(std::lround(gt[0].x));
+        const int gy = static_cast<int>(std::lround(gt[0].y));
+        if (rendered3.pixel(10, 10) != bg) {
+            std::fprintf(stderr, "FAIL: original position must be empty after undistort\n");
+            return 1;
+        }
+        if (gx < 0 || gy < 0 || gx >= W || gy >= H || rendered3.pixel(gx, gy) == bg) {
+            std::fprintf(stderr, "FAIL: event not rendered at undistorted (%d,%d)\n", gx, gy);
+            return 1;
+        }
+        std::fprintf(stderr, "PASS: display undistort renders at (%d,%d) per cv ground truth\n",
+                     gx, gy);
+    }
+
+    // --- Test 5: display-path downsample as a thinning filter (Phase 2.5
+    // step 4): only even-parity coordinates render (positions unchanged,
+    // no coordinate halving); events_window_ready keeps the full stream.
+    {
+        FileFrameGenerator gen4;
+        gen4.set_geometry(W, H);
+        gen4.set_fps(60);
+        gen4.set_accumulation_time_us(1000);
+        gen4.set_display_preproc_param("preproc_downsample", "true");
+
+        QImage rendered4;
+        QObject::connect(&gen4, &FileFrameGenerator::frame_ready,
+                         [&](QImage f, Metavision::timestamp) { rendered4 = f; });
+        std::shared_ptr<std::vector<Metavision::EventCD>> emitted4;
+        QObject::connect(&gen4, &FileFrameGenerator::events_window_ready,
+                         [&](std::shared_ptr<std::vector<Metavision::EventCD>> evs,
+                             Metavision::timestamp) { emitted4 = evs; });
+
+        std::vector<Metavision::EventCD> evs;
+        evs.push_back(Metavision::EventCD{10, 50, 100, 1});   // even/even → kept
+        evs.push_back(Metavision::EventCD{11, 50, 101, 1});   // odd x     → thinned
+        evs.push_back(Metavision::EventCD{10, 51, 102, 1});   // odd y     → thinned
+        evs.push_back(Metavision::EventCD{11, 51, 103, 1});   // odd/odd   → thinned
+        evs.push_back(Metavision::EventCD{60, 60, 104, 1});   // even/even → kept
+        gen4.add_events(evs.data(), evs.data() + evs.size());
+        gen4.set_duration_us(2000);
+        gen4.seek(0);
+
+        if (rendered4.isNull()) {
+            std::fprintf(stderr, "FAIL: no frame rendered with display downsample\n");
+            return 1;
+        }
+        const QRgb bg = rendered4.pixel(0, 0);
+        if (rendered4.pixel(10, 50) == bg || rendered4.pixel(60, 60) == bg) {
+            std::fprintf(stderr, "FAIL: even-coordinate events must render (no coord halving)\n");
+            return 1;
+        }
+        if (rendered4.pixel(11, 50) != bg || rendered4.pixel(10, 51) != bg ||
+            rendered4.pixel(11, 51) != bg) {
+            std::fprintf(stderr, "FAIL: odd-coordinate events must be thinned\n");
+            return 1;
+        }
+        if (!emitted4 || emitted4->size() != 5) {
+            std::fprintf(stderr, "FAIL: events_window_ready must stay complete "
+                                 "(expected 5 events, got %zu)\n",
+                         emitted4 ? emitted4->size() : 0);
+            return 1;
+        }
+        std::fprintf(stderr, "PASS: display downsample — even-parity rendered at "
+                             "original coordinates, algo stream kept complete\n");
+    }
+
+    std::fprintf(stderr, "PASS: flip_x correctly applied in render_frame() and events_window_ready\n");
+    return 0;
 }

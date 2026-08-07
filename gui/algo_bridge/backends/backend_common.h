@@ -191,6 +191,12 @@ struct Preprocessor {
         rebuild_filter();
         undistort_lut_valid_ = false;  // geometry changed → LUT needs rebuild
     }
+    /// @brief Clears the noise filter's temporal state (timestamp surfaces).
+    /// Required when the event stream jumps backward in time (file seek/loop,
+    /// source restart) — otherwise stale future timestamps suppress events.
+    void reset_filter() {
+        if (filter_) filter_->reset();
+    }
     void rebuild_filter() {
         if (filter_enabled_ && filter_w_ > 0 && filter_h_ > 0) {
             filter_ = std::make_unique<gui_algo::NoiseFilter>(

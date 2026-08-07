@@ -1101,6 +1101,16 @@ void MainWindow::wire_signals() {
     if (auto* ap = settings_->algorithms_panel()) {
         connect(ap, &AlgorithmsPanel::info_message, this,
                 [forward](const QString& m) { forward(m, false); });
+        // Display-path preprocessing (Phase 2.5): every Preprocessing panel
+        // change is also forwarded to FramePipeline so the main display's
+        // rendered stream gets the same noise filter (algorithm feeds are
+        // unchanged — each instance owns its Preprocessor stage).
+        connect(ap, &AlgorithmsPanel::preproc_display_param_changed, this,
+                [this](const QString& key, const QString& value) {
+                    if (auto* fp = camera_.frame_pipeline()) {
+                        fp->set_display_preproc_param(key.toStdString(), value.toStdString());
+                    }
+                });
         connect(ap, &AlgorithmsPanel::algorithm_toggled, this,
                 [this](const QString& name, bool on) {
                     statusBar()->showMessage(

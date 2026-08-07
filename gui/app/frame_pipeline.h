@@ -25,12 +25,14 @@
 #include <QImage>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include <metavision/sdk/base/utils/timestamp.h>
 #include <metavision/sdk/base/events/event_cd.h>
 
 #include "algo/common/frame_generator.h"
+#include "algo_bridge/backends/backend_common.h"
 #include "file_frame_generator.h"
 
 namespace gui {
@@ -69,6 +71,19 @@ public:
     /// take effect immediately during file playback. Must be called before
     /// start_file() to ensure the pointer is available when rendering begins.
     void set_file_filter_chain(FilterChain* fc);
+
+    /// @brief Applies a display-path preprocessing parameter (Phase 2.5):
+    /// the SAME settings as the AlgorithmsPanel Preprocessing stage, applied
+    /// to the DISPLAY event stream only (live: in add_events before the
+    /// CDFrameGenerator; file: in render_frame after the FilterChain).
+    /// Algorithm feeds are unchanged — each algorithm keeps its own
+    /// Preprocessor stage. Thread-safe (the live path runs on the SDK thread).
+    void set_display_preproc_param(const std::string& key, const std::string& value);
+
+    /// @brief Clears the display filter's temporal state (camera restart,
+    /// file seek/loop — event time jumps backward and stale timestamp
+    /// surfaces would suppress events).
+    void reset_display_preproc_filter();
 
     // --- File playback control (file mode only) ---
 
@@ -136,6 +151,13 @@ private:
     std::uint16_t fps_{30};
     Metavision::timestamp accumulation_us_{33000};
     std::uint16_t fps_limit_{60};
+
+    // Display-path preprocessing (Phase 2.5). The live-mode instance is used
+    // in add_events() on the SDK thread (mutex-guarded); the file-mode
+    // instance lives inside FileFrameGenerator (GUI thread). Both receive the
+    // same parameters via set_display_preproc_param().
+    gui::backend_detail::Preprocessor display_preproc_;
+    std::mutex display_preproc_mutex_;
 };
 
 } // namespace gui
