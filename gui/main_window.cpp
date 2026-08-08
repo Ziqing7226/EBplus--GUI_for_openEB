@@ -887,6 +887,7 @@ void MainWindow::wire_signals() {
         settings_->file_tools_panel()->set_record_enabled(false);
         settings_->file_tools_panel()->set_stop_enabled(false);
         settings_->file_tools_panel()->set_export_enabled(false);
+        roi_draw_pending_ = false;
         on_toggle_roi_drag(false);
         display_->clear();
         if (auto* pb = findChild<QDockWidget*>("PlaybackDock")) {
@@ -1086,10 +1087,18 @@ void MainWindow::wire_signals() {
 
     // ROI panel <-> display widget / unified state (Phase 2.6 debug D-6)
     auto* roi = settings_->roi_panel();
-    // Drag-drawn rect goes straight to the unified state source (the panel
-    // no longer owns rect widgets).
+    // Drag-drawn rect goes straight to the unified state source — EXCEPT
+    // during a dialog-initiated draw (Phase 2.6 debug D-6 follow-up): then
+    // the dialog re-opens with the drawn rect for confirmation instead.
     connect(display_, &EventDisplayWidget::roi_dragged, this,
             [this](int x, int y, int w, int h) {
+                if (roi_draw_pending_) {
+                    roi_draw_pending_ = false;
+                    on_toggle_roi_drag(false);
+                    roi_pending_rect_ = {x, y, w, h};
+                    open_roi_settings_dialog();
+                    return;
+                }
                 camera_.set_unified_roi(true, x, y, w, h);
             });
     connect(roi, &RoiPanel::roi_enable_toggled, this,
@@ -1442,7 +1451,6 @@ void MainWindow::on_load_biases() {
 }
 
 void MainWindow::on_toggle_roi_drag(bool on) {
-    roi_drag_active_ = on;
     display_->set_roi_drag_mode(on);
     statusBar()->showMessage(on ? tr("ROI drag mode on — draw a rectangle on the display.")
                                 : tr("ROI drag mode off."), 3000);
@@ -1479,13 +1487,28 @@ void MainWindow::open_roi_settings_dialog() {
     UnifiedRoiDialog dlg(this);
     dlg.set_state(en, x0, y0, x1, y1, camera_.unified_roi_roni(),
                   si.width > 0 ? si.width : 1280,
-                  si.height > 0 ? si.height : 720, roi_drag_active_);
-    if (dlg.exec() == QDialog::Accepted) {
+                  si.height > 0 ? si.height : 720);
+    // A completed dialog-initiated draw pre-fills the rect (see the
+    // roi_dragged handler).
+    if (roi_pending_rect_.has_value()) {
+        const auto r = *roi_pending_rect_;
+        dlg.set_rect(r.x, r.y, r.w, r.h);
+    }
+    const int rc = dlg.exec();
+    if (rc == UnifiedRoiDialog::kDrawRequest) {
+        // The modal exec has ENDED (a hidden-but-modal dialog still blocks
+        // mouse input to the main display — the first version of this flow
+        // made dragging impossible). The main display is interactive now:
+        // enable drag mode and wait for roi_dragged, which re-opens this
+        // dialog with the drawn rect.
+        roi_draw_pending_ = true;
+        on_toggle_roi_drag(true);
+        return;
+    }
+    roi_pending_rect_.reset();
+    if (rc == QDialog::Accepted) {
         camera_.set_unified_roi(dlg.roi_enabled(), dlg.x(), dlg.y(),
                                 dlg.w(), dlg.h(), dlg.roni());
-        if (dlg.drag_mode() != roi_drag_active_) {
-            on_toggle_roi_drag(dlg.drag_mode());
-        }
     }
 }
 

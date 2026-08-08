@@ -27,9 +27,12 @@ public:
     /// @brief Fills the controls from the current unified state and sets the
     /// sensor-dependent spin ranges. Call before exec(). Rect [x0,x1)×[y0,y1);
     /// an empty rect (w/h <= 0) initializes to the default center 256×144.
-    /// @p drag_mode = current ROI drag-mode state of the main display.
     void set_state(bool enabled, int x0, int y0, int x1, int y1, bool roni,
-                   int sensor_w, int sensor_h, bool drag_mode);
+                   int sensor_w, int sensor_h);
+
+    /// @brief Fills the rect fields after a display drag (the dialog is
+    /// re-shown for confirmation — the rect is NOT applied until OK).
+    void set_rect(int x, int y, int w, int h);
 
     bool roi_enabled() const;
     bool roni() const;
@@ -38,7 +41,13 @@ public:
     int y() const;
     int w() const;
     int h() const;
-    bool drag_mode() const;
+
+    /// exec() return code emitted by the "Draw on Display..." button. The
+    /// modal exec ENDS (so the main display becomes interactive — a hidden
+    /// modal dialog still blocks mouse input); MainWindow enables drag
+    /// mode and re-opens the dialog with the drawn rect (Phase 2.6 debug
+    /// D-6 follow-up).
+    static constexpr int kDrawRequest = 2;
 
 private slots:
     /// @brief Cross-field validation (x+w <= sensor_w etc.). Disables OK and
@@ -52,7 +61,7 @@ private:
     QSpinBox* y_sp_{nullptr};
     QSpinBox* w_sp_{nullptr};
     QSpinBox* h_sp_{nullptr};
-    QCheckBox* drag_cb_{nullptr};
+    QPushButton* draw_btn_{nullptr};
     QLabel* hint_lbl_{nullptr};
     QPushButton* ok_btn_{nullptr};
     int sensor_w_{1280};

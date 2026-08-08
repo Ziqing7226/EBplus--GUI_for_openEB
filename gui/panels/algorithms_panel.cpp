@@ -498,8 +498,8 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_harmonic_threshold", "Harm thresh", 'f', "0.1", "0.0", "1.0", 5},
         // Repetitious (mode 6). rep_period_us/rep_tolerance_us are omitted:
         // the algo stores them but never uses them (audit §7.3).
-        {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "10", "1", "100", 6},
-        {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "10", "1", "100", 6},
+        {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "2", "1", "100", 6},
+        {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "2", "1", "100", 6},
         {"preproc_filter_rep_min_dt_to_store_us", "Rep min dt (us)", 'i', "1000", "0", "1000000", 6},
         // SpatialBP (mode 7)
         {"preproc_filter_sbp_center_radius_px", "SBP center", 'i', "2", "1", "10", 7},

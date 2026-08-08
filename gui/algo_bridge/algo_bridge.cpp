@@ -339,9 +339,10 @@ AlgoParamSpec pstring(const std::string& k, const std::string& disp,
 /// params mirror the standalone NoiseFilter params (§4.3.5) so the same 8
 /// denoiser modes are available as a preprocessing stage. NOTE: the noise
 /// defaults below (baf_dt 1000, stcf corr 0.005, dwf_wlen 2, agep_tau 3000,
-/// harm Q 5, rep_ratio 10, sbp_dt 10000, ...) are the intentional GUI working
+/// harm Q 5, sbp_dt 10000, ...) are the intentional GUI working
 /// points from design §4.3.5 — they deliberately differ from both jAER and
-/// the algo member defaults. Do NOT "align" them.
+/// the algo member defaults. Do NOT "align" them. EXCEPTION (user
+/// decision, 2.6 debug): rep_ratio_shorter/longer follow jAER (2/2).
 std::vector<AlgoParamSpec> preproc_params() {
     return {
         pbool("preproc_filter_enabled", "Preproc: noise filter", "false"),
@@ -376,8 +377,12 @@ std::vector<AlgoParamSpec> preproc_params() {
         pfloat("preproc_filter_harmonic_threshold", "Preproc Harmonic thresh", "0.1", "0.0", "1.0"),
         // Repetitious (mode 6). rep_period_us/rep_tolerance_us are NOT
         // registered: the algo stores them but never uses them (audit §7.3).
-        pint("preproc_filter_rep_ratio_shorter", "Preproc Rep ratio short", "10", "1", "100"),
-        pint("preproc_filter_rep_ratio_longer", "Preproc Rep ratio long", "10", "1", "100"),
+        // ratio defaults aligned to jAER RepetitiousFilter (2/2, verified in
+        // ref/jaer .../RepetitiousFilter.java:41,43) — the earlier 10/10 GUI
+        // working point widened the "repetitious" ISI band 5× on both sides,
+        // over-dropping quasi-periodic events (user decision, 2.6 debug).
+        pint("preproc_filter_rep_ratio_shorter", "Preproc Rep ratio short", "2", "1", "100"),
+        pint("preproc_filter_rep_ratio_longer", "Preproc Rep ratio long", "2", "1", "100"),
         pint("preproc_filter_rep_min_dt_to_store_us", "Preproc Rep min dt (us)", "1000", "0", "1000000"),
         // SpatialBP (mode 7)
         pint("preproc_filter_sbp_center_radius_px", "Preproc SBP center", "2", "1", "10"),

@@ -178,9 +178,13 @@ private:
     /// with only-ROI content (default). Enabled only while the unified ROI
     /// is active.
     QCheckBox* roi_zoom_cb_{nullptr};
-    /// Current ROI drag-mode state of the main display (dialog init,
-    /// Phase 2.6 debug D-6).
-    bool roi_drag_active_{false};
+    /// Dialog-initiated ROI draw in flight (Phase 2.6 debug D-6 follow-up):
+    /// while roi_draw_pending_ is true, the next roi_dragged re-opens the
+    /// ROI settings dialog with the drawn rect (roi_pending_rect_) instead
+    /// of applying it directly.
+    bool roi_draw_pending_{false};
+    struct PendingRect { int x, y, w, h; };
+    std::optional<PendingRect> roi_pending_rect_;
     /// Saved unified-ROI state for the default-ROI automation (Phase 2.6
     /// debug D-7): heavy algorithms force the center 256×144 ROI on enable
     /// and restore this prior state on disable.
