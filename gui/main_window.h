@@ -194,6 +194,10 @@ private:
         bool roni;
     };
     std::optional<RoiAutomationSave> roi_automation_save_;
+    /// Saved shared-downsample state for the E2VID automation (Phase 3):
+    /// E2VID forces the 1/4 downsample ON while enabled; this prior state
+    /// is restored on disable.
+    std::optional<bool> e2v_downsample_save_;
     SettingsPanel* settings_{nullptr};
     QDockWidget* settings_dock_{nullptr};  ///< Right-dock wrapper, for hide/show.
     PlaybackControls* playback_controls_{nullptr};

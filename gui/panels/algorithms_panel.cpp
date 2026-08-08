@@ -259,12 +259,16 @@ void AlgorithmsPanel::build_ui() {
                         // sidebar state even if no widget signal fired since
                         // app start.
                         // Auto-set 1/4 downsample based on algorithm type
-                        // (§11.2-I): coordinate-halving backends (E2VID,
-                        // ISI, TimeSurface, HoughLine, HoughCircle) default
+                        // (§11.2-I): coordinate-halving backends (ISI,
+                        // TimeSurface, HoughLine, HoughCircle) default
                         // ON per project memory; all others default OFF to
                         // avoid 4× input loss (§五-F1). Only auto-set while
                         // the user has not manually toggled the checkbox.
-                        if (!preproc_downsample_user_touched_) {
+                        // E2VID is EXCLUDED here (Phase 3): it gets the
+                        // forced save/restore automation in MainWindow
+                        // instead (unconditional, like the default ROI).
+                        if (!preproc_downsample_user_touched_ &&
+                            algo_name != "event_to_video") {
                             const bool want = algo_halves_coords(algo_name);
                             if (preproc_downsample_cb_->isChecked() != want) {
                                 QSignalBlocker b(preproc_downsample_cb_);
@@ -372,6 +376,13 @@ void AlgorithmsPanel::set_algo_status(const std::string& name, const QString& te
     if (it != algo_status_labels_.end() && it->second) {
         it->second->setText(text);
     }
+}
+
+void AlgorithmsPanel::set_preproc_downsample(bool on) {
+    if (preproc_downsample_cb_->isChecked() == on) return;
+    QSignalBlocker b(preproc_downsample_cb_);
+    preproc_downsample_cb_->setChecked(on);
+    apply_global_preproc("preproc_downsample", on ? "true" : "false");
 }
 
 void AlgorithmsPanel::apply_global_preproc(const std::string& key,

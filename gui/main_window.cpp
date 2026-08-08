@@ -1228,7 +1228,7 @@ void MainWindow::wire_signals() {
                                                        camera_.unified_roi_roni());
                 });
         connect(ap, &AlgorithmsPanel::algorithm_toggled, this,
-                [this](const QString& name, bool on) {
+                [this, ap](const QString& name, bool on) {
                     statusBar()->showMessage(
                         tr("%1: %2").arg(name).arg(on ? tr("enabled") : tr("disabled")), 3000);
                     const auto key = name.toStdString();
@@ -1246,6 +1246,14 @@ void MainWindow::wire_signals() {
                             roi_automation_save_ = {en, x0, y0, x1, y1,
                                                     camera_.unified_roi_roni()};
                             camera_.set_unified_roi(true, -1, -1, 256, 144);
+                        }
+                        // Phase 3 (user decision, reproduction-driven Phase
+                        // scope): E2VID forces the shared 1/4 downsample ON
+                        // while enabled — same save/restore pattern as the
+                        // default ROI.
+                        if (key == "event_to_video") {
+                            e2v_downsample_save_ = ap->preproc_downsample_enabled();
+                            ap->set_preproc_downsample(true);
                         }
                     } else {
                         // Close the AlgoWindow if open (its closing handler will
@@ -1272,6 +1280,13 @@ void MainWindow::wire_signals() {
                                                         256, 144, s.roni);
                             }
                             roi_automation_save_.reset();
+                        }
+                        // Phase 3: restore the downsample state saved when
+                        // E2VID was enabled.
+                        if (key == "event_to_video" &&
+                            e2v_downsample_save_.has_value()) {
+                            ap->set_preproc_downsample(*e2v_downsample_save_);
+                            e2v_downsample_save_.reset();
                         }
                     }
                 });

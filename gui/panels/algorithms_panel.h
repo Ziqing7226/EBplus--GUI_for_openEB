@@ -83,6 +83,16 @@ public:
     /// No-op for algorithms without a status label.
     void set_algo_status(const std::string& name, const QString& text);
 
+    /// @brief Phase 3: programmatic get/set of the shared 1/4 downsample for
+    /// the E2VID automation — E2VID forces it ON while enabled (like the
+    /// default-ROI automation), and MainWindow restores the prior state on
+    /// disable. Uses QSignalBlocker + apply_global_preproc (forwards to both
+    /// the algorithm instances and the display path).
+    bool preproc_downsample_enabled() const {
+        return preproc_downsample_cb_->isChecked();
+    }
+    void set_preproc_downsample(bool on);
+
 signals:
     /// @brief Emitted when an algorithm's enable state changes.
     void algorithm_toggled(const QString& name, bool enabled);
