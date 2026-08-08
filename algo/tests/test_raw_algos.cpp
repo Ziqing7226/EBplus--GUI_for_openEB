@@ -369,6 +369,33 @@ TEST_F(RawAlgoTest, CornerDetectorCornersAreValid) {
     }
 }
 
+// Arc mode (dv Arc* port): must produce a stable, bounded number of
+// finite, in-bounds corners on real data. The response threshold (20000us,
+// vs the 1us dv-equivalent default) suppresses the thousands of weak
+// single-window flicker detections the dense sparkler trails produce;
+// min_track_len(3) keeps only corners persistent across windows.
+TEST_F(RawAlgoTest, CornerDetectorArcCornersAreValid) {
+    const auto& s = stream();
+    CornerDetector cd(s.width(), s.height(), CornerDetector::Mode::Arc);
+    cd.set_arc_min_response_us(20000.0);
+    cd.set_min_track_len(3);
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        cd.process(batch.data(), batch.size());
+    }
+    EXPECT_GT(cd.corners().size(), 0u) << "Arc mode found no corners in real data";
+    EXPECT_LE(cd.corners().size(), 500u) << "Arc corner count exploded";
+    for (const auto& c : cd.corners()) {
+        EXPECT_TRUE(is_finite(c.x)) << "corner x NaN";
+        EXPECT_TRUE(is_finite(c.y)) << "corner y NaN";
+        EXPECT_TRUE(is_finite(c.strength));
+        EXPECT_GT(c.strength, 0.0F);
+        EXPECT_GE(c.x, -1.0F);
+        EXPECT_LE(c.x, static_cast<float>(s.width()));
+        EXPECT_GE(c.y, -1.0F);
+        EXPECT_LE(c.y, static_cast<float>(s.height()));
+    }
+}
+
 // =========================================================================
 // 10. ISIAnalyzer — histogram must contain real ISI samples from real events.
 // =========================================================================

@@ -593,3 +593,102 @@ TEST(CornerDetectorTest, HarrisDetectsAtCorrectCoordinates) {
     EXPECT_TRUE(found) << "Harris corner not found near (90,90); got "
                        << d.corners().size() << " corners";
 }
+
+TEST(CornerDetectorTest, ArcDetectsRightAngleCornerNotEdgeMiddle) {
+    // Arc mode (dv-processing Arc* port, ring radii 3/4). Same geometry as
+    // dv's own "right-angle" test: a filled block x in [24,35], y in [12,21]
+    // (same polarity, near-simultaneous timestamps) forms a step corner just
+    // above-right of (24,22). A test event at the corner must be detected;
+    // a test event at (30,22) below the middle of the long straight bottom
+    // edge must NOT (its ring arc spans ~half the ring, outside dv's
+    // [0.125, 0.4] x circumference limits). Both test pixels are primed so
+    // the is_recent pre-gate passes.
+    CornerDetector d(48, 48, CornerDetector::Mode::Arc);
+    d.set_min_track_len(3);
+    EXPECT_EQ(d.arc_corner_range_us(), 5000);      // dv sample default
+    EXPECT_DOUBLE_EQ(d.arc_min_response_us(), 1.0);
+    std::vector<Event> ev;
+    for (int w = 0; w < 6; ++w) {
+        const Metavision::timestamp base = w * 10000;
+        ev.clear();
+        // Prime both test pixels (is_recent gate needs prior activity).
+        ev.emplace_back(24, 22, 1, base + 100);
+        ev.emplace_back(30, 22, 1, base + 100);
+        // Fill the block (timestamps spread over ~50us, well inside the
+        // 5000us corner range).
+        for (int y = 12; y <= 21; ++y) {
+            for (int x = 24; x <= 35; ++x) {
+                ev.emplace_back(static_cast<std::uint16_t>(x),
+                                static_cast<std::uint16_t>(y), 1,
+                                base + 1000 + (x + y));
+            }
+        }
+        // Test events: corner pixel and straight-edge middle pixel.
+        ev.emplace_back(24, 22, 1, base + 3000);
+        ev.emplace_back(30, 22, 1, base + 3000);
+        auto pkt = make_packet(ev);
+        d.process(pkt);
+    }
+    bool corner_found = false;
+    for (const auto& c : d.corners()) {
+        if (std::abs(c.x - 24.0F) <= 3.0F && std::abs(c.y - 22.0F) <= 3.0F) {
+            corner_found = true;
+            EXPECT_GT(c.strength, 0.0F) << "Arc response must be a positive "
+                                           "continuous value (us)";
+        }
+        EXPECT_FALSE(std::abs(c.x - 30.0F) <= 3.0F && std::abs(c.y - 22.0F) <= 3.0F)
+            << "Arc corner on the middle of a straight edge at (" << c.x << ","
+            << c.y << ")";
+    }
+    EXPECT_TRUE(corner_found) << "Arc corner not found near (24,22); got "
+                              << d.corners().size() << " corners";
+}
+
+TEST(CornerDetectorTest, ArcRecentGateBlocksStaleSurface) {
+    // The is_recent pre-gate (our addition; dv evaluates every event) must
+    // suppress detection when the time surface is stale: the block
+    // timestamps remain in the surface, so without the gate the stale arc
+    // would still satisfy all dv conditions (min-inside > max-outside).
+    CornerDetector d(48, 48, CornerDetector::Mode::Arc);
+    d.set_min_track_len(1);
+    // Small timestamps must stay further than the corner range from 0, or
+    // the never-seen ring pixels (read as 0, dv semantics) would join the
+    // arc (|0 - ts| < range) and inflate it past the arc-length limits.
+    d.set_arc_corner_range_us(500);
+    std::vector<Event> ev;
+    // One live window -> a real corner is detected.
+    ev.emplace_back(24, 22, 1, 100);
+    for (int y = 12; y <= 21; ++y) {
+        for (int x = 24; x <= 35; ++x) {
+            ev.emplace_back(static_cast<std::uint16_t>(x),
+                            static_cast<std::uint16_t>(y), 1, 1000 + (x + y));
+        }
+    }
+    ev.emplace_back(24, 22, 1, 3000);
+    auto pkt = make_packet(ev);
+    d.process(pkt);
+    // Cross the 10ms accumulation boundary so detect_and_track runs.
+    ev.clear();
+    ev.emplace_back(5, 5, 1, 15000);  // far away, gated out itself
+    auto pkt2 = make_packet(ev);
+    d.process(pkt2);
+    bool warmup_found = false;
+    for (const auto& c : d.corners()) {
+        if (std::abs(c.x - 24.0F) <= 3.0F && std::abs(c.y - 22.0F) <= 3.0F) {
+            warmup_found = true;
+        }
+    }
+    EXPECT_TRUE(warmup_found) << "warm-up corner missing, gate test invalid";
+    // Jump far beyond max_age_us (40000); lone corner events spaced further
+    // apart than max_age_us keep failing the gate (each gated event still
+    // refreshes its own surface pixel, but 50000us > 40000us), and the old
+    // track must decay away.
+    for (int w = 0; w < 6; ++w) {
+        ev.clear();
+        ev.emplace_back(24, 22, 1, 100000 + w * 50000);
+        auto p = make_packet(ev);
+        d.process(p);
+    }
+    EXPECT_TRUE(d.corners().empty())
+        << "is_recent gate failed: stale surface still yields corners";
+}

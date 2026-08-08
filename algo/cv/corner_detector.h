@@ -18,6 +18,17 @@
 //   Harris          — frame-based Harris on the accumulation frame
 //                     (cv::cornerHarris) mapped back to event positions.
 //                     (untouched, self-developed design §4.3.12)
+//   Arc             — ✅ 移植自 dv-processing ArcCornerDetector (Arc*). For
+//                     each event, two rings (radii 3 and 4) of the
+//                     same-polarity time surface are searched for a
+//                     contiguous arc of recent timestamps (spread <
+//                     arc_corner_range_us) whose length is within
+//                     [0.125, 0.4] x circumference, while every timestamp
+//                     outside the arc is older than the arc minimum. The
+//                     continuous response (min-inside minus max-outside, in
+//                     us, averaged over both rings) goes to Corner::strength.
+//                     Diffs from dv: is_recent pre-gate per event, only the
+//                     small radius 3/4 templates (dv defaults to 5/6).
 // Detected corners are tracked by nearest-neighbour matching; tracks shorter
 // than min_track_len are suppressed. Output: vector<Corner>. Header-only.
 
@@ -28,6 +39,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -52,7 +64,7 @@ struct Corner {
 /// @brief Multi-mode corner detector with nearest-neighbour tracking.
 class CornerDetector {
 public:
-    enum class Mode { EndStopped, TypeCoincidence, Harris };
+    enum class Mode { EndStopped, TypeCoincidence, Harris, Arc };
 
     CornerDetector(int width, int height, Mode mode = Mode::EndStopped)
         : width_(width), height_(height), mode_(mode) {
@@ -80,6 +92,16 @@ public:
     /// @brief jAER maxDtToUse: max age (us) for a pixel to count as active.
     void set_max_age_us(int v) { max_age_us_ = clamp_i(v, 1000, 1000000); }
 
+    // Arc params (✅ 移植自 dv-processing ArcCornerDetector, ring radii 3/4) -
+    /// @brief dv cornerRange: max timestamp spread (us) allowed within a
+    ///        corner arc. Default 5000 matches dv's documented code sample
+    ///        (docs/.../feature_detection/sample1.cpp).
+    void set_arc_corner_range_us(int v) { arc_corner_range_us_ = clamp_i(v, 100, 1000000); }
+    /// @brief Min corner response (us) to emit. dv has no such threshold —
+    ///        it emits any corner whose response is positive by construction;
+    ///        the default 1us mirrors that, raise it to suppress weak corners.
+    void set_arc_min_response_us(double v) { arc_min_response_us_ = clamp_d(v, 0.0, 1e9); }
+
     // Shared orientation params (jAER NUM_TYPES = 4) ----------------------
     /// @brief Number of orientation bins. Clamped to exactly 4: the
     /// EndStopped walker tables kBaseDx/kBaseDy have only 4 entries and are
@@ -99,6 +121,8 @@ public:
     int end_stopped_distance() const { return end_stopped_distance_; }
     int max_age_us() const { return max_age_us_; }
     int num_orientations() const { return num_orientations_; }
+    int arc_corner_range_us() const { return arc_corner_range_us_; }
+    double arc_min_response_us() const { return arc_min_response_us_; }
 
     /// @brief Accumulates events; runs detection + tracking when the
     ///        accumulation window elapses, emitting corners at output_hz.
@@ -125,6 +149,8 @@ public:
                 process_event_type_coincidence(e, x, y);
             } else if (mode_ == Mode::EndStopped) {
                 process_event_end_stopped(e, x, y);
+            } else if (mode_ == Mode::Arc) {
+                process_event_arc(e, x, y);
             }
             if (e.t > last_event_t_) last_event_t_ = e.t;
         }
@@ -213,6 +239,18 @@ private:
     /// 3 = 135 deg (-1,1). EndStopped walks these integer offsets.
     static constexpr int kBaseDx[4] = {1, 1, 0, -1};
     static constexpr int kBaseDy[4] = {0, 1, 1, 1};
+
+    /// Arc* ring templates (dv internal::CircleCoordinates), (dx,dy) pairs
+    /// ordered circularly. Only the small radii 3/4 are ported — dv supports
+    /// 3..7 and defaults to 5/6, but the per-event cost grows with ring
+    /// length and the SDK thread budget does not allow it.
+    static constexpr int kArcCircle3[16][2] = {
+        {0, 3},  {1, 3},  {2, 2},  {3, 1},  {3, 0},  {3, -1}, {2, -2}, {1, -3},
+        {0, -3}, {-1, -3}, {-2, -2}, {-3, -1}, {-3, 0}, {-3, 1}, {-2, 2}, {-1, 3}};
+    static constexpr int kArcCircle4[20][2] = {
+        {0, 4},  {1, 4},  {2, 3},  {3, 2},  {4, 1},  {4, 0},  {4, -1},
+        {3, -2}, {2, -3}, {1, -4}, {0, -4}, {-1, -4}, {-2, -3}, {-3, -2},
+        {-4, -1}, {-4, 0}, {-4, 1}, {-3, 2}, {-2, 3}, {-1, 4}};
 
     /// @brief PCA orientation from the 3x3 same-polarity time surface (same
     ///        method as orientation_filter.h). Returns a bin in
@@ -359,6 +397,126 @@ private:
         return runlen >= min_run && runlen <= dmax;
     }
 
+    // ✅ 移植自 dv-processing ArcCornerDetector (Arc*) ------------------------
+    // Ported differences from dv (arc_corner_detector.hpp):
+    //  - is_recent pre-gate: dv evaluates the full ring logic on EVERY event
+    //    (~10x the EndStopped per-event cost), which would saturate the SDK
+    //    thread; here the ring evaluation only runs for pixels that already
+    //    showed any-polarity activity within max_age_us (2 lookups, same
+    //    recency test as EndStopped's walker, checked against the surface
+    //    state before the current event is written).
+    //  - Only ring radii 3/4 (dv default 5/6), see kArcCircle3/4.
+    //  - Our time surface stores -1 for never-seen (dv: 0); values are
+    //    clamped to 0 on read so the timestamp arithmetic matches dv.
+    void process_event_arc(const Event& e, int x, int y) {
+        // Pre-gate: only evaluate pixels that showed any-polarity activity
+        // within max_age_us BEFORE this event (2 lookups, same recency test
+        // as EndStopped's walker). The surface itself is updated for every
+        // event, as in dv — the gate only skips the ring evaluation.
+        const bool recent = is_recent(x, y, e.t);
+        const int pol = e.p ? 1 : 0;
+        ori_surface_[idx_of(x, y, pol)] = e.t;
+        if (!recent) return;
+        // dv restricts the roi by radius2: the full radius-4 ring must be
+        // inside the frame.
+        constexpr int kRMax = 4;
+        if (x < kRMax || x >= width_ - kRMax || y < kRMax || y >= height_ - kRMax) return;
+
+        const auto ts_at = [&](int dx, int dy) -> Metavision::timestamp {
+            const Metavision::timestamp v = ori_surface_[idx_of(x + dx, y + dy, pol)];
+            return v < 0 ? 0 : v;  // dv semantics: never-seen reads as 0
+        };
+
+        const int (*rings[2])[2] = {kArcCircle3, kArcCircle4};
+        const int ring_len[2] = {16, 20};
+        double response = 0.0;
+        bool is_corner = false;
+        for (int ci = 0; ci < 2; ++ci) {
+            const int (*ring)[2] = rings[ci];
+            const int n = ring_len[ci];
+            // The arc must contain the ring's max timestamp (dv: find it first).
+            int max_i = 0;
+            Metavision::timestamp max_v = ts_at(ring[0][0], ring[0][1]);
+            for (int i = 1; i < n; ++i) {
+                const Metavision::timestamp v = ts_at(ring[i][0], ring[i][1]);
+                if (v > max_v) { max_v = v; max_i = i; }
+            }
+            if (max_v == 0) continue;  // dv: ring untouched, circle skipped
+            // expandArc: grow a contiguous arc around max_i while timestamps
+            // stay within arc_corner_range_us of the arc minimum.
+            int begin = max_i, end = max_i, arc_size = 1;
+            Metavision::timestamp min_in = max_v;
+            bool begin_found = false, end_found = false;
+            do {
+                if (!begin_found) {
+                    const int cand = (begin == 0) ? n - 1 : begin - 1;
+                    const Metavision::timestamp v = ts_at(ring[cand][0], ring[cand][1]);
+                    const Metavision::timestamp d = v > min_in ? v - min_in : min_in - v;
+                    if (d < arc_corner_range_us_) {
+                        begin = cand;
+                        ++arc_size;
+                        if (v < min_in) min_in = v;
+                    } else {
+                        begin_found = true;
+                    }
+                }
+                if (!end_found) {
+                    const int cand = (end + 1 == n) ? 0 : end + 1;
+                    const Metavision::timestamp v = ts_at(ring[cand][0], ring[cand][1]);
+                    const Metavision::timestamp d = v > min_in ? v - min_in : min_in - v;
+                    if (d < arc_corner_range_us_) {
+                        end = cand;
+                        ++arc_size;
+                        if (v < min_in) min_in = v;
+                    } else {
+                        end_found = true;
+                    }
+                }
+            } while (arc_size < n && !(begin_found && end_found) && begin != end);
+
+            if (!arc_size_ok(arc_size, n)) {
+                response = 0.0;
+                is_corner = false;
+                break;
+            }
+            // checkSurroundingTimestamps: no timestamp outside the arc may
+            // be newer than the arc minimum (early-out on first violation,
+            // as in dv).
+            Metavision::timestamp max_out = std::numeric_limits<Metavision::timestamp>::min();
+            for (int i = (end + 1 == n) ? 0 : end + 1; i != begin;
+                 i = (i + 1 == n) ? 0 : i + 1) {
+                const Metavision::timestamp v = ts_at(ring[i][0], ring[i][1]);
+                if (v > max_out) max_out = v;
+                if (v > min_in) break;
+            }
+            if (min_in > max_out) {
+                // dv response: (min inside - max outside), averaged over rings.
+                response += static_cast<double>(min_in - max_out) / 2.0;
+                is_corner = true;
+            } else {
+                response = 0.0;
+                is_corner = false;
+                break;
+            }
+        }
+        if (is_corner && response >= arc_min_response_us_) {
+            event_detected_.push_back(Detected{static_cast<float>(x),
+                                               static_cast<float>(y),
+                                               static_cast<float>(response)});
+        }
+    }
+
+    /// @brief dv ArcLimits: arc length within [0.125, 0.4] x circumference;
+    ///        the inverted arc is accepted as well (dv semantics).
+    static bool arc_size_ok(int arc_size, int circumference) {
+        const int min_size = static_cast<int>(std::lround(0.125 * circumference));
+        const int max_size = static_cast<int>(std::lround(0.4 * circumference));
+        if (arc_size >= min_size && arc_size <= max_size) return true;
+        if (circumference < arc_size) return false;
+        const int inverted = circumference - arc_size;
+        return inverted >= min_size && inverted <= max_size;
+    }
+
     struct Detected { float x, y, strength; };
 
     void detect_and_track() {
@@ -366,6 +524,7 @@ private:
         switch (mode_) {
             case Mode::EndStopped:
             case Mode::TypeCoincidence:
+            case Mode::Arc:
                 detected.swap(event_detected_);
                 break;
             case Mode::Harris:
@@ -516,6 +675,8 @@ private:
     int max_age_us_{40000};              // jAER maxDtToUse
     int ori_time_window_us_{10000};      // PCA neighbour freshness window
     int ori_min_neighbors_{2};           // PCA min recent neighbours
+    int arc_corner_range_us_{5000};      // dv cornerRange (sample default)
+    double arc_min_response_us_{1.0};    // dv: none (any positive response)
 
     // Harris accumulation frames.
     cv::Mat accum_;

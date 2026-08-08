@@ -755,14 +755,18 @@ void AlgoBridge::register_self_cv() {
           pint("mass_decay_tau_us", "Mass decay tau (us)", "10000", "1", "1000000"),
           pfloat("threshold_mass_for_visible", "Threshold mass visible", "10.0", "0.0", "1000000.0")}});
 
-    // §4.3.12 Corner Detector (3 modes). The enum labels must match
+    // §4.3.12 Corner Detector (4 modes). The enum labels must match
     // algo/cv/corner_detector.h's Mode enum order exactly (the backend maps
     // the index via static_cast) — previously mislabelled (§五-A1): the old
     // labels {"Harris","FAST","AGAST"} ran EndStopped/TypeCoincidence/Harris.
+    // Mode 3 = Arc (dv-processing Arc* port, ring radii 3/4).
     add({"corner_detector", "Corner Detector", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {penum("mode", "Mode", "0", {"0=EndStopped", "1=TypeCoincidence", "2=Harris"}),
-          pfloat("min_score", "Min score", "0.1", "0", "1.0")}});
+         {penum("mode", "Mode", "0", {"0=EndStopped", "1=TypeCoincidence", "2=Harris",
+           "3=Arc"}),
+          pfloat("min_score", "Min score", "0.1", "0", "1.0"),
+          pint("arc_corner_range_us", "Arc corner range (us)", "5000", "100", "1000000"),
+          pfloat("arc_min_response_us", "Arc min response (us)", "1", "0", "1000000")}});
 
     // §4.3.13 Line Segment Detector (ELiSeD)
     add({"line_segment", "Line Segment (ELiSeD)", "cv", "self",

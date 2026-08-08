@@ -273,13 +273,17 @@ public:
         if (roi_.set_param(k, v)) return;
         if (k == "mode") {
             int m = to_i(v);
-            if (m >= 0 && m <= 2) algo_.set_mode(static_cast<gui_algo::CornerDetector::Mode>(m));
+            if (m >= 0 && m <= 3) algo_.set_mode(static_cast<gui_algo::CornerDetector::Mode>(m));
         } else if (k == "min_score") algo_.set_threshold(to_d(v));
+        else if (k == "arc_corner_range_us") algo_.set_arc_corner_range_us(to_i(v));
+        else if (k == "arc_min_response_us") algo_.set_arc_min_response_us(to_d(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "mode") return from_i(static_cast<int>(algo_.mode()));
         if (k == "min_score") return from_d(algo_.threshold());
+        if (k == "arc_corner_range_us") return from_i(algo_.arc_corner_range_us());
+        if (k == "arc_min_response_us") return from_d(algo_.arc_min_response_us());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
