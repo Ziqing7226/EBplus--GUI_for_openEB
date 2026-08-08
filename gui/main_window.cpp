@@ -46,7 +46,6 @@
 #include "exporter/export_dialog.h"
 #include "recorder/record_dialog.h"
 #include "calibration/calibration_wizard.h"
-#include "calibration/sharpness_dialog.h"
 #include "calibration/focus_dialog.h"
 #include "app/icon_provider.h"
 #include "display/display_strategy.h"
@@ -278,9 +277,9 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         delete calibration_wizard_;
         // calibration_wizard_ is nulled by the destroyed signal handler.
     }
-    if (sharpness_dialog_) {
-        delete sharpness_dialog_;
-        // sharpness_dialog_ is nulled by the destroyed signal handler.
+    if (focus_dialog_) {
+        delete focus_dialog_;
+        // focus_dialog_ is nulled by the destroyed signal handler.
     }
     // Standalone algorithm windows — use close() (not delete) so that
     // closeEvent fires, the `closing` signal is emitted, and the cleanup
@@ -528,9 +527,8 @@ void MainWindow::build_menus() {
     auto* m_tools = mb->addMenu(tr("&Tools"));
     // Calibration (Phase 9) — launches the wizard lazily.
     m_tools->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
-    // Sharpness meter — live variance-of-Laplacian of the current event frame.
-    m_tools->addAction(tr("&Sharpness..."), this, &MainWindow::on_sharpness);
-    // Focus assistant (Phase 5) — rotating Siemens Star + live camera output.
+    // Sharpness meter removed (Phase 5 step 2) — replaced by the Siemens-star
+    // Focus Assistant.
     m_tools->addAction(tr("&Focus Assistant..."), this, &MainWindow::on_focus);
 
     // Help
@@ -1996,20 +1994,6 @@ void MainWindow::on_intrinsic_wizard() {
     calibration_wizard_->set_camera(&camera_);
     calibration_wizard_->set_display(display_);
     calibration_wizard_->show_intrinsic();
-}
-
-void MainWindow::on_sharpness() {
-    if (!sharpness_dialog_) {
-        sharpness_dialog_ = new SharpnessDialog(this);
-        sharpness_dialog_->setAttribute(Qt::WA_DeleteOnClose);
-        connect(sharpness_dialog_, &QObject::destroyed, this, [this]() {
-            sharpness_dialog_ = nullptr;
-        });
-    }
-    sharpness_dialog_->set_display(display_);
-    sharpness_dialog_->show();
-    sharpness_dialog_->raise();
-    sharpness_dialog_->activateWindow();
 }
 
 void MainWindow::on_focus() {
