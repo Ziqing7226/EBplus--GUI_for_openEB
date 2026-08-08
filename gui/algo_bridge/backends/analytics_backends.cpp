@@ -372,12 +372,15 @@ public:
 };
 
 /// ISIAnalyzer backend — renders ISI histogram as frame.
-/// Complex algorithm (design §4.4.4): defaults to the center 128×128 ROI.
+/// Complex algorithm (design §4.4.4): the ISI histogram is inherently
+/// per-pixel in jAER (ISIHistogrammer keeps last-ts per channel) — the
+/// global mode was deleted (Phase 2.6 debug, user decision: it degenerates
+/// to a single static bin at high event rates).
 class ISIAnalyzerBackend final : public AlgoBackend {
     int sensor_w_{0}, sensor_h_{0};
     ProcessRegion roi_;
-    bool per_pixel_{false};
     float max_isi_ms_{100.0F};
+    float min_isi_ms_{0.0F};
     std::unique_ptr<gui_algo::ISIAnalyzer> algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
@@ -393,7 +396,8 @@ public:
         const int ah = roi_.enabled ? roi_.rh : sensor_h_;
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
-        algo_ = std::make_unique<gui_algo::ISIAnalyzer>(aw / f, ah / f, 32, max_isi_ms_, per_pixel_);
+        algo_ = std::make_unique<gui_algo::ISIAnalyzer>(aw / f, ah / f, 32, max_isi_ms_,
+                                                        min_isi_ms_);
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (preproc_.set_param(k, v)) {
@@ -408,12 +412,12 @@ public:
         const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
         bool roi_changed = false;
-        if (k == "per_pixel") {
-            per_pixel_ = to_b(v);
-            need_rebuild = true;
-        } else if (k == "max_isi_ms") {
+        if (k == "max_isi_ms") {
             max_isi_ms_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_max_isi_ms(max_isi_ms_);
+        } else if (k == "min_isi_ms") {
+            min_isi_ms_ = static_cast<float>(to_d(v));
+            if (algo_) algo_->set_min_isi_ms(min_isi_ms_);
         }
         // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
@@ -428,8 +432,8 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "per_pixel") return from_b(per_pixel_);
         if (k == "max_isi_ms") return from_d(max_isi_ms_);
+        if (k == "min_isi_ms") return from_d(min_isi_ms_);
         // Phase 2.6: roi_* keys intentionally not handled.
         return {};
     }

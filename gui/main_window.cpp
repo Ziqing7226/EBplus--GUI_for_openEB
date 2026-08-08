@@ -1485,7 +1485,9 @@ void MainWindow::open_roi_settings_dialog() {
     camera_.unified_roi(en, x0, y0, x1, y1);
     const auto& si = camera_.sensor_info();
     UnifiedRoiDialog dlg(this);
-    dlg.set_state(en, x0, y0, x1, y1, camera_.unified_roi_roni(),
+    // The enable state is owned by the sidebar checkboxes — the dialog only
+    // edits rect/mode (user decision); OK keeps the current enable state.
+    dlg.set_state(x0, y0, x1, y1, camera_.unified_roi_roni(),
                   si.width > 0 ? si.width : 1280,
                   si.height > 0 ? si.height : 720);
     // A completed dialog-initiated draw pre-fills the rect (see the
@@ -1507,7 +1509,7 @@ void MainWindow::open_roi_settings_dialog() {
     }
     roi_pending_rect_.reset();
     if (rc == QDialog::Accepted) {
-        camera_.set_unified_roi(dlg.roi_enabled(), dlg.x(), dlg.y(),
+        camera_.set_unified_roi(en, dlg.x(), dlg.y(),
                                 dlg.w(), dlg.h(), dlg.roni());
     }
 }

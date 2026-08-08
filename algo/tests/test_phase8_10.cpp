@@ -704,8 +704,8 @@ TEST(ISIAnalyzerTest, Params) {
     ISIAnalyzer a(32, 32);
     a.set_bin_count(64);
     EXPECT_EQ(a.bin_count(), 64);
-    a.set_per_pixel(true);
-    EXPECT_TRUE(a.per_pixel());
+    a.set_min_isi_ms(5.0f);
+    EXPECT_FLOAT_EQ(a.min_isi_ms(), 5.0f);
 }
 TEST(ISIAnalyzerTest, Process) {
     ISIAnalyzer a(32, 32);
@@ -717,7 +717,7 @@ TEST(ISIAnalyzerTest, Process) {
 // range in µs (previous bug divided by 1000, causing all samples to be
 // dropped and counts() to be all-zero).
 TEST(ISIAnalyzerTest, SetterPreservesRange) {
-    ISIAnalyzer a(32, 32, 32, 100.0f, false);  // max_isi = 100 ms = 100000 us
+    ISIAnalyzer a(32, 32, 32, 100.0f);  // max_isi = 100 ms = 100000 us
     a.set_bin_count(64);
     // Feed two events 50000 us apart (< 100000 us, must land in a bin).
     gui_algo::Event ev[2] = {{16, 16, 1, 0}, {16, 16, 1, 50000}};

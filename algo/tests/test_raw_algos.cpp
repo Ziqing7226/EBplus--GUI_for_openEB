@@ -352,7 +352,7 @@ TEST_F(RawAlgoTest, CornerDetectorCornersAreValid) {
 // =========================================================================
 TEST_F(RawAlgoTest, ISIAnalyzerHistogramPopulated) {
     const auto& s = stream();
-    ISIAnalyzer isi(s.width(), s.height(), 32, 100.0f, false);
+    ISIAnalyzer isi(s.width(), s.height(), 32, 100.0f);
     isi.process(s.events().data(), s.events().size());
     std::uint64_t total = 0;
     for (auto c : isi.counts()) total += c;

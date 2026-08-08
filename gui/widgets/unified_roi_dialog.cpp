@@ -2,10 +2,10 @@
 
 #include "widgets/unified_roi_dialog.h"
 
-#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -19,49 +19,62 @@ UnifiedRoiDialog::UnifiedRoiDialog(QWidget* parent) : QDialog(parent) {
     setModal(true);
 
     auto* layout = new QVBoxLayout(this);
-    auto* form = new QFormLayout();
-    form->setContentsMargins(0, 0, 0, 0);
-    form->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
-    layout->addLayout(form);
+    // Single grid for the whole form so every label/field shares column
+    // boundaries: row labels (Mode/Origin/Size) in col 0, sub-labels
+    // (X/W) in col 1, fields in col 2, sub-labels (Y/H) in col 3, fields in
+    // col 4. All labels are right-aligned + vertically centered, which puts
+    // every text baseline on the row's center line, and the grid's uniform
+    // horizontal spacing makes the Origin↔X and Size↔W gaps identical
+    // (user feedback: baseline misalignment and uneven gaps/widths).
+    auto* grid = new QGridLayout();
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(8);
+    layout->addLayout(grid);
 
-    enable_cb_ = new QCheckBox(tr("Enable ROI"), this);
-    form->addRow(enable_cb_);
+    // The enable state lives on the sidebar checkboxes (user decision), so
+    // the dialog only edits rect/mode.
+    constexpr int kFieldW = 110;  // one width for ALL four fields (fits
+                                  // "auto-center" + the spin buttons)
+    const auto rvc = Qt::AlignRight | Qt::AlignVCenter;
+    int row = 0;
 
     mode_combo_ = new QComboBox(this);
     mode_combo_->addItem(tr("ROI (keep inside)"), false);
     mode_combo_->addItem(tr("RONI (drop inside)"), true);
-    form->addRow(tr("Mode"), mode_combo_);
+    mode_combo_->setFixedWidth(2 * kFieldW + 8);  // spans both field columns
+    grid->addWidget(new QLabel(tr("Mode"), this), row, 0, rvc);
+    grid->addWidget(mode_combo_, row++, 1, 1, 4, Qt::AlignVCenter);
 
-    // X/Y and W/H share rows — four stacked full-width rows made the dialog
-    // squat and ugly (user feedback). Fields stay at size hint so the dialog
-    // keeps a tall, panel-like aspect like the old RoiPanel section.
     x_sp_ = new QSpinBox(this);
     x_sp_->setSpecialValueText(tr("auto-center"));
+    x_sp_->setFixedWidth(kFieldW);
     y_sp_ = new QSpinBox(this);
     y_sp_->setSpecialValueText(tr("auto-center"));
-    auto* xy_row = new QHBoxLayout();
-    xy_row->addWidget(new QLabel(tr("X"), this));
-    xy_row->addWidget(x_sp_, 1);
-    xy_row->addSpacing(12);
-    xy_row->addWidget(new QLabel(tr("Y"), this));
-    xy_row->addWidget(y_sp_, 1);
-    form->addRow(tr("Origin"), xy_row);
+    y_sp_->setFixedWidth(kFieldW);
+    grid->addWidget(new QLabel(tr("Origin"), this), row, 0, rvc);
+    grid->addWidget(new QLabel(tr("X"), this), row, 1, rvc);
+    grid->addWidget(x_sp_, row, 2, Qt::AlignVCenter);
+    grid->addWidget(new QLabel(tr("Y"), this), row, 3, rvc);
+    grid->addWidget(y_sp_, row, 4, Qt::AlignVCenter);
+    row++;
 
     w_sp_ = new QSpinBox(this);
+    w_sp_->setFixedWidth(kFieldW);
     h_sp_ = new QSpinBox(this);
-    auto* wh_row = new QHBoxLayout();
-    wh_row->addWidget(new QLabel(tr("W"), this));
-    wh_row->addWidget(w_sp_, 1);
-    wh_row->addSpacing(12);
-    wh_row->addWidget(new QLabel(tr("H"), this));
-    wh_row->addWidget(h_sp_, 1);
-    form->addRow(tr("Size"), wh_row);
+    h_sp_->setFixedWidth(kFieldW);
+    grid->addWidget(new QLabel(tr("Size"), this), row, 0, rvc);
+    grid->addWidget(new QLabel(tr("W"), this), row, 1, rvc);
+    grid->addWidget(w_sp_, row, 2, Qt::AlignVCenter);
+    grid->addWidget(new QLabel(tr("H"), this), row, 3, rvc);
+    grid->addWidget(h_sp_, row, 4, Qt::AlignVCenter);
+    row++;
 
     draw_btn_ = new QPushButton(tr("Draw on Display..."), this);
     draw_btn_->setToolTip(
         tr("Close this dialog, drag the ROI rectangle on the main display, "
            "then confirm here."));
-    form->addRow(QString(), draw_btn_);
+    grid->addWidget(draw_btn_, row, 1, 1, 4);
     connect(draw_btn_, &QPushButton::clicked, this,
             [this]() { done(kDrawRequest); });
 
@@ -83,7 +96,7 @@ UnifiedRoiDialog::UnifiedRoiDialog(QWidget* parent) : QDialog(parent) {
     connect(h_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, &UnifiedRoiDialog::validate_inputs);
 }
 
-void UnifiedRoiDialog::set_state(bool enabled, int x0, int y0, int x1, int y1,
+void UnifiedRoiDialog::set_state(int x0, int y0, int x1, int y1,
                                  bool roni, int sensor_w, int sensor_h) {
     sensor_w_ = sensor_w > 0 ? sensor_w : 1280;
     sensor_h_ = sensor_h > 0 ? sensor_h : 720;
@@ -105,7 +118,6 @@ void UnifiedRoiDialog::set_state(bool enabled, int x0, int y0, int x1, int y1,
         h = 144;
     }
 
-    enable_cb_->setChecked(enabled);
     mode_combo_->setCurrentIndex(roni ? 1 : 0);
     x_sp_->setValue(x);
     y_sp_->setValue(y);
@@ -122,7 +134,6 @@ void UnifiedRoiDialog::set_rect(int x, int y, int w, int h) {
     validate_inputs();
 }
 
-bool UnifiedRoiDialog::roi_enabled() const { return enable_cb_->isChecked(); }
 bool UnifiedRoiDialog::roni() const { return mode_combo_->currentData().toBool(); }
 int UnifiedRoiDialog::x() const { return x_sp_->value(); }
 int UnifiedRoiDialog::y() const { return y_sp_->value(); }

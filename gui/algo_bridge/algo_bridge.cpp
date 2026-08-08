@@ -940,10 +940,12 @@ void AlgoBridge::register_self_analytics() {
     add({"flow_statistics", "Flow Statistics", "analytics", "self",
          AlgoDisplayMode::Passive, {}});
 
-    // §4.4.4 ISI Analyzer
+    // §4.4.4 ISI Analyzer. Per-pixel only (jAER parity; the global mode was
+    // deleted — it degenerates to a single static bin at high event rates).
+    // min_isi_ms = jAER minIsiUs band (0 = no lower cut).
     add({"isi_analyzer", "ISI Analyzer", "analytics", "self",
          AlgoDisplayMode::Standalone,
-         {pbool("per_pixel", "Per pixel", "false"),
+         {pfloat("min_isi_ms", "Min ISI (ms)", "0", "0", "999"),
           pfloat("max_isi_ms", "Max ISI (ms)", "100", "1", "1000")}});
 
     // §4.4.5 Particle Counter. line_y default -1 = auto (algo uses the

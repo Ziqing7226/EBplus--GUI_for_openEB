@@ -27,14 +27,14 @@ public:
     /// @brief Fills the controls from the current unified state and sets the
     /// sensor-dependent spin ranges. Call before exec(). Rect [x0,x1)×[y0,y1);
     /// an empty rect (w/h <= 0) initializes to the default center 256×144.
-    void set_state(bool enabled, int x0, int y0, int x1, int y1, bool roni,
+    /// The enable state is NOT edited here (the sidebar checkboxes own it).
+    void set_state(int x0, int y0, int x1, int y1, bool roni,
                    int sensor_w, int sensor_h);
 
     /// @brief Fills the rect fields after a display drag (the dialog is
     /// re-shown for confirmation — the rect is NOT applied until OK).
     void set_rect(int x, int y, int w, int h);
 
-    bool roi_enabled() const;
     bool roni() const;
     /// Rectangle in the set_unified_roi convention: x/y = -1 = auto-center.
     int x() const;
@@ -55,7 +55,6 @@ private slots:
     void validate_inputs();
 
 private:
-    QCheckBox* enable_cb_{nullptr};
     QComboBox* mode_combo_{nullptr};
     QSpinBox* x_sp_{nullptr};
     QSpinBox* y_sp_{nullptr};
