@@ -85,8 +85,8 @@ struct AlgoResult {
     std::vector<OverlayText> texts;
     std::vector<ColoredEvent> colored_events;       ///< 朝向/方向着色事件
     std::vector<OverlayTrajectory> trajectories;    ///< 聚类轨迹
-    bool has_aux_frame{false};
-    cv::Mat aux_frame;                              ///< 辅助可视化帧（Hough 空间等）
+    // Phase 2.6 debug D-2: has_aux_frame / aux_frame deleted with the hough
+    // aux display (jAER-style debug view, never visible in baseline practice).
 };
 
 /// @brief 类型擦除的算法后端接口。

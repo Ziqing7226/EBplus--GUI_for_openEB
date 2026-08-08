@@ -14,6 +14,7 @@
 #include <QColor>
 #include <QLineF>
 #include <QMetaObject>
+#include <QPainter>
 #include <QPoint>
 #include <QPointF>
 #include <QPointer>
@@ -95,7 +96,22 @@ void PassiveStrategy::apply(QImage& /*frame*/, AlgoResult& result,
 // ---------------------------------------------------------------------------
 
 void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
-                            const AlgoInfo& info, DisplayContext& ctx) {
+                            const AlgoInfo& /*info*/, DisplayContext& ctx) {
+    // Phase 2.6 debug D-3: with the unified ROI active, every instance is
+    // fed ROI-cropped, ROI-relative events (AlgoInstance::push_events), so
+    // all overlay primitives arrive in ROI-relative coordinates. Shift them
+    // back by the ROI origin so they land on the processing region of the
+    // full-sensor main frame. No-op (offset 0,0) when the ROI is off.
+    int ox = 0, oy = 0;
+    if (ctx.camera) {
+        bool roi_on = false;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        ctx.camera->unified_roi(roi_on, x0, y0, x1, y1);
+        if (roi_on) {
+            ox = x0;
+            oy = y0;
+        }
+    }
     // Convert AlgoResult overlay primitives into FrameAnnotator calls.
     // Boxes: tracked-object boxes with optional id.
     if (!r.boxes.empty()) {
@@ -103,7 +119,7 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         boxes.reserve(r.boxes.size());
         for (const auto& b : r.boxes) {
             FrameAnnotator::Box box;
-            box.rect = QRect(b.x, b.y, b.w, b.h);
+            box.rect = QRect(b.x + ox, b.y + oy, b.w, b.h);
             box.id = b.id;
             boxes.push_back(std::move(box));
         }
@@ -114,7 +130,8 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         std::vector<QLineF> lines;
         lines.reserve(r.lines.size());
         for (const auto& l : r.lines) {
-            lines.emplace_back(QPointF(l.x1, l.y1), QPointF(l.x2, l.y2));
+            lines.emplace_back(QPointF(l.x1 + ox, l.y1 + oy),
+                               QPointF(l.x2 + ox, l.y2 + oy));
         }
         ctx.annotator->draw_lines(frame, lines);
     }
@@ -123,7 +140,7 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         std::vector<QPointF> pts;
         pts.reserve(r.points.size());
         for (const auto& p : r.points) {
-            pts.emplace_back(p.x, p.y);
+            pts.emplace_back(p.x + ox, p.y + oy);
         }
         ctx.annotator->draw_points(frame, pts);
     }
@@ -132,7 +149,7 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         std::vector<std::pair<QPointF, QColor>> pts;
         pts.reserve(r.colored_points.size());
         for (const auto& p : r.colored_points) {
-            pts.emplace_back(QPointF(p.x, p.y),
+            pts.emplace_back(QPointF(p.x + ox, p.y + oy),
                              QColor(p.r, p.g, p.b));
         }
         ctx.annotator->draw_colored_points(frame, pts, 3.0);
@@ -142,7 +159,7 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         std::vector<std::pair<QPointF, double>> circs;
         circs.reserve(r.circles.size());
         for (const auto& c : r.circles) {
-            circs.emplace_back(QPointF(c.cx, c.cy), c.r);
+            circs.emplace_back(QPointF(c.cx + ox, c.cy + oy), c.r);
         }
         ctx.annotator->draw_circles(frame, circs);
     }
@@ -150,7 +167,7 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
     if (!r.texts.empty()) {
         for (const auto& t : r.texts) {
             ctx.annotator->draw_text(frame, QString::fromStdString(t.text),
-                                     QPoint(t.x, t.y));
+                                     QPoint(t.x + ox, t.y + oy));
         }
     }
     // Colored events (orientation/direction per-event coloring).
@@ -158,7 +175,7 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         std::vector<std::tuple<int, int, QColor>> cevs;
         cevs.reserve(r.colored_events.size());
         for (const auto& ce : r.colored_events) {
-            cevs.emplace_back(ce.event.x, ce.event.y,
+            cevs.emplace_back(ce.event.x + ox, ce.event.y + oy,
                               QColor(ce.r, ce.g, ce.b));
         }
         ctx.annotator->draw_colored_events(frame, cevs);
@@ -171,58 +188,18 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
             std::vector<QPointF> pts;
             pts.reserve(t.points.size());
             for (const auto& pt : t.points) {
-                pts.emplace_back(pt.x, pt.y);
+                pts.emplace_back(pt.x + ox, pt.y + oy);
             }
             trajs.emplace_back(t.id, std::move(pts));
         }
         ctx.annotator->draw_trajectories(frame, trajs, QColor(0, 255, 0));
     }
-    // Aux frame (Hough θ-ρ / per-pixel accumulator space).
-    // Routed to the AlgoWindow's display widget if one is open, so the user
-    // can see the accumulator state alongside the overlay.
-    if (r.has_aux_frame && !r.aux_frame.empty()) {
-        auto wit = ctx.algo_windows->find(info.name);
-        if (wit != ctx.algo_windows->end() && wit.value()) {
-            QPointer<EventDisplayWidget> disp = wit.value()->frame_display();
-            if (disp) {
-                QImage q = mat_to_qimage(r.aux_frame);
-                QMetaObject::invokeMethod(ctx.window, [disp, q]() {
-                    if (disp) disp->set_frame(q);
-                }, Qt::QueuedConnection);
-            }
-        }
-    }
-    // ROI zoom view (design §5.6.6, Phase 2.6 re-drive): if the UNIFIED ROI
-    // is enabled and an AlgoWindow with an EventDisplayWidget is open, crop
-    // the ROI region from the annotated main frame and push it to the
-    // window. This gives the user a zoomed-in view of just the ROI region
-    // (with the algorithm's overlay drawn on it), which is otherwise hard to
-    // inspect on the sensor-scale main display. The rect comes from
-    // CameraController::unified_roi (already clamped/computed on both the
-    // live hardware-ROI and file software-crop paths).
-    bool roi_on = false;
-    int ax = 0, ay = 0, ax1 = 0, ay1 = 0;
-    if (ctx.camera) {
-        ctx.camera->unified_roi(roi_on, ax, ay, ax1, ay1);
-    }
-    const int aw = ax1 - ax;
-    const int ah = ay1 - ay;
-    if (roi_on && aw > 0 && ah > 0) {
-        auto wit = ctx.algo_windows->find(info.name);
-        if (wit != ctx.algo_windows->end() && wit.value()) {
-            // Use QPointer so the lambda safely no-ops if the AlgoWindow's
-            // display widget is destroyed between scheduling and execution
-            // (e.g. user closes/undocks the dock while a frame is in flight).
-            QPointer<EventDisplayWidget> disp = wit.value()->frame_display();
-            if (disp) {
-                QRect roi_rect(ax, ay, aw, ah);
-                QImage zoom = frame.copy(roi_rect);
-                QMetaObject::invokeMethod(ctx.window, [disp, zoom]() {
-                    if (disp) disp->set_frame(zoom);
-                }, Qt::QueuedConnection);
-            }
-        }
-    }
+    // Phase 2.6 debug D-2: the aux-frame routing (Hough θ-ρ / accumulator
+    // maps) was deleted with the hough aux display — no producer remains.
+    // Phase 2.6 debug D-1: the ROI zoom routing to the AlgoWindow was
+    // deleted — Overlay algorithms no longer open an AlgoWindow (the main
+    // display draws their overlay and the main-display Zoom-to-ROI mode
+    // replaces the old window zoom view), so there is no receiver left.
 }
 
 // ---------------------------------------------------------------------------
@@ -230,10 +207,25 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
 // ---------------------------------------------------------------------------
 
 void ReplaceStrategy::apply(QImage& frame, AlgoResult& r,
-                            const AlgoInfo& /*info*/, DisplayContext& /*ctx*/) {
+                            const AlgoInfo& /*info*/, DisplayContext& ctx) {
     // Replace the main display frame with the algorithm output.
     if (r.has_frame && !r.frame.empty()) {
-        frame = mat_to_qimage(r.frame);
+        QImage q = mat_to_qimage(r.frame);
+        // Phase 2.6 debug D-3: with the unified ROI active the backend runs
+        // at ROI dimensions, so its output frame covers only the ROI
+        // window — composite it at the ROI origin instead of replacing the
+        // full-sensor frame.
+        bool roi_on = false;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        if (ctx.camera) {
+            ctx.camera->unified_roi(roi_on, x0, y0, x1, y1);
+        }
+        if (roi_on && q.width() == x1 - x0 && q.height() == y1 - y0) {
+            QPainter p(&frame);
+            p.drawImage(x0, y0, q);
+        } else {
+            frame = q;
+        }
     }
 }
 

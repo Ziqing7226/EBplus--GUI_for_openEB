@@ -81,6 +81,14 @@ public:
     /// time_surface).
     static bool algo_defaults_to_roi(const std::string& algo_name);
 
+    /// @brief Updates the read-only status label of an Overlay algorithm in
+    /// the sidebar (Phase 2.6 debug D-1). Overlay algorithms no longer open
+    /// an AlgoWindow — the main display draws their overlay and the
+    /// main-display Zoom-to-ROI mode replaces the old window zoom view — so
+    /// their status line (detection counts / effective params) lives here.
+    /// No-op for algorithms without a status label.
+    void set_algo_status(const std::string& name, const QString& text);
+
 signals:
     /// @brief Emitted when an algorithm's enable state changes.
     void algorithm_toggled(const QString& name, bool enabled);
@@ -238,6 +246,10 @@ private:
     /// Once the user manually toggles, this flips true and auto-setting
     /// stops — the user's choice is respected thereafter.
     bool preproc_downsample_user_touched_{false};
+
+    /// Read-only status labels for Overlay algorithms (Phase 2.6 debug D-1),
+    /// shown while the algorithm is enabled. See set_algo_status().
+    std::unordered_map<std::string, QLabel*> algo_status_labels_;
 
     /// Tracks whether the user has manually edited the unified ROI selector
     /// (Phase 2.6 step 3). While false, enabling a default-ROI algorithm

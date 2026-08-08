@@ -132,25 +132,9 @@ public:
             l.y2 = static_cast<int>(hl.end.y) * f + dy;
             r.lines.push_back(l);
         }
-        // Aux frame: Hough θ-ρ accumulator (jAER HoughLineTracker GL render).
-        if (algo_) {
-            const auto& accum = algo_->accum();
-            const int nt = algo_->num_theta_bins();
-            const int nr = algo_->num_rho_bins();
-            if (nt > 0 && nr > 0 && static_cast<int>(accum.size()) == nt * nr) {
-                cv::Mat hough(nt, nr, CV_32F, const_cast<float*>(accum.data()));
-                double mn, mx;
-                cv::minMaxLoc(hough, &mn, &mx);
-                cv::Mat vis;
-                if (mx > mn) {
-                    hough.convertTo(vis, CV_8U, 255.0 / (mx - mn), -mn * 255.0 / (mx - mn));
-                } else {
-                    vis = cv::Mat::zeros(nt, nr, CV_8U);
-                }
-                cv::applyColorMap(vis, r.aux_frame, cv::COLORMAP_JET);
-                r.has_aux_frame = true;
-            }
-        }
+        // Phase 2.6 debug D-2: the Hough θ-ρ aux display was deleted (user
+        // decision — it was a jAER-style debug view that was never visible
+        // in baseline practice: the window zoom view covered it every frame).
         r.status = "hough_line: " + std::to_string(last_.size()) + " lines" +
                    std::string(roi_.enabled ? " (ROI)" : " (full)");
         return r;
@@ -168,12 +152,15 @@ public:
 /// HoughCircleTracker backend — detected circles as overlay circles.
 ///
 /// Complex algorithm (design §4.3.15): the 3D accumulator (a, b, r) is built
-/// at ROI dimensions, NOT sensor dimensions. At sensor scale (e.g. 1280×720)
-/// with max_radius=50 the accumulator would be ~42M cells (168 MB) and
-/// find_peaks would scan every cell per frame — a memory/CPU blowup that
-/// freezes/crashes the GUI. Using the ROI (default 128×128) bounds this to
-/// ~750K cells. Events are cropped to ROI-relative coordinates; detected
-/// circle centers are shifted back by the ROI origin for overlay rendering.
+/// at the backend's CURRENT dimensions (set_sensor_dimensions), NOT the raw
+/// sensor dimensions. At full sensor scale (e.g. 1280×720) with
+/// max_radius=50 the accumulator would be ~42M cells (168 MB) and find_peaks
+/// would scan every cell per frame — a memory/CPU blowup that freezes the
+/// GUI. The unified-ROI automation (Phase 2.6 debug D-7 default-ROI list)
+/// resizes this backend to the ROI window via AlgoInstance::set_unified_roi,
+/// restoring the bound (256×144 → ~1.7M cells at f=1). Event cropping and
+/// coordinate translation are done by AlgoInstance::push_events; the backend
+/// sees the ROI window as its effective sensor.
 class HoughCircleBackend final : public AlgoBackend {
     int sensor_w_{0}, sensor_h_{0};
     ProcessRegion roi_;
@@ -329,26 +316,8 @@ public:
             oc.r = static_cast<int>(c.radius) * f;
             r.circles.push_back(oc);
         }
-        // Aux frame: per-pixel Hough accumulator (jAER HoughCircleTracker GL).
-        if (algo_) {
-            const auto& accum = algo_->accum();
-            const int aw = ((roi_.enabled && roi_.rw > 0) ? roi_.rw : sensor_w_) / f;
-            const int ah = ((roi_.enabled && roi_.rh > 0) ? roi_.rh : sensor_h_) / f;
-            if (aw > 0 && ah > 0 &&
-                static_cast<int>(accum.size()) == aw * ah) {
-                cv::Mat hough(ah, aw, CV_32F, const_cast<float*>(accum.data()));
-                double mn, mx;
-                cv::minMaxLoc(hough, &mn, &mx);
-                cv::Mat vis;
-                if (mx > mn) {
-                    hough.convertTo(vis, CV_8U, 255.0 / (mx - mn), -mn * 255.0 / (mx - mn));
-                } else {
-                    vis = cv::Mat::zeros(ah, aw, CV_8U);
-                }
-                cv::applyColorMap(vis, r.aux_frame, cv::COLORMAP_JET);
-                r.has_aux_frame = true;
-            }
-        }
+        // Phase 2.6 debug D-2: the per-pixel accumulator aux display was
+        // deleted (user decision — never visible in baseline practice).
         r.status = "hough_circle: " + std::to_string(last_.size()) + " circles" +
                    std::string(roi_.enabled ? " (ROI)" : " (full)") +
                    // Effective params may be resolution-adaptive (when the

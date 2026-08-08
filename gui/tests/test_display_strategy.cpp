@@ -83,8 +83,6 @@ TEST(DisplayStrategyOverlay, DrawsPrimitivesOntoFrame) {
     auto inst = bridge.find_or_create("object_tracker");  // Overlay
     ASSERT_NE(inst, nullptr);
     inst->set_enabled(true);
-    // Disable ROI so apply() skips the camera-dependent ROI zoom path.
-    inst->set_param("roi_enabled", "false");
 
     QImage frame(120, 120, QImage::Format_RGB888);
     frame.fill(Qt::black);
@@ -121,7 +119,6 @@ TEST(DisplayStrategyOverlay, EmptyResultLeavesFrameUnchanged) {
     auto inst = bridge.find_or_create("object_tracker");
     ASSERT_NE(inst, nullptr);
     inst->set_enabled(true);
-    inst->set_param("roi_enabled", "false");
 
     QImage frame(60, 60, QImage::Format_RGB888);
     frame.fill(Qt::white);

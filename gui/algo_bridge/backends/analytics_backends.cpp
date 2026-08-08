@@ -453,14 +453,13 @@ public:
         AlgoResult r;
         r.filtered_events = passthrough_;
         r.has_frame = true;
-        cv::Mat frame = algo_->render();
-        const int f = preproc_.factor();
-        if (f > 1 && !frame.empty()) {
-            const int aw = roi_.enabled ? roi_.rw : sensor_w_;
-            const int ah = roi_.enabled ? roi_.rh : sensor_h_;
-            cv::resize(frame, frame, cv::Size(aw, ah), 0, 0, cv::INTER_NEAREST);
-        }
-        r.frame = frame.clone();
+        // The ISI output is a fixed-size chart (512×256, isi_analyzer.h
+        // render()) that has no relation to the sensor/working resolution.
+        // Phase 2.6 debug D-4: do NOT resize it to the working resolution
+        // (the old f>1 branch crushed it to 128×128 or blew it up to
+        // 1280×720 with INTER_NEAREST — two resampling stages made the text
+        // unreadable). The AlgoWindow letterboxes it to the window size.
+        r.frame = algo_->render().clone();
         r.status = "isi: histogram" + std::string(roi_.enabled ? " (ROI)" : " (full)");
         return r;
     }

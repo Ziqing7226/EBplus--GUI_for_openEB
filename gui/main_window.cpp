@@ -1830,10 +1830,16 @@ void MainWindow::process_algo_results(QImage& frame) {
             statusBar()->showMessage(
                 tr("%1 auto-disabled: event rate too high (re-enable to retry)").arg(nm), 5000);
             // Reflect the disabled state in the AlgoWindow status label.
+            const QString overload_text =
+                tr("AUTO-DISABLED: event flooding detected. Re-enable from the sidebar.");
             auto wit = algo_windows_.find(inst->info().name);
             if (wit != algo_windows_.end() && wit.value()) {
-                wit.value()->set_status_text(
-                    tr("AUTO-DISABLED: event flooding detected. Re-enable from the sidebar."));
+                wit.value()->set_status_text(overload_text);
+            }
+            // Overlay algorithms have no AlgoWindow anymore (Phase 2.6 debug
+            // D-1) — the status label lives in the sidebar.
+            if (auto* ap = settings_->algorithms_panel()) {
+                ap->set_algo_status(inst->info().name, overload_text);
             }
             continue;
         }
@@ -1851,6 +1857,16 @@ void MainWindow::process_algo_results(QImage& frame) {
             inst->apply_strategy(frame, r, ctx);
         } catch (...) {
             continue;
+        }
+        // Overlay algorithms no longer have an AlgoWindow (Phase 2.6 debug
+        // D-1) — surface their status line (detection counts / effective
+        // params) in the sidebar instead.
+        if (inst->info().display_mode == AlgoDisplayMode::Overlay &&
+            !r.status.empty()) {
+            if (auto* ap = settings_->algorithms_panel()) {
+                ap->set_algo_status(inst->info().name,
+                                    QString::fromStdString(r.status));
+            }
         }
     }
 

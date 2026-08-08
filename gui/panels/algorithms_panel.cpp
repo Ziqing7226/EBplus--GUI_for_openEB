@@ -222,8 +222,23 @@ void AlgorithmsPanel::build_ui() {
             refresh_mode_visibility(algo_name);
             form->addRow(QString(), params_host);
 
-            connect(cb, &QCheckBox::toggled, this, [this, params_host, cb, a, algo_name](bool on) {
+            // Overlay algorithms no longer open an AlgoWindow (Phase 2.6
+            // debug D-1): the main display draws their overlay and the
+            // main-display Zoom-to-ROI mode replaces the old window zoom
+            // view. Their status line (detection counts / effective params)
+            // lives in this read-only label, visible while enabled.
+            QLabel* status_lbl = nullptr;
+            if (a->display_mode == AlgoDisplayMode::Overlay) {
+                status_lbl = new QLabel(gb);
+                status_lbl->setWordWrap(true);
+                status_lbl->setVisible(false);
+                form->addRow(QString(), status_lbl);
+                algo_status_labels_[algo_name] = status_lbl;
+            }
+
+            connect(cb, &QCheckBox::toggled, this, [this, params_host, status_lbl, cb, a, algo_name](bool on) {
                 params_host->setVisible(on);
+                if (status_lbl) status_lbl->setVisible(on);
                 if (on) {
                     // Algorithm mutex (design §5.6.6 — exclusive mode): only
                     // one algorithm may be enabled at a time. Covers panel
@@ -261,11 +276,15 @@ void AlgorithmsPanel::build_ui() {
                         }
                         emit info_message(tr("Algorithm enabled: %1")
                                               .arg(QString::fromStdString(a->display_name)));
-                        // Request MainWindow to open the AlgoWindow so Standalone
-                        // algorithms have a display and Overlay algorithms get
-                        // their ROI zoom view. Without this the sidebar-enabled
-                        // algorithm produces no visible output.
-                        emit open_algo_window_requested(algo_name);
+                        // Request MainWindow to open the AlgoWindow so
+                        // Standalone algorithms have a display and Passive
+                        // algorithms get their status window. Overlay
+                        // algorithms no longer open one (Phase 2.6 debug
+                        // D-1): the main display draws their overlay and the
+                        // Zoom-to-ROI mode covers the old window zoom view.
+                        if (a->display_mode != AlgoDisplayMode::Overlay) {
+                            emit open_algo_window_requested(algo_name);
+                        }
                         emit algorithm_toggled(QString::fromStdString(a->name), true);
                     } else {
                         // find_or_create should never fail for registered
@@ -394,6 +413,13 @@ bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
            algo_name == "isi_analyzer" ||
            algo_name == "xyt_visualizer" ||
            algo_name == "time_surface";
+}
+
+void AlgorithmsPanel::set_algo_status(const std::string& name, const QString& text) {
+    auto it = algo_status_labels_.find(name);
+    if (it != algo_status_labels_.end() && it->second) {
+        it->second->setText(text);
+    }
 }
 
 void AlgorithmsPanel::apply_global_preproc(const std::string& key,
