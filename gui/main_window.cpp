@@ -47,6 +47,7 @@
 #include "recorder/record_dialog.h"
 #include "calibration/calibration_wizard.h"
 #include "calibration/sharpness_dialog.h"
+#include "calibration/focus_dialog.h"
 #include "app/icon_provider.h"
 #include "display/display_strategy.h"
 #include "widgets/activity_bar.h"
@@ -529,6 +530,8 @@ void MainWindow::build_menus() {
     m_tools->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
     // Sharpness meter — live variance-of-Laplacian of the current event frame.
     m_tools->addAction(tr("&Sharpness..."), this, &MainWindow::on_sharpness);
+    // Focus assistant (Phase 5) — rotating Siemens Star + live camera output.
+    m_tools->addAction(tr("&Focus Assistant..."), this, &MainWindow::on_focus);
 
     // Help
     auto* m_help = mb->addMenu(tr("&Help"));
@@ -2007,6 +2010,20 @@ void MainWindow::on_sharpness() {
     sharpness_dialog_->show();
     sharpness_dialog_->raise();
     sharpness_dialog_->activateWindow();
+}
+
+void MainWindow::on_focus() {
+    if (!focus_dialog_) {
+        focus_dialog_ = new FocusDialog(this);
+        focus_dialog_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(focus_dialog_, &QObject::destroyed, this, [this]() {
+            focus_dialog_ = nullptr;
+        });
+    }
+    focus_dialog_->set_display(display_);
+    focus_dialog_->show();
+    focus_dialog_->raise();
+    focus_dialog_->activateWindow();
 }
 
 void MainWindow::on_save_layout() {

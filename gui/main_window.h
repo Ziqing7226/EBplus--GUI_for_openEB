@@ -69,6 +69,7 @@ class PlaybackControls;
 class ExportDialog;
 class CalibrationWizard;
 class SharpnessDialog;
+class FocusDialog;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -113,6 +114,8 @@ private slots:
     // Phase 9 — calibration.
     void on_intrinsic_wizard();
     void on_sharpness();
+    /// Phase 5: Siemens-star focus assistant (replaces the sharpness meter).
+    void on_focus();
 
     // Phase 10 — multi-window / layout / standalone algorithm views.
     void on_open_xyt_view();
@@ -245,6 +248,7 @@ private:
     // Phase 9 — owned lazily; built when the wizard is first opened.
     CalibrationWizard* calibration_wizard_{nullptr};
     SharpnessDialog*   sharpness_dialog_{nullptr};
+    FocusDialog*       focus_dialog_{nullptr};
 
     // Phase 10 — layout manager is owned from construction.
     std::unique_ptr<LayoutManager> layout_manager_;

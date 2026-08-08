@@ -54,6 +54,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_wizard.cpp")
         calibration/chessboard_display.cpp
         calibration/calibration_event_tap.cpp
         calibration/sharpness_dialog.cpp
+        calibration/focus_dialog.cpp
     )
 endif()
 
