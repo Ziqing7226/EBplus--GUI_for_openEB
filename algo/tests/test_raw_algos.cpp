@@ -159,7 +159,29 @@ INSTANTIATE_TEST_SUITE_P(AllModes, NoiseFilterRawTest,
         NoiseFilter::Mode::BAF, NoiseFilter::Mode::STCF,
         NoiseFilter::Mode::Refractory, NoiseFilter::Mode::DWF,
         NoiseFilter::Mode::AgePolarity, NoiseFilter::Mode::Harmonic,
-        NoiseFilter::Mode::Repetitious, NoiseFilter::Mode::SpatialBP));
+        NoiseFilter::Mode::Repetitious, NoiseFilter::Mode::SpatialBP,
+        NoiseFilter::Mode::KNoise));
+
+// KNoise (dv-processing port) on real data: with the calibrated default
+// dt=3000 us the keep-rate on sparklers.raw is ~0.72 (keeps most real
+// motion, drops ~28% isolated noise). Assert a wide, non-brittle band.
+TEST_F(RawAlgoTest, NoiseFilterKNoiseKeepRate) {
+    const auto& s = stream();
+    NoiseFilter f(s.width(), s.height(), NoiseFilter::Mode::KNoise);
+    EXPECT_EQ(f.knoise_dt_us(), 3000); // calibrated default
+    std::size_t total_kept = 0;
+    std::size_t total_in = 0;
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        std::vector<Event> ev(batch);
+        total_kept += f.filter(ev.data(), ev.size());
+        total_in += batch.size();
+    }
+    ASSERT_GT(total_in, 0u);
+    const double keep = static_cast<double>(total_kept) /
+                        static_cast<double>(total_in);
+    EXPECT_GT(keep, 0.5) << "KNoise dropped too much real activity";
+    EXPECT_LT(keep, 0.9) << "KNoise filtered almost nothing";
+}
 
 // =========================================================================
 // 3. HotPixelFilter — learns hot pixels from real activity, then suppresses.

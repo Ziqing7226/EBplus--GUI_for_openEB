@@ -163,6 +163,65 @@ TEST(NoiseFilterTest, HarmonicParams) {
     EXPECT_DOUBLE_EQ(f.notch_q(), 20.0);
 }
 
+TEST(NoiseFilterTest, KNoiseParams) {
+    NoiseFilter f(32, 32, NoiseFilter::Mode::KNoise);
+    f.set_knoise_dt_us(3000);
+    EXPECT_EQ(f.knoise_dt_us(), 3000);
+    // Clamped to [100, 100000]
+    f.set_knoise_dt_us(0);
+    EXPECT_EQ(f.knoise_dt_us(), 100);
+    f.set_knoise_dt_us(999999);
+    EXPECT_EQ(f.knoise_dt_us(), 100000);
+}
+
+// dv KNoise semantics: an event passes when ANY of the 3 neighbouring
+// column cells or 3 neighbouring row cells holds a recent (<= dt) event of
+// the SAME polarity whose other-address is within 1 px.
+TEST(NoiseFilterTest, KNoisePassesCorrelated) {
+    NoiseFilter f(32, 32, NoiseFilter::Mode::KNoise);
+    f.set_knoise_dt_us(5000);
+    std::vector<Event> ev;
+    ev.emplace_back(10, 10, 1, 1000); // first event: no support, dropped
+    ev.emplace_back(11, 10, 1, 1500); // col[10]: dt=500, same pol, dy=0 -> pass
+    ev.emplace_back(10, 11, 1, 1600); // row[10]: dt=100, same pol, dx=1 -> pass
+    auto pkt = make_packet(ev);
+    EXPECT_EQ(f.process(pkt), 2u);
+}
+
+TEST(NoiseFilterTest, KNoiseDropsIsolated) {
+    NoiseFilter f(32, 32, NoiseFilter::Mode::KNoise);
+    f.set_knoise_dt_us(5000);
+    // A lone event has no row/column support.
+    std::vector<Event> ev;
+    ev.emplace_back(5, 5, 1, 1000);
+    auto pkt = make_packet(ev);
+    EXPECT_EQ(f.process(pkt), 0u);
+    // Neighbouring in space but too far apart in time: also dropped.
+    f.reset();
+    std::vector<Event> ev2;
+    ev2.emplace_back(5, 5, 1, 1000);
+    ev2.emplace_back(6, 5, 1, 100000); // dt=99000 > 5000
+    auto pkt2 = make_packet(ev2);
+    EXPECT_EQ(f.process(pkt2), 0u);
+}
+
+TEST(NoiseFilterTest, KNoisePolarityHardMatch) {
+    NoiseFilter f(32, 32, NoiseFilter::Mode::KNoise);
+    f.set_knoise_dt_us(5000);
+    std::vector<Event> ev;
+    ev.emplace_back(10, 10, 1, 1000); // ON, dropped (no support)
+    ev.emplace_back(11, 10, 0, 1500); // OFF: same row/col, dt ok, pol mismatch -> dropped
+    auto pkt = make_packet(ev);
+    EXPECT_EQ(f.process(pkt), 0u);
+    // Same geometry/timing but matching polarity: passes.
+    f.reset();
+    std::vector<Event> ev2;
+    ev2.emplace_back(10, 10, 1, 1000);
+    ev2.emplace_back(11, 10, 1, 1500);
+    auto pkt2 = make_packet(ev2);
+    EXPECT_EQ(f.process(pkt2), 1u);
+}
+
 // =========================================================================
 // 4. hot_pixel_filter.h
 // =========================================================================

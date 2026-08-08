@@ -1,7 +1,7 @@
 // algo/cv/noise_filter.h — multi-mode event noise filter.
 //
 // Event noise filter (design §4.3.5) porting the jAER filter suite
-// (net/sf/jaer/eventprocessing/filter/). Provides 8 denoising modes:
+// (net/sf/jaer/eventprocessing/filter/). Provides 9 denoising modes:
 //   BAF          — Background Activity Filter (Delbruck 2008): 3x3 neighbour
 //                  correlation within dt_us.
 //   STCF         — SpatioTemporal Correlation Filter (Guo & Delbruck 2022):
@@ -22,6 +22,12 @@
 //                  (port of jAER RepetitiousFilter).
 //   SpatialBP    — center/surround time-surface differencing (port of jAER
 //                  SpatialBandpassFilter: surround-timestamp splat).
+//   KNoise       — ✅ 移植自 dv-processing KNoiseFilter (Khodamoradi &
+//                  Kastner, "O(N)-Space Spatiotemporal Filter", 2021):
+//                  one memory cell per row and per column (W+H cells, no
+//                  per-pixel surface); an event passes when any of the 3
+//                  neighbouring row/column cells reports a recent same-
+//                  polarity event within 1 px along the other axis.
 // Two common options link to the rest of the pipeline: filter_hot_pixels
 // (internal n_sigma hot-pixel suppression, see §4.3.6) and
 // adaptive_correlation_time (scales the active time threshold by the local
@@ -58,6 +64,7 @@ public:
         Harmonic,       ///< ✅ 移植自 jAER HarmonicFilter
         Repetitious,    ///< Periodic repetition filter (jAER port)
         SpatialBP,      ///< Spatial band-pass (jAER port)
+        KNoise,         ///< ✅ 移植自 dv-processing KNoiseFilter
     };
 
     enum class LineFreq { Hz50, Hz60 };
@@ -81,6 +88,7 @@ public:
         }
         dwf_init();
         harm_recompute();
+        knoise_init();
     }
 
     // Mode + common options ------------------------------------------------
@@ -164,6 +172,10 @@ public:
     int surround_radius_px() const { return sbp_surround_; }
     int dt_surround_us() const { return sbp_dt_surround_us_; }
 
+    // KNoise (✅ 移植自 dv-processing KNoiseFilter) -------------------------
+    void set_knoise_dt_us(int v) { knoise_dt_us_ = clamp_i(v, 100, 100000); }
+    int knoise_dt_us() const { return knoise_dt_us_; }
+
     int width() const { return width_; }
     int height() const { return height_; }
 
@@ -246,6 +258,7 @@ public:
         dwf_init();
         harm_reset_state();
         harm_recompute();
+        knoise_init();
     }
 
 private:
@@ -310,6 +323,7 @@ private:
             case Mode::Harmonic:    return harmonic_pass(e);
             case Mode::Repetitious: return repetitious_pass(e);
             case Mode::SpatialBP:   return spatialbp_pass(e);
+            case Mode::KNoise:      return knoise_pass(e);
         }
         return true; // unreachable
     }
@@ -534,6 +548,59 @@ private:
         return pass;
     }
 
+    // ✅ 移植自 dv-processing KNoiseFilter (Khodamoradi & Kastner 2021,
+    // ref/dv-processing-master/include/dv-processing/noise/k_noise_filter.hpp).
+    // Memory-efficient BAF alternative: instead of a W×H per-pixel time
+    // surface, keep ONE cell per column (W cells) and ONE per row (H cells) —
+    // ~18 KB at 640×480. Each cell records the last event seen in that
+    // row/column: timestamp, polarity, and the "other address" (y for a
+    // column cell, x for a row cell). An event passes when ANY of the 6
+    // neighbour cells (columns x-1/x/x+1, rows y-1/y/y+1 — dv uses OR, not
+    // AND) supports it: (e.t - cell.ts) <= dt, polarity hard-matches, and
+    // the stored other-address lies within 1 px of the event's own
+    // coordinate along that axis. Cells are updated unconditionally AFTER
+    // the decision (dv updates them even for filtered-out events).
+    // Divergences from dv, both intentional:
+    //  - dv requires only (t - cell.ts) <= timeDelta; a negative diff (time
+    //    rewind, Evt3 NonMonotonicTimeHigh, file seek) would spuriously
+    //    support an event. We additionally require diff >= 0, matching the
+    //    BAF/STCF convention in this file.
+    //  - dv zero-initializes its cells, so OFF events near y=0/x=0 can
+    //    spuriously pass at stream start; we use kSentinel so a cell only
+    //    supports after a real event was recorded in it.
+    bool knoise_pass(const Event& e) {
+        const Metavision::timestamp dt = thr(knoise_dt_us_);
+        bool pass = false;
+        for (int dx = -1; dx <= 1 && !pass; ++dx) {
+            const int nx = e.x + dx;
+            if (nx < 0 || nx >= width_) continue;
+            const KNoiseCell& c = knoise_col_[static_cast<std::size_t>(nx)];
+            if (c.ts == kSentinel) continue;
+            const Metavision::timestamp diff = e.t - c.ts;
+            if (diff < 0 || diff > dt) continue;      // dv: <= timeDelta
+            if (c.pol != e.p) continue;               // polarity hard match
+            if (std::abs(static_cast<int>(c.other) - e.y) > 1) continue;
+            pass = true;
+        }
+        for (int dy = -1; dy <= 1 && !pass; ++dy) {
+            const int ny = e.y + dy;
+            if (ny < 0 || ny >= height_) continue;
+            const KNoiseCell& c = knoise_row_[static_cast<std::size_t>(ny)];
+            if (c.ts == kSentinel) continue;
+            const Metavision::timestamp diff = e.t - c.ts;
+            if (diff < 0 || diff > dt) continue;
+            if (c.pol != e.p) continue;
+            if (std::abs(static_cast<int>(c.other) - e.x) > 1) continue;
+            pass = true;
+        }
+        // Unconditional update after the decision (dv retain()).
+        knoise_col_[static_cast<std::size_t>(e.x)] =
+            KNoiseCell{e.t, static_cast<std::int16_t>(e.y), e.p};
+        knoise_row_[static_cast<std::size_t>(e.y)] =
+            KNoiseCell{e.t, static_cast<std::int16_t>(e.x), e.p};
+        return pass;
+    }
+
     // Internal hot-pixel suppression (links to §4.3.6) --------------------
     bool hot_ok(const Event& e) {
         const std::size_t idx = idx_of(e.x, e.y);
@@ -683,6 +750,11 @@ private:
     int sbp_center_{2};
     int sbp_surround_{10};
     Metavision::timestamp sbp_dt_surround_us_{8000}; // jAER dtSurround default
+    // dv default is 2000 us, tuned on DAVIS240; the value below is calibrated
+    // on algo/tests/sparklers.raw: keep-rate vs dt is 0.718@500us, 0.720@1ms,
+    // 0.721@2-3ms, plateau 0.722 from ~5ms — the elbow is below 1 ms, so
+    // 3000 us sits on the plateau without an over-wide correlation window.
+    Metavision::timestamp knoise_dt_us_{3000}; // dv KNoiseFilter timeDelta
 
     bool filter_hot_pixels_{false};
     bool adaptive_correlation_time_{false};
@@ -700,6 +772,22 @@ private:
     // DWF state (jAER DoubleWindowFilter) ---------------------------------
     DwRing dwf_signal_;
     DwRing dwf_noise_;
+
+    // KNoise state (dv-processing KNoiseFilter) ----------------------------
+    /// dv KMemCell: one cell per column (other = last y) and per row
+    /// (other = last x). ~16 B/cell → (W+H) cells ≈ 18 KB at 640×480.
+    struct KNoiseCell {
+        Metavision::timestamp ts{kSentinel};
+        std::int16_t other{-1};
+        short pol{0};
+    };
+    std::vector<KNoiseCell> knoise_col_; ///< width cells
+    std::vector<KNoiseCell> knoise_row_; ///< height cells
+
+    void knoise_init() {
+        knoise_col_.assign(static_cast<std::size_t>(width_), KNoiseCell{});
+        knoise_row_.assign(static_cast<std::size_t>(height_), KNoiseCell{});
+    }
 
     // Harmonic oscillator state (jAER HarmonicFilter) ---------------------
     float harm_x_{0.0f};          // oscillator position

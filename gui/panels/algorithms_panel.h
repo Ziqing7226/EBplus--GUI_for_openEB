@@ -143,8 +143,8 @@ private:
     void build_preproc_selector(QVBoxLayout* parent_layout);
     /// Rebuilds the mode-specific NoiseFilter parameter rows in the
     /// Preprocessing group based on the selected filter mode (BUG-3 fix).
-    /// Each of the 8 denoiser modes (BAF/STCF/Refractory/DWF/AgePolarity/
-    /// Harmonic/Repetitious/SpatialBP) has its own parameter set; only the
+    /// Each of the 9 denoiser modes (BAF/STCF/Refractory/DWF/AgePolarity/
+    /// Harmonic/Repetitious/SpatialBP/KNoise) has its own parameter set; only the
     /// rows matching the current mode are shown.
     void refresh_preproc_params();
     /// Shows/hides mode-scoped parameter rows for @p algo_name based on the
@@ -216,7 +216,7 @@ private:
     QPushButton* preproc_undistort_browse_{nullptr};
 
     /// Container for mode-specific NoiseFilter parameter rows (BUG-3).
-    /// Rows are pre-created for all 8 modes and shown/hidden based on the
+    /// Rows are pre-created for all 9 modes and shown/hidden based on the
     /// selected filter mode. Each entry: {label, field, mode_index}.
     /// mode_index -1 = cross-mode (always visible when filter is on).
     QFormLayout* preproc_params_form_{nullptr};

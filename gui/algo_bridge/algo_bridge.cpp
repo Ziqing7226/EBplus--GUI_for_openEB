@@ -336,7 +336,7 @@ AlgoParamSpec pstring(const std::string& k, const std::string& disp,
 /// software crop) is driven via AlgorithmsPanel::unified_roi_changed.
 /// panel auto-enables it for coordinate-halving backends (§11.2-I).
 /// preproc_filter_enabled defaults to "false" (opt-in). The preproc_filter_*
-/// params mirror the standalone NoiseFilter params (§4.3.5) so the same 8
+/// params mirror the standalone NoiseFilter params (§4.3.5) so the same 9
 /// denoiser modes are available as a preprocessing stage. NOTE: the noise
 /// defaults below (baf_dt 1000, stcf corr 0.005, dwf_wlen 2, agep_tau 3000,
 /// harm Q 5, sbp_dt 10000, ...) are the intentional GUI working
@@ -349,7 +349,8 @@ std::vector<AlgoParamSpec> preproc_params() {
         pbool("preproc_downsample", "Preproc: 1/4 downsample", "false"),
         penum("preproc_filter_mode", "Preproc: filter mode", "1",
               {"0=BAF", "1=STCF", "2=Refractory", "3=DWF",
-               "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP"}),
+               "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP",
+               "8=KNoise"}),
         // STCF (mode 1)
         pfloat("preproc_filter_correlation_time_s", "Preproc STCF corr (s)", "0.005", "0.001", "0.1"),
         pint("preproc_filter_min_neighbors", "Preproc STCF min nbr", "2", "1", "8"),
@@ -388,6 +389,9 @@ std::vector<AlgoParamSpec> preproc_params() {
         pint("preproc_filter_sbp_center_radius_px", "Preproc SBP center", "2", "1", "10"),
         pint("preproc_filter_sbp_surround_radius_px", "Preproc SBP surround", "10", "5", "30"),
         pint("preproc_filter_sbp_dt_surround_us", "Preproc SBP dt (us)", "10000", "100", "1000000"),
+        // KNoise (mode 8) — dv-processing KNoiseFilter port; dt calibrated on
+        // algo/tests/sparklers.raw (see algo/cv/noise_filter.h).
+        pint("preproc_filter_knoise_dt_us", "Preproc KNoise dt (us)", "3000", "100", "100000"),
         // Cross-mode flags
         pbool("preproc_filter_filter_hot_pixels", "Preproc filter hot px", "false"),
         pbool("preproc_filter_adaptive_correlation_time", "Preproc adaptive corr", "false"),

@@ -94,7 +94,7 @@ inline bool apply_noise_filter_param(gui_algo::NoiseFilter& nf,
                               const std::string& k, const std::string& v) {
     if (k == "mode") {
         int m = to_i(v);
-        if (m >= 0 && m <= 7) nf.set_mode(static_cast<gui_algo::NoiseFilter::Mode>(m));
+        if (m >= 0 && m <= 8) nf.set_mode(static_cast<gui_algo::NoiseFilter::Mode>(m));
     }
     else if (k == "correlation_time_s") nf.set_correlation_time_s(to_d(v));
     else if (k == "min_neighbors") nf.set_min_neighbors(to_i(v));
@@ -122,6 +122,7 @@ inline bool apply_noise_filter_param(gui_algo::NoiseFilter& nf,
     else if (k == "sbp_center_radius_px") nf.set_center_radius_px(to_i(v));
     else if (k == "sbp_surround_radius_px") nf.set_surround_radius_px(to_i(v));
     else if (k == "sbp_dt_surround_us") nf.set_dt_surround_us(to_i(v));
+    else if (k == "knoise_dt_us") nf.set_knoise_dt_us(to_i(v));
     else if (k == "filter_hot_pixels") nf.set_filter_hot_pixels(to_b(v));
     else if (k == "adaptive_correlation_time") nf.set_adaptive_correlation_time(to_b(v));
     else return false;
@@ -154,6 +155,7 @@ inline std::string get_noise_filter_param(const gui_algo::NoiseFilter& nf,
     if (k == "sbp_center_radius_px") return from_i(nf.center_radius_px());
     if (k == "sbp_surround_radius_px") return from_i(nf.surround_radius_px());
     if (k == "sbp_dt_surround_us") return from_i(nf.dt_surround_us());
+    if (k == "knoise_dt_us") return from_i(nf.knoise_dt_us());
     if (k == "filter_hot_pixels") return from_b(nf.filter_hot_pixels());
     if (k == "adaptive_correlation_time") return from_b(nf.adaptive_correlation_time());
     return {};
@@ -260,7 +262,7 @@ struct Preprocessor {
             filter_params_[bare] = v;
             if (bare == "mode") {
                 int m = to_i(v);
-                if (m >= 0 && m <= 7) {
+                if (m >= 0 && m <= 8) {
                     filter_mode_ = static_cast<gui_algo::NoiseFilter::Mode>(m);
                     rebuild_filter();
                 }

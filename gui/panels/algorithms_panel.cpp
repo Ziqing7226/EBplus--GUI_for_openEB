@@ -444,7 +444,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     undistort_layout->addWidget(preproc_undistort_browse_, 0);
     form->addRow(tr("Calibration file"), undistort_row);
 
-    // Filter mode (8 modes, default STCF=1).
+    // Filter mode (9 modes, default STCF=1).
     preproc_filter_mode_combo_ = new QComboBox(gb);
     preproc_filter_mode_combo_->addItem("0=BAF");
     preproc_filter_mode_combo_->addItem("1=STCF");
@@ -454,10 +454,11 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_mode_combo_->addItem("5=Harmonic");
     preproc_filter_mode_combo_->addItem("6=Repetitious");
     preproc_filter_mode_combo_->addItem("7=SpatialBP");
+    preproc_filter_mode_combo_->addItem("8=KNoise");
     preproc_filter_mode_combo_->setCurrentIndex(1);  // STCF
     form->addRow(tr("Filter mode"), preproc_filter_mode_combo_);
 
-    // Mode-specific parameter rows (BUG-3 fix). All 8 modes' params are
+    // Mode-specific parameter rows (BUG-3 fix). All 9 modes' params are
     // pre-created and shown/hidden based on the selected filter mode.
     // Cross-mode params (mode=-1) are always visible when the filter is on.
     preproc_params_form_ = new QFormLayout();
@@ -516,6 +517,8 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_sbp_center_radius_px", "SBP center", 'i', "2", "1", "10", 7},
         {"preproc_filter_sbp_surround_radius_px", "SBP surround", 'i', "10", "5", "30", 7},
         {"preproc_filter_sbp_dt_surround_us", "SBP dt (us)", 'i', "10000", "100", "1000000", 7},
+        // KNoise (mode 8) — dv-processing KNoiseFilter port
+        {"preproc_filter_knoise_dt_us", "KNoise dt (us)", 'i', "3000", "100", "100000", 8},
         // Cross-mode flags
         {"preproc_filter_filter_hot_pixels", "Filter hot px", 'b', "false", "", "", -1},
         {"preproc_filter_adaptive_correlation_time", "Adaptive corr", 'b', "false", "", "", -1},
