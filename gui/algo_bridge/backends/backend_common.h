@@ -119,6 +119,7 @@ inline bool apply_noise_filter_param(gui_algo::NoiseFilter& nf,
     else if (k == "rep_ratio_shorter") nf.set_ratio_shorter(to_i(v));
     else if (k == "rep_ratio_longer") nf.set_ratio_longer(to_i(v));
     else if (k == "rep_min_dt_to_store_us") nf.set_min_dt_to_store_us(to_i(v));
+    else if (k == "rep_averaging_samples") nf.set_rep_averaging_samples(to_i(v));
     else if (k == "sbp_center_radius_px") nf.set_center_radius_px(to_i(v));
     else if (k == "sbp_surround_radius_px") nf.set_surround_radius_px(to_i(v));
     else if (k == "sbp_dt_surround_us") nf.set_dt_surround_us(to_i(v));
@@ -152,6 +153,7 @@ inline std::string get_noise_filter_param(const gui_algo::NoiseFilter& nf,
     if (k == "rep_ratio_shorter") return from_i(nf.ratio_shorter());
     if (k == "rep_ratio_longer") return from_i(nf.ratio_longer());
     if (k == "rep_min_dt_to_store_us") return from_i(nf.min_dt_to_store_us());
+    if (k == "rep_averaging_samples") return from_i(nf.rep_averaging_samples());
     if (k == "sbp_center_radius_px") return from_i(nf.center_radius_px());
     if (k == "sbp_surround_radius_px") return from_i(nf.surround_radius_px());
     if (k == "sbp_dt_surround_us") return from_i(nf.dt_surround_us());

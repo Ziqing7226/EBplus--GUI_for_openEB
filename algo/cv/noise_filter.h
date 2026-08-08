@@ -159,6 +159,10 @@ public:
     // Repetitious (jAER port) ----------------------------------------------
     void set_ratio_shorter(int v) { rep_ratio_shorter_ = clamp_i(v, 1, 100); }
     void set_ratio_longer(int v) { rep_ratio_longer_ = clamp_i(v, 1, 100); }
+    void set_rep_averaging_samples(int v) {
+        rep_averaging_samples_ = clamp_i(v, 1, 100);  // jAER setAveragingSamples
+    }
+    int rep_averaging_samples() const { return rep_averaging_samples_; }
     int ratio_shorter() const { return rep_ratio_shorter_; }
     int ratio_longer() const { return rep_ratio_longer_; }
     void set_min_dt_to_store_us(int v) { rep_min_dt_to_store_ = clamp_i(v, 0, 1000000); }

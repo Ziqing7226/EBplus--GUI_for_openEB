@@ -385,6 +385,7 @@ std::vector<AlgoParamSpec> preproc_params() {
         pint("preproc_filter_rep_ratio_shorter", "Preproc Rep ratio short", "2", "1", "100"),
         pint("preproc_filter_rep_ratio_longer", "Preproc Rep ratio long", "2", "1", "100"),
         pint("preproc_filter_rep_min_dt_to_store_us", "Preproc Rep min dt (us)", "1000", "0", "1000000"),
+        pint("preproc_filter_rep_averaging_samples", "Preproc Rep avg samples", "3", "1", "100"),
         // SpatialBP (mode 7)
         pint("preproc_filter_sbp_center_radius_px", "Preproc SBP center", "2", "1", "10"),
         pint("preproc_filter_sbp_surround_radius_px", "Preproc SBP surround", "10", "5", "30"),
@@ -844,6 +845,7 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Passive,
          {pint("window_us", "Window (us)", "10000", "1000", "1000000"),
           pint("t0_us", "T0 delay (us)", "500", "0", "1000"),
+          pint("t1_us", "T1 window (us)", "500", "0", "100000"),
           pint("trigger_channel", "Trigger channel", "0", "0", "7")},
          "Requires an external trigger source; none is currently wired in "
          "this GUI, so the output is always empty (§5-G3)."});

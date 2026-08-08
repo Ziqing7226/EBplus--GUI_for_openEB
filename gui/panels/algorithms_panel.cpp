@@ -471,8 +471,8 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     // gui/algo_bridge/algo_bridge.cpp — the bridge registry is the single
     // source of truth; any addition/removal/default change must be mirrored
     // here. rep_period_us/rep_tolerance_us are intentionally absent (algo
-    // stores but never uses them); rep_averaging_samples is absent because
-    // the algo exposes no setter for it.
+    // stores but never uses them); rep_averaging_samples was registered in
+    // Phase 6 (the algo gained the setter, jAER setAveragingSamples parity).
     struct PDef {
         const char* key;
         const char* disp;
@@ -513,6 +513,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "2", "1", "100", 6},
         {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "2", "1", "100", 6},
         {"preproc_filter_rep_min_dt_to_store_us", "Rep min dt (us)", 'i', "1000", "0", "1000000", 6},
+        {"preproc_filter_rep_averaging_samples", "Rep avg samples", 'i', "3", "1", "100", 6},
         // SpatialBP (mode 7)
         {"preproc_filter_sbp_center_radius_px", "SBP center", 'i', "2", "1", "10", 7},
         {"preproc_filter_sbp_surround_radius_px", "SBP surround", 'i', "10", "5", "30", 7},

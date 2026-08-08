@@ -159,6 +159,7 @@ public:
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "window_us") return from_i(static_cast<int>(algo_.trigger_window_us()));
         if (k == "t0_us") return from_i(static_cast<int>(algo_.t0()));
+        if (k == "t1_us") return from_i(static_cast<int>(algo_.t1()));
         if (k == "trigger_channel") return from_i(algo_.trigger_channel());
         return {};
     }
