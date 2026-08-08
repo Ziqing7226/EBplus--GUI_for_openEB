@@ -107,7 +107,8 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         bool roi_on = false;
         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         ctx.camera->unified_roi(roi_on, x0, y0, x1, y1);
-        if (roi_on) {
+        // RONI (debug D-5): events keep absolute coordinates — no shift.
+        if (roi_on && !ctx.camera->unified_roi_roni()) {
             ox = x0;
             oy = y0;
         }
@@ -220,7 +221,10 @@ void ReplaceStrategy::apply(QImage& frame, AlgoResult& r,
         if (ctx.camera) {
             ctx.camera->unified_roi(roi_on, x0, y0, x1, y1);
         }
-        if (roi_on && q.width() == x1 - x0 && q.height() == y1 - y0) {
+        // RONI (debug D-5): the backend stays full-sensor (pass-through), so
+        // its output frame replaces the full frame as before.
+        if (roi_on && !ctx.camera->unified_roi_roni() &&
+            q.width() == x1 - x0 && q.height() == y1 - y0) {
             QPainter p(&frame);
             p.drawImage(x0, y0, q);
         } else {

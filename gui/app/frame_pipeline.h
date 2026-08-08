@@ -91,15 +91,19 @@ public:
 
     /// @brief Sets the file-mode software ROI (Phase 2.6): same semantics as
     /// the hardware ROI — the FileFrameGenerator only renders/emits events
-    /// inside the rect. Live mode ignores this (hardware ROI handles it).
-    void set_file_roi(bool enabled, int x, int y, int w, int h) {
-        file_generator_.set_display_roi(enabled, x, y, w, h);
+    /// inside the rect (or outside it when @p roni is true, Phase 2.6 debug
+    /// D-5). Live mode ignores this (hardware ROI handles it).
+    void set_file_roi(bool enabled, int x, int y, int w, int h, bool roni = false) {
+        file_generator_.set_display_roi(enabled, x, y, w, h, roni);
     }
 
     /// @brief Reads the file-mode software ROI state (computed rect).
     void file_roi(bool& enabled, int& x0, int& y0, int& x1, int& y1) const {
         file_generator_.display_roi(enabled, x0, y0, x1, y1);
     }
+
+    /// @brief True when the file-mode software ROI is in RONI mode.
+    bool file_roi_roni() const { return file_generator_.display_roi_roni(); }
 
     /// @brief Registers a listener for the display-path-processed event
     /// stream (Phase 2.5 step 5, processed-stream recording). The listener

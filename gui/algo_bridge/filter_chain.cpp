@@ -13,8 +13,6 @@
 #include <metavision/sdk/core/algorithms/rotate_events_algorithm.h>
 #include <metavision/sdk/core/algorithms/transpose_events_algorithm.h>
 
-#include <metavision/sdk/core/algorithms/roi_filter_algorithm.h>
-
 namespace gui {
 
 // FilterChain is mutated from the GUI thread (set_enabled / set_param /
@@ -248,35 +246,8 @@ private:
     std::unique_ptr<Metavision::EventRescalerAlgorithm> algo_;
 };
 
-class RoiFilterStage : public FilterStage {
-public:
-    RoiFilterStage() : algo_(0, 0, 0, 0) {}
-    void process(const Metavision::EventCD* b, const Metavision::EventCD* e,
-                 std::vector<Metavision::EventCD>& out) override {
-        if (!enabled_) return;
-        algo_.process_events(b, e, std::back_inserter(out));
-    }
-    bool set_param(const std::string& k, const std::string& v) override {
-        if (k == "output_relative_coordinates") {
-            rel_ = (v == "1" || v == "true" || v == "True" || v == "on" || v == "yes");
-            rebuild();
-            return true;
-        }
-        int n = 0;
-        if (!parse(v, n)) return false;
-        if (k == "x0") { x0_ = n; rebuild(); return true; }
-        if (k == "y0") { y0_ = n; rebuild(); return true; }
-        if (k == "x1") { x1_ = n; rebuild(); return true; }
-        if (k == "y1") { y1_ = n; rebuild(); return true; }
-        return false;
-    }
-    std::string name() const override { return "roi_filter"; }
-private:
-    void rebuild() { algo_ = Metavision::RoiFilterAlgorithm(x0_, y0_, x1_, y1_, rel_); }
-    int x0_{0}, y0_{0}, x1_{0}, y1_{0};
-    bool rel_{false};
-    Metavision::RoiFilterAlgorithm algo_;
-};
+// Phase 2.6 debug D-6: RoiFilterStage was deleted (superseded by the
+// unified ROI — see the FilterChain ctor).
 
 } // namespace
 
@@ -292,7 +263,9 @@ FilterChain::FilterChain() {
     add("rotate", std::make_unique<RotateStage>());
     add("transpose", std::make_unique<TransposeStage>());
     add("rescale", std::make_unique<RescaleStage>());
-    add("roi_filter", std::make_unique<RoiFilterStage>());
+    // Phase 2.6 debug D-6: the roi_filter stage was deleted (superseded by
+    // the unified ROI). Old configs referencing it hit the unknown-stage
+    // warning path.
 }
 
 void FilterChain::set_geometry(int width, int height) {

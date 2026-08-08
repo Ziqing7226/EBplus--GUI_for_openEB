@@ -462,9 +462,11 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create_with_info(const AlgoInfo& info)
         }
         // Replay the cached unified ROI state (Phase 2.6) so instances
         // created while a ROI window is active start out cropped/resized.
+        // RONI (debug D-5): pass-through at full dims (source-filtered
+        // absolute coordinates).
         if (info.category != "calibration") {
-            inst->set_unified_roi(uroi_enabled_, uroi_x0_, uroi_y0_,
-                                  uroi_x1_, uroi_y1_);
+            inst->set_unified_roi(uroi_enabled_ && !uroi_roni_,
+                                  uroi_x0_, uroi_y0_, uroi_x1_, uroi_y1_);
         }
     }
     return inst;
@@ -531,15 +533,22 @@ void AlgoBridge::apply_global_preproc(const std::string& key,
 // (display/record path) and AlgoBridge::set_unified_roi_state (algo path).
 
 void AlgoBridge::set_unified_roi_state(bool enabled, int x0, int y0,
-                                       int x1, int y1) {
+                                       int x1, int y1, bool roni) {
     // Cache the state so instances created later inherit it (same pattern as
     // apply_global_preproc). Snapshot under live_mutex_, apply outside the
     // lock — set_unified_roi may trigger a backend rebuild (e.g. E2VID
     // reloads the ONNX model when effective dims change).
+    //
+    // RONI (Phase 2.6 debug D-5): the source (hardware I_ROI RONI mode, or
+    // the file software crop) already drops inside-rect events at ABSOLUTE
+    // coordinates, so instances must NOT crop/translate/resize — they get
+    // set_unified_roi(false) = pass-through at full dimensions.
+    const bool inst_enabled = enabled && !roni;
     std::vector<std::shared_ptr<AlgoInstance>> snapshot;
     {
         std::lock_guard<std::mutex> lk(live_mutex_);
         uroi_enabled_ = enabled;
+        uroi_roni_ = roni;
         uroi_x0_ = x0; uroi_y0_ = y0; uroi_x1_ = x1; uroi_y1_ = y1;
         for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
             if (auto inst = it->second.lock()) {
@@ -556,7 +565,7 @@ void AlgoBridge::set_unified_roi_state(bool enabled, int x0, int y0,
         }
     }
     for (auto& inst : snapshot) {
-        inst->set_unified_roi(enabled, x0, y0, x1, y1);
+        inst->set_unified_roi(inst_enabled, x0, y0, x1, y1);
     }
 }
 
@@ -634,14 +643,6 @@ void AlgoBridge::register_openeb_filters() {
         a.category = "openeb_filter";
         registry_[a.name] = std::move(a);
     };
-
-    add({"roi_filter", "ROI Filter", "openeb_filter", "openeb",
-         AlgoDisplayMode::Passive,
-         {pint("x0", "X start", "0", "0", ""),
-          pint("y0", "Y start", "0", "0", ""),
-          pint("x1", "X end", "1279", "0", ""),
-          pint("y1", "Y end", "719", "0", ""),
-          pbool("output_relative_coordinates", "Relative coords", "false")}});
 
     add({"polarity_filter", "Polarity Filter", "openeb_filter", "openeb",
          AlgoDisplayMode::Passive,

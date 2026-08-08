@@ -93,6 +93,12 @@ private slots:
     void on_save_biases();
     void on_load_biases();
     void on_toggle_roi_drag(bool on);
+    /// Shared handler for both pages' "Enable ROI" checkboxes (Phase 2.6
+    /// debug D-6): applies the stored rect (default center 256×144 when
+    /// unset) and opens the settings dialog when turned on.
+    void on_roi_enable_toggled(bool on);
+    /// Opens the modal unified-ROI settings dialog (Phase 2.6 debug D-6).
+    void open_roi_settings_dialog();
 
     // Phase 3 — recording / playback.
     void on_record_start();
@@ -172,6 +178,18 @@ private:
     /// with only-ROI content (default). Enabled only while the unified ROI
     /// is active.
     QCheckBox* roi_zoom_cb_{nullptr};
+    /// Current ROI drag-mode state of the main display (dialog init,
+    /// Phase 2.6 debug D-6).
+    bool roi_drag_active_{false};
+    /// Saved unified-ROI state for the default-ROI automation (Phase 2.6
+    /// debug D-7): heavy algorithms force the center 256×144 ROI on enable
+    /// and restore this prior state on disable.
+    struct RoiAutomationSave {
+        bool enabled;
+        int x0, y0, x1, y1;
+        bool roni;
+    };
+    std::optional<RoiAutomationSave> roi_automation_save_;
     SettingsPanel* settings_{nullptr};
     QDockWidget* settings_dock_{nullptr};  ///< Right-dock wrapper, for hide/show.
     PlaybackControls* playback_controls_{nullptr};

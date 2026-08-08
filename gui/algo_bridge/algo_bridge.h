@@ -252,8 +252,12 @@ public:
     /// @brief Applies the unified ROI state (Phase 2.6) to every live
     /// instance and caches it so instances created later inherit it. From
     /// the algorithm's perspective the ROI window is the effective sensor
-    /// (see AlgoInstance::set_unified_roi).
-    void set_unified_roi_state(bool enabled, int x0, int y0, int x1, int y1);
+    /// (see AlgoInstance::set_unified_roi). In RONI mode (Phase 2.6 debug
+    /// D-5) the source already drops inside-rect events at ABSOLUTE
+    /// coordinates, so instances stay pass-through at full dimensions
+    /// (no crop, no translate, no resize).
+    void set_unified_roi_state(bool enabled, int x0, int y0, int x1, int y1,
+                               bool roni = false);
 
     /// @brief Sets the actual sensor dimensions so new instances are created
     /// with the correct width/height instead of the 1280x720 default.
@@ -328,8 +332,11 @@ private:
     std::function<void(const std::string& name)> overload_cb_;
 
     /// Cached unified ROI state (Phase 2.6). Replayed in create_with_info()
-    /// so instances created later inherit the active ROI window.
+    /// so instances created later inherit the active ROI window. uroi_roni_
+    /// (Phase 2.6 debug D-5): RONI = instances stay pass-through at full
+    /// dims (source-filtered absolute coordinates).
     bool uroi_enabled_{false};
+    bool uroi_roni_{false};
     int uroi_x0_{0}, uroi_y0_{0}, uroi_x1_{0}, uroi_y1_{0};
 };
 

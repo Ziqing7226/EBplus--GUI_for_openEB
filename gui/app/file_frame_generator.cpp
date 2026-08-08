@@ -65,11 +65,13 @@ void FileFrameGenerator::set_geometry(long width, long height) {
     frame_.create(static_cast<int>(height_), static_cast<int>(width_), CV_8UC3);
     display_preproc_.init(static_cast<int>(width), static_cast<int>(height));
     // Recompute the software ROI rect against the new sensor size.
-    set_display_roi(roi_enabled_, roi_x_, roi_y_, roi_w_, roi_h_);
+    set_display_roi(roi_enabled_, roi_x_, roi_y_, roi_w_, roi_h_, roi_roni_);
 }
 
-void FileFrameGenerator::set_display_roi(bool enabled, int x, int y, int w, int h) {
+void FileFrameGenerator::set_display_roi(bool enabled, int x, int y, int w, int h,
+                                         bool roni) {
     roi_enabled_ = enabled;
+    roi_roni_ = roni;
     roi_x_ = x; roi_y_ = y; roi_w_ = w; roi_h_ = h;
     // Compute the rect (auto-center on -1, clamp to sensor), mirroring
     // ProcessRegion::compute and CameraController::set_unified_roi.
@@ -300,13 +302,16 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
     // Software ROI (Phase 2.6): drop events outside the rect so the rendered
     // frame AND the algorithm feed (events_window_ready) both see the same
     // ROI-limited stream — identical semantics to a live source with the
-    // hardware ROI enabled.
+    // hardware ROI enabled. RONI mode (Phase 2.6 debug D-5) inverts the
+    // predicate: keep events OUTSIDE the rect (hardware drops inside).
     if (roi_enabled_) {
         auto& evs = *window_events;
         std::size_t kept = 0;
         for (std::size_t i = 0; i < evs.size(); ++i) {
             const auto& ev = evs[i];
-            if (ev.x >= roi_x0_ && ev.x < roi_x1_ && ev.y >= roi_y0_ && ev.y < roi_y1_) {
+            const bool inside = ev.x >= roi_x0_ && ev.x < roi_x1_ &&
+                                ev.y >= roi_y0_ && ev.y < roi_y1_;
+            if (inside != roi_roni_) {
                 evs[kept++] = ev;
             }
         }

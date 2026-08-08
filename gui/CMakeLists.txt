@@ -68,6 +68,7 @@ list(APPEND GUI_LIB_SOURCES
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/display/space_time_display.cpp")
     list(APPEND GUI_LIB_SOURCES
         widgets/algo_window.cpp
+        widgets/unified_roi_dialog.cpp
         display/frame_annotator.cpp
         display/space_time_display.cpp
     )

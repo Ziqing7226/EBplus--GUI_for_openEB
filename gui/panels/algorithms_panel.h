@@ -64,21 +64,15 @@ public:
     /// values while the algorithms run with the loaded ones (audit §5.9-疑点4).
     void refresh_param_values();
 
-    /// @brief Programmatically sets the unified ROI selector controls and
-    /// emits unified_roi_changed (Phase 2.6 step 3). Used by MainWindow to
-    /// auto-apply the default center ROI when a default-ROI algorithm is
-    /// enabled (and to restore OFF when it is disabled). Uses QSignalBlocker
-    /// internally so it does NOT count as a user edit (roi_user_touched_).
-    void apply_unified_roi(bool enabled, int x, int y, int w, int h);
-    /// @brief True once the user has manually edited any ROI selector
-    /// control. While true, the default-ROI automation (Phase 2.6 step 3)
-    /// must not override the user's rectangle.
-    bool roi_user_touched() const { return roi_user_touched_; }
-    /// @brief True if the named algorithm auto-enables the unified ROI at
-    /// the default center 128×128 when enabled (Phase 2.6 step 3 default
-    /// list): the complex algorithms whose cost/unboundedness demands a
-    /// bounded region (design §6: e2v / isi_analyzer / xyt_visualizer /
-    /// time_surface).
+    /// @brief Syncs the "Enable ROI" checkbox from the unified ROI state
+    /// (driven by CameraController::roi_state_changed via MainWindow;
+    /// QSignalBlocker — does not count as a user edit / no re-emission).
+    void set_roi_enabled(bool enabled);
+    /// @brief True if the named algorithm auto-enables the unified ROI when
+    /// enabled (Phase 2.6 debug D-7 default list): the compute-heavy
+    /// algorithms that would stall at full sensor (e2v / isi_analyzer /
+    /// time_surface / hough_line / hough_circle). XYT is deliberately NOT
+    /// in the list (user decision — it never used ROI).
     static bool algo_defaults_to_roi(const std::string& algo_name);
 
     /// @brief Updates the read-only status label of an Overlay algorithm in
@@ -99,10 +93,13 @@ signals:
     /// (preproc_* key + value). MainWindow forwards it to the display-path
     /// preprocessing in FramePipeline (Phase 2.5).
     void preproc_display_param_changed(const QString& key, const QString& value);
-    /// @brief Emitted when the ROI selector changes (Phase 2.6). Drives the
-    /// unified ROI: hardware ROI on live camera, software crop on file
-    /// playback (routed by MainWindow via CameraController::set_unified_roi).
-    void unified_roi_changed(bool enabled, int x, int y, int w, int h);
+    /// @brief Emitted when the USER toggles the panel's "Enable ROI"
+    /// checkbox (Phase 2.6 debug D-6). MainWindow applies it via
+    /// CameraController::set_unified_roi (and opens the settings dialog when
+    /// turned on). The rect/mode live in the unified ROI settings dialog.
+    void roi_enable_toggled(bool on);
+    /// @brief Emitted when the panel's "ROI Settings..." button is clicked.
+    void roi_settings_requested();
     /// @brief Emitted (from the SDK data thread, via the bridge's overload
     /// callback) when the flood guard auto-disables an algorithm. Connected
     /// queued to on_algorithm_overloaded so the checkbox sync runs on the
@@ -123,10 +120,6 @@ private:
     void apply_param(const std::string& algo_name,
                      const std::string& param_key,
                      const std::string& value);
-    /// Applies the global Algorithm ROI (x/y/w/h + enabled) to every live
-    /// algorithm instance. Called whenever the user edits the global ROI
-    /// controls at the top of the panel.
-    void apply_global_roi();
     /// Applies a shared preprocessing parameter (preproc_*) to every live
     /// algorithm instance via AlgoBridge::apply_global_preproc. Preprocessing
     /// (noise filter + 1/4 downsample) is stackable and NOT mutually exclusive
@@ -185,14 +178,12 @@ private:
     /// the "mode" enum combobox changes (see refresh_mode_visibility).
     std::unordered_map<std::string, AlgoPanelState> algo_panel_state_;
 
-    /// Global Algorithm ROI controls (design §5.6.6). All self-developed
-    /// algorithms share this ROI; per-algorithm roi_* params are removed
-    /// from the parameter editors and controlled exclusively here.
+    /// Unified ROI controls (Phase 2.6 debug D-6): a single enable checkbox
+    /// + a settings button opening the modal UnifiedRoiDialog (rect/mode/
+    /// drag live there). Same state as the Hardware page's ROI controls —
+    /// both are synced via CameraController::roi_state_changed.
     QCheckBox* roi_enabled_cb_{nullptr};
-    QSpinBox* roi_x_sp_{nullptr};
-    QSpinBox* roi_y_sp_{nullptr};
-    QSpinBox* roi_w_sp_{nullptr};
-    QSpinBox* roi_h_sp_{nullptr};
+    QPushButton* roi_settings_btn_{nullptr};
 
     /// Global Preprocessing controls (v1.1.0). The noise filter + 1/4
     /// downsample are stackable stages applied AFTER the algorithm ROI
@@ -250,15 +241,6 @@ private:
     /// Read-only status labels for Overlay algorithms (Phase 2.6 debug D-1),
     /// shown while the algorithm is enabled. See set_algo_status().
     std::unordered_map<std::string, QLabel*> algo_status_labels_;
-
-    /// Tracks whether the user has manually edited the unified ROI selector
-    /// (Phase 2.6 step 3). While false, enabling a default-ROI algorithm
-    /// auto-applies the center 128×128 ROI and disabling it restores OFF.
-    /// Once the user edits any ROI control, this flips true and the
-    /// automation stops — the user's rectangle is respected thereafter.
-    /// Programmatic apply_unified_roi() uses QSignalBlocker so it does not
-    /// trip this flag.
-    bool roi_user_touched_{false};
 
     /// Returns true if the named algorithm's backend halves event
     /// coordinates when 1/4 downsample is enabled (vs. just thinning

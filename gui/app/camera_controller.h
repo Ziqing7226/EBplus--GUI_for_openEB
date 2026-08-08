@@ -110,17 +110,29 @@ public:
     facility::TriggerOut*  trigger_out_facility();
 
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
-    /// Live camera: applies the hardware ROI (I_ROI, keep-inside mode) so
-    /// the sensor itself only outputs ROI events. File playback: forwards to
-    /// FramePipeline's software crop (same semantics). @p x/@p y = -1 means
-    /// auto-center the window on the sensor. Returns false on failure
-    /// (facility missing / invalid rect) — caller should NOT treat the ROI
-    /// as applied.
-    bool set_unified_roi(bool enabled, int x, int y, int w, int h);
+    /// Live camera: applies the hardware ROI (I_ROI) so the sensor itself
+    /// only outputs ROI events. File playback: forwards to FramePipeline's
+    /// software crop (same semantics). @p x/@p y = -1 means auto-center the
+    /// window on the sensor. @p roni selects ROI (keep-inside, default) vs
+    /// RONI (drop-inside) mode; std::nullopt keeps the current mode.
+    /// Returns false on failure (facility missing / invalid rect) — caller
+    /// should NOT treat the ROI as applied.
+    /// On success emits roi_state_changed with the computed rect (the single
+    /// driver for the overlay frame, zoom button and algorithm path,
+    /// Phase 2.6 debug D-5).
+    bool set_unified_roi(bool enabled, int x, int y, int w, int h,
+                         std::optional<bool> roni = std::nullopt);
 
     /// @brief Reads the current unified ROI state (computed rect
     /// [x0,x1) × [y0,y1]) for overlay rendering.
     void unified_roi(bool& enabled, int& x0, int& y0, int& x1, int& y1) const;
+
+    /// @brief True when the unified ROI is in RONI (drop-inside) mode
+    /// (Phase 2.6 debug D-5). In RONI mode events keep ABSOLUTE sensor
+    /// coordinates (the source filters, nothing is translated) — consumers
+    /// that shift coordinates (OverlayStrategy) or resize backends
+    /// (AlgoBridge) must treat RONI as "no translation / no resize".
+    bool unified_roi_roni() const { return roi_roni_; }
 
     /// @brief Enables/disables broadcasting of every CD batch via
     /// cd_events_ready(). When false (default), the CD callback takes the
@@ -136,6 +148,11 @@ signals:
     void stopped();
     void error(const QString& message);
     void runtime_warning(const QString& message);
+    /// @brief Emitted after every successful set_unified_roi (Phase 2.6
+    /// debug D-5): the single driver for the overlay frame, the Zoom-to-ROI
+    /// button, the algorithm path (AlgoBridge::set_unified_roi_state) and
+    /// GUI checkbox sync. Carries the COMPUTED rect [x0,x1) × [y0,y1).
+    void roi_state_changed(bool enabled, int x0, int y0, int x1, int y1);
     /// @brief Emitted from the SDK CD callback (cross-thread, queued) when
     /// cd_broadcast_ is true. Carries a shared_ptr copy of the batch so
     /// listeners on the GUI thread can process it safely. Used by the
@@ -157,9 +174,11 @@ private:
     std::optional<Metavision::CallbackId> status_cb_id_;
     SensorInfo sensor_info_;
     bool is_file_{false};
-    /// Unified ROI state (live path; file path keeps its own in
-    /// FileFrameGenerator and is read via frame_pipeline_.file_roi()).
+    /// Unified ROI state (live path; file path keeps its rect in
+    /// FileFrameGenerator, read via frame_pipeline_.file_roi()). roi_roni_
+    /// is tracked here for BOTH paths (single writer: set_unified_roi).
     bool roi_enabled_{false};
+    bool roi_roni_{false};
     int roi_x0_{0}, roi_y0_{0}, roi_x1_{0}, roi_y1_{0};
 
     FramePipeline frame_pipeline_;

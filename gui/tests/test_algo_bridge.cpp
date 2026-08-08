@@ -48,18 +48,19 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 // wizard, not a registered algo); perspective_undistort was removed (audit
 // §三-B8, superseded by the preproc undistort stage); the 22 unreachable
 // OpenEB frame/preproc/util/roi_mask/adaptive_rate_split registrations were
-// removed (audit §三-B6/7), leaving the 8 FilterChain event-transform stages
-// (roi_filter, polarity_filter, polarity_invert, flip_x, flip_y, rotate,
-// transpose, rescale). ultra_slow_motion was removed in Phase 2.5 (broken
+// removed (audit §三-B6/7), leaving the FilterChain event-transform stages
+// (polarity_filter, polarity_invert, flip_x, flip_y, rotate, transpose,
+// rescale — roi_filter was removed in Phase 2.6 debug D-6, superseded by the
+// unified ROI). ultra_slow_motion was removed in Phase 2.5 (broken
 // Replace-display promise, no downstream consumer). sensor_self_test is
 // intentionally NOT registered (it is a Devices-panel diagnostic, not an
 // algorithm — its instance is created via create_with_info).
-// Live registry: 26 self-developed + 8 OpenEB = 34.
+// Live registry: 26 self-developed + 7 OpenEB = 33.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 34u);
+    EXPECT_EQ(algos.size(), 33u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
@@ -67,7 +68,7 @@ TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
         else if (a.source == "openeb") ++openeb_count;
     }
     EXPECT_EQ(self_count, 26u);
-    EXPECT_EQ(openeb_count, 8u);
+    EXPECT_EQ(openeb_count, 7u);
 }
 
 TEST(AlgoBridgeRegistry, KeyNamesPresent) {
@@ -83,8 +84,10 @@ TEST(AlgoBridgeRegistry, KeyNamesPresent) {
     // diagnostic, not an algorithm) — but its instance must still be
     // creatable from an explicit AlgoInfo via create_with_info.
     EXPECT_EQ(bridge.find("sensor_self_test"), nullptr);
-    // OpenEB event-transform stages (handled by FilterChain).
-    EXPECT_NE(bridge.find("roi_filter"), nullptr);
+    // OpenEB event-transform stages (handled by FilterChain). roi_filter is
+    // intentionally NOT registered (Phase 2.6 debug D-6 — superseded by the
+    // unified ROI).
+    EXPECT_EQ(bridge.find("roi_filter"), nullptr);
     EXPECT_NE(bridge.find("flip_x"), nullptr);
     EXPECT_NE(bridge.find("polarity_filter"), nullptr);
 }

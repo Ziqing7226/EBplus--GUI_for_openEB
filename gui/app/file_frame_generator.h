@@ -221,8 +221,11 @@ private:
     // Software ROI (Phase 2.6). Computed rect [x0,x1) × [y0,y1); applied in
     // render_frame to BOTH the rendered pixels and events_window_ready so
     // display and algorithms see the same ROI-limited stream (mirrors the
-    // hardware ROI semantics of a live source).
+    // hardware ROI semantics of a live source). roi_roni_ (Phase 2.6 debug
+    // D-5) inverts the semantics: RONI keeps events OUTSIDE the rect
+    // (hardware I_ROI::Mode::RONI drops inside).
     bool roi_enabled_{false};
+    bool roi_roni_{false};
     int roi_x_{-1}, roi_y_{-1}, roi_w_{0}, roi_h_{0};
     int roi_x0_{0}, roi_y0_{0}, roi_x1_{0}, roi_y1_{0};
 public:
@@ -237,12 +240,15 @@ public:
     /// rect are dropped from BOTH the rendered frame and events_window_ready
     /// (same "source only outputs ROI events" semantics as the hardware ROI).
     /// @p x/@p y = -1 = auto-center on the sensor; w/h <= 0 = full sensor.
-    void set_display_roi(bool enabled, int x, int y, int w, int h);
+    /// @p roni = true inverts the semantics (keep outside, drop inside).
+    void set_display_roi(bool enabled, int x, int y, int w, int h, bool roni = false);
     /// @brief Reads the software ROI state (computed rect [x0,x1) × [y0,y1)).
     void display_roi(bool& enabled, int& x0, int& y0, int& x1, int& y1) const {
         enabled = roi_enabled_;
         x0 = roi_x0_; y0 = roi_y0_; x1 = roi_x1_; y1 = roi_y1_;
     }
+    /// @brief True when the software ROI is in RONI (keep-outside) mode.
+    bool display_roi_roni() const { return roi_roni_; }
 private:
 };
 

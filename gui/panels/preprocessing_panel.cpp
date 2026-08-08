@@ -98,35 +98,10 @@ void PreprocessingPanel::build_ui() {
             apply_stage("rescale");
         });
     }
-    // ROI filter — each coordinate on its own row so the row width fits
-    // the narrower sidebar (§13.3 — splitting wide rows).
-    {
-        auto* cb = new QCheckBox(tr("ROI Filter"), group_);
-        form->addRow(cb);
-        auto* x0 = new QSpinBox(group_); x0->setRange(0, 100000);
-        auto* y0 = new QSpinBox(group_); y0->setRange(0, 100000);
-        auto* x1 = new QSpinBox(group_); x1->setRange(0, 100000); x1->setValue(1279);
-        auto* y1 = new QSpinBox(group_); y1->setRange(0, 100000); y1->setValue(719);
-        for (auto* s : {x0, y0, x1, y1}) s->setEnabled(false);
-        form->addRow(tr("  X0"), x0);
-        form->addRow(tr("  Y0"), y0);
-        form->addRow(tr("  X1"), x1);
-        form->addRow(tr("  Y1"), y1);
-        enables_["roi_filter"] = cb;
-        spins_["roi_filter|x0"] = x0;
-        spins_["roi_filter|y0"] = y0;
-        spins_["roi_filter|x1"] = x1;
-        spins_["roi_filter|y1"] = y1;
-        connect(cb, &QCheckBox::toggled, this, [this, x0, y0, x1, y1](bool on) {
-            x0->setEnabled(on); y0->setEnabled(on); x1->setEnabled(on); y1->setEnabled(on);
-            apply_stage("roi_filter");
-        });
-        for (auto* s : {x0, y0, x1, y1}) {
-            connect(s, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) {
-                apply_stage("roi_filter");
-            });
-        }
-    }
+    // Phase 2.6 debug D-6: the ROI Filter stage was deleted — the unified
+    // ROI (Hardware/Algorithms page checkbox + dialog, hardware I_ROI on
+    // live / software crop on file) is the single ROI concept; this stage
+    // duplicated it with fully independent state.
 
     outer->addWidget(group_);
 }
@@ -155,15 +130,6 @@ void PreprocessingPanel::apply_stage(const QString& stage) {
                                        std::to_string(sx->value()));
         if (sy) chain->set_stage_param(stage.toStdString(), "scale_height",
                                        std::to_string(sy->value()));
-    } else if (stage == "roi_filter") {
-        auto* x0 = spins_.value("roi_filter|x0");
-        auto* y0 = spins_.value("roi_filter|y0");
-        auto* x1 = spins_.value("roi_filter|x1");
-        auto* y1 = spins_.value("roi_filter|y1");
-        if (x0) chain->set_stage_param(stage.toStdString(), "x0", std::to_string(x0->value()));
-        if (y0) chain->set_stage_param(stage.toStdString(), "y0", std::to_string(y0->value()));
-        if (x1) chain->set_stage_param(stage.toStdString(), "x1", std::to_string(x1->value()));
-        if (y1) chain->set_stage_param(stage.toStdString(), "y1", std::to_string(y1->value()));
     }
     if (cb->isChecked()) {
         emit info_message(tr("Preprocess: %1 on").arg(stage));

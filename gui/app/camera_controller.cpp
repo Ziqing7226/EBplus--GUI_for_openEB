@@ -196,21 +196,24 @@ facility::Roi* CameraController::roi_facility() {
     return camera_->get_device().get_facility<facility::Roi>();
 }
 
-bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h) {
+bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
+                                       std::optional<bool> roni) {
+    const bool roni_mode = roni.value_or(roi_roni_);
     if (is_file_) {
         // File playback: no hardware — software crop with the same
-        // "sensor outputs only ROI events" semantics (Phase 2.6).
-        frame_pipeline_.set_file_roi(enabled, x, y, w, h);
+        // "sensor outputs only ROI events" semantics (Phase 2.6). RONI
+        // inverts the crop (Phase 2.6 debug D-5).
+        frame_pipeline_.set_file_roi(enabled, x, y, w, h, roni_mode);
+        roi_roni_ = roni_mode;
+        bool en = false;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        frame_pipeline_.file_roi(en, x0, y0, x1, y1);
+        emit roi_state_changed(en, x0, y0, x1, y1);
         return true;
     }
     auto* roi = roi_facility();
     if (!roi) return false;
     try {
-        if (!enabled) {
-            roi->enable(false);
-            roi_enabled_ = false;
-            return true;
-        }
         // Compute the window (auto-center on -1, clamp to sensor), mirroring
         // ProcessRegion::compute so live and file paths agree.
         const int sw = sensor_info_.width > 0 ? sensor_info_.width : 1280;
@@ -220,15 +223,23 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h)
         const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
         const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
         if (rw <= 0 || rh <= 0) return false;
-        roi->set_mode(Metavision::I_ROI::Mode::ROI);
+        // Phase 2.6 debug D-5: the mode is part of the unified state (was
+        // hardcoded ROI, clobbering RONI set via the RoiPanel), and the
+        // window/mode are configured even when disabling so callers can
+        // pre-configure a rect while the ROI is off (mirrors the file path,
+        // which stores the rect unconditionally).
+        roi->set_mode(roni_mode ? Metavision::I_ROI::Mode::RONI
+                                : Metavision::I_ROI::Mode::ROI);
         roi->set_windows({Metavision::I_ROI::Window(rx, ry, rw, rh)});
-        roi->enable(true);
-        roi_enabled_ = true;
+        roi->enable(enabled);
+        roi_enabled_ = enabled;
+        roi_roni_ = roni_mode;
         roi_x0_ = rx; roi_y0_ = ry;
         roi_x1_ = rx + rw; roi_y1_ = ry + rh;
     } catch (const std::exception&) {
         return false;
     }
+    emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
     return true;
 }
 

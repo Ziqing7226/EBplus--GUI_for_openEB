@@ -253,12 +253,11 @@ void AlgorithmsPanel::build_ui() {
                     if (inst) {
                         inst->set_enabled(true);
                         live_instances_[algo_name] = inst;
-                        // create() already replayed the cached preproc_* and
-                        // roi_* params (BUG-R4, N3). Refresh the ROI cache from
-                        // the current widget values so the new instance is
-                        // guaranteed to match the sidebar state even if no
-                        // widget signal fired since app start.
-                        apply_global_roi();
+                        // create() already replayed the cached preproc_* params
+                        // (BUG-R4, N3) and the cached unified ROI state
+                        // (Phase 2.6 step 3), so the new instance matches the
+                        // sidebar state even if no widget signal fired since
+                        // app start.
                         // Auto-set 1/4 downsample based on algorithm type
                         // (§11.2-I): coordinate-halving backends (E2VID,
                         // ISI, TimeSurface, HoughLine, HoughCircle) default
@@ -322,97 +321,50 @@ void AlgorithmsPanel::build_ui() {
 }
 
 void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
-    auto* gb = new QGroupBox(tr("Algorithm ROI"), this);
+    auto* gb = new QGroupBox(tr("ROI (Unified)"), this);
     auto* form = new QFormLayout(gb);
     form->setContentsMargins(6, 6, 6, 6);
 
-    roi_enabled_cb_ = new QCheckBox(tr("Enabled (center 128×128 default)"), gb);
-    // Phase 2.6: the unified ROI defaults to OFF (user decision) — the main
-    // display and all algorithm inputs stay full-sensor until the user or a
-    // default-ROI algorithm explicitly enables it.
+    // Phase 2.6 debug D-6: reduced to a single enable checkbox + a settings
+    // button opening the modal UnifiedRoiDialog (rect/mode/drag live there).
+    // Same unified state as the Hardware page's ROI controls; the checkbox
+    // is synced via CameraController::roi_state_changed (set_roi_enabled).
+    roi_enabled_cb_ = new QCheckBox(tr("Enable ROI"), gb);
+    roi_enabled_cb_->setToolTip(
+        tr("Single unified ROI: hardware ROI on a live camera, software crop "
+           "on file playback. Heavy algorithms (E2VID/ISI/TimeSurface/Hough) "
+           "enable it automatically at the center 256×144 while enabled."));
     roi_enabled_cb_->setChecked(false);
     form->addRow(roi_enabled_cb_);
 
-    roi_x_sp_ = new QSpinBox(gb);
-    roi_x_sp_->setRange(-1, 100000);
-    roi_x_sp_->setValue(-1);
-    roi_x_sp_->setSpecialValueText(tr("auto-center"));
-    form->addRow(tr("X"), roi_x_sp_);
-
-    roi_y_sp_ = new QSpinBox(gb);
-    roi_y_sp_->setRange(-1, 100000);
-    roi_y_sp_->setValue(-1);
-    roi_y_sp_->setSpecialValueText(tr("auto-center"));
-    form->addRow(tr("Y"), roi_y_sp_);
-
-    roi_w_sp_ = new QSpinBox(gb);
-    roi_w_sp_->setRange(0, 100000);
-    roi_w_sp_->setValue(128);
-    roi_w_sp_->setSpecialValueText(tr("full"));
-    form->addRow(tr("W"), roi_w_sp_);
-
-    roi_h_sp_ = new QSpinBox(gb);
-    roi_h_sp_->setRange(0, 100000);
-    roi_h_sp_->setValue(128);
-    roi_h_sp_->setSpecialValueText(tr("full"));
-    form->addRow(tr("H"), roi_h_sp_);
+    roi_settings_btn_ = new QPushButton(tr("ROI Settings..."), gb);
+    form->addRow(QString(), roi_settings_btn_);
 
     parent_layout->addWidget(gb);
 
-    // Wire up: any change applies the ROI to all live instances. A USER edit
-    // also trips roi_user_touched_, which disables the default-ROI
-    // automation (Phase 2.6 step 3) — programmatic apply_unified_roi() uses
-    // QSignalBlocker and never reaches these slots.
-    auto apply_now = [this]() {
-        roi_user_touched_ = true;
-        apply_global_roi();
-    };
-    connect(roi_enabled_cb_, &QCheckBox::toggled, this, apply_now);
-    connect(roi_x_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
-    connect(roi_y_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
-    connect(roi_w_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
-    connect(roi_h_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
+    connect(roi_enabled_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        // Applied by MainWindow via CameraController::set_unified_roi.
+        emit roi_enable_toggled(on);
+    });
+    connect(roi_settings_btn_, &QPushButton::clicked, this,
+            [this]() { emit roi_settings_requested(); });
 }
 
-void AlgorithmsPanel::apply_global_roi() {
-    // Phase 2.6: the ROI selector drives the UNIFIED ROI (hardware ROI on
-    // live camera, software crop on file playback) via MainWindow, instead
-    // of per-backend roi_* parameters (mechanism deleted in Phase 2.6 step 2).
-    emit unified_roi_changed(roi_enabled_cb_->isChecked(),
-                             roi_x_sp_->value(), roi_y_sp_->value(),
-                             roi_w_sp_->value(), roi_h_sp_->value());
-}
-
-void AlgorithmsPanel::apply_unified_roi(bool enabled, int x, int y, int w, int h) {
-    // Programmatic set: block widget signals so this does not count as a
-    // user edit (roi_user_touched_ stays false), then emit the unified ROI
-    // change once via apply_global_roi().
-    {
-        QSignalBlocker be(roi_enabled_cb_);
-        roi_enabled_cb_->setChecked(enabled);
-    }
-    {
-        QSignalBlocker bx(roi_x_sp_);
-        QSignalBlocker by(roi_y_sp_);
-        QSignalBlocker bw(roi_w_sp_);
-        QSignalBlocker bh(roi_h_sp_);
-        roi_x_sp_->setValue(x);
-        roi_y_sp_->setValue(y);
-        roi_w_sp_->setValue(w);
-        roi_h_sp_->setValue(h);
-    }
-    apply_global_roi();
+void AlgorithmsPanel::set_roi_enabled(bool enabled) {
+    QSignalBlocker b(roi_enabled_cb_);
+    roi_enabled_cb_->setChecked(enabled);
 }
 
 bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
-    // Phase 2.6 step 3 default list (design §6): complex algorithms whose
-    // cost or output size demands a bounded region auto-enable the unified
-    // ROI at the default center 128×128. Hough family and the rest run
-    // full-sensor by default.
+    // Phase 2.6 debug D-7 default list: compute-heavy algorithms that would
+    // stall at full sensor auto-enable the unified ROI at the default center
+    // 256×144 (and restore the prior state on disable). XYT deliberately
+    // excluded (user decision — it never used ROI).
     return algo_name == "event_to_video" ||
            algo_name == "isi_analyzer" ||
-           algo_name == "xyt_visualizer" ||
-           algo_name == "time_surface";
+           algo_name == "time_surface" ||
+           algo_name == "hough_line" ||
+           algo_name == "hough_circle";
 }
 
 void AlgorithmsPanel::set_algo_status(const std::string& name, const QString& text) {

@@ -71,26 +71,22 @@ QJsonObject ConfigManager::capture_biases(CameraController* c) const {
 
 QJsonObject ConfigManager::capture_roi(CameraController* c) const {
     QJsonObject o;
-    auto* r = c->roi_facility();
-    if (!r) return o;
-    try {
-        o["enabled"] = r->is_enabled();
-        o["mode"] = static_cast<int>(r->get_mode());
-        const auto wins = r->get_windows();
-        if (!wins.empty()) {
-            // Persist the first window's geometry so the rectangle is
-            // restored on apply. Multi-window configs are not common in this
-            // GUI (the RoiPanel exposes a single window) so we keep the
-            // first one only.
-            const auto& w0 = wins.front();
-            QJsonObject geom;
-            geom["x"] = w0.x;
-            geom["y"] = w0.y;
-            geom["width"] = w0.width;
-            geom["height"] = w0.height;
-            o["window"] = geom;
-        }
-    } catch (...) {}
+    // Phase 2.6 debug D-5: read the unified state cache (single source of
+    // truth) instead of the facility — all writers go through
+    // CameraController::set_unified_roi now, so the cache is always fresh.
+    bool en = false;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    c->unified_roi(en, x0, y0, x1, y1);
+    o["enabled"] = en;
+    o["mode"] = c->unified_roi_roni()
+                    ? static_cast<int>(Metavision::I_ROI::Mode::RONI)
+                    : static_cast<int>(Metavision::I_ROI::Mode::ROI);
+    QJsonObject geom;
+    geom["x"] = x0;
+    geom["y"] = y0;
+    geom["width"] = x1 - x0;
+    geom["height"] = y1 - y0;
+    o["window"] = geom;
     return o;
 }
 
@@ -201,30 +197,22 @@ bool ConfigManager::apply_biases(CameraController* c, const QJsonObject& o, QStr
 }
 
 bool ConfigManager::apply_roi(CameraController* c, const QJsonObject& o, QString& /*err*/) const {
-    auto* r = c->roi_facility();
-    if (!r) return false;
-    // Order matters per the I_ROI contract: a window must be set before
-    // enable(true) is called. So configure mode + window first, then enable.
-    try {
-        if (o.contains("mode")) {
-            r->set_mode(static_cast<Metavision::I_ROI::Mode>(o.value("mode").toInt()));
-        }
-        if (o.contains("window")) {
-            const auto geom = o.value("window").toObject();
-            const int x = geom.value("x").toInt();
-            const int y = geom.value("y").toInt();
-            const int w = geom.value("width").toInt();
-            const int h = geom.value("height").toInt();
-            if (w > 0 && h > 0) {
-                Metavision::I_ROI::Window win(x, y, w, h);
-                r->set_windows({win});
-            }
-        }
-        if (o.contains("enabled")) {
-            r->enable(o.value("enabled").toBool());
-        }
-    } catch (...) { return false; }
-    return true;
+    // Phase 2.6 debug D-5: route through the unified state source so the
+    // controller cache (overlay/zoom/algorithm path) reflects the loaded
+    // ROI — direct facility writes used to leave it stale.
+    const bool enabled = o.value("enabled").toBool(false);
+    const bool roni = o.contains("mode") &&
+        static_cast<Metavision::I_ROI::Mode>(o.value("mode").toInt()) ==
+            Metavision::I_ROI::Mode::RONI;
+    int x = -1, y = -1, w = 0, h = 0;  // defaults: auto-center, full sensor
+    if (o.contains("window")) {
+        const auto geom = o.value("window").toObject();
+        x = geom.value("x").toInt(-1);
+        y = geom.value("y").toInt(-1);
+        w = geom.value("width").toInt(0);
+        h = geom.value("height").toInt(0);
+    }
+    return c->set_unified_roi(enabled, x, y, w, h, roni);
 }
 
 bool ConfigManager::apply_esp(CameraController* c, const QJsonObject& o, QString& /*err*/) const {

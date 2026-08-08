@@ -50,6 +50,7 @@
 #include "app/icon_provider.h"
 #include "display/display_strategy.h"
 #include "widgets/activity_bar.h"
+#include "widgets/unified_roi_dialog.h"
 
 namespace gui {
 
@@ -445,10 +446,9 @@ void MainWindow::build_menus() {
             auto* ap = settings_->algorithms_panel();
             // Phase 2.6: legacy per-algorithm roi_* entries were collected
             // instead of forwarded — map the first algorithm's ROI onto the
-            // unified ROI. Route through the panel so the selector widgets,
-            // the camera/display path AND the algorithm path (step 3:
-            // AlgoBridge::set_unified_roi_state via unified_roi_changed) all
-            // stay in sync.
+            // unified ROI. Goes through the single state source, so the
+            // checkboxes/overlay/zoom/algorithm path all sync via
+            // roi_state_changed (debug D-6).
             if (!legacy_roi.empty()) {
                 auto parse = [](const std::map<std::string, std::string>& m,
                                 const char* k, int def) {
@@ -461,11 +461,7 @@ void MainWindow::build_menus() {
                 const int ry = parse(legacy_roi, "roi_y", -1);
                 const int rw = parse(legacy_roi, "roi_w", 128);
                 const int rh = parse(legacy_roi, "roi_h", 128);
-                if (ap) {
-                    ap->apply_unified_roi(on, rx, ry, rw, rh);
-                } else {
-                    camera_.set_unified_roi(on, rx, ry, rw, rh);
-                }
+                camera_.set_unified_roi(on, rx, ry, rw, rh);
             }
             // apply_algo_state wrote instances/caches directly — re-sync the
             // panel controls so the displayed values match the loaded ones
@@ -783,8 +779,7 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(live);
         a_save_biases_->setEnabled(live);
         a_load_biases_->setEnabled(live);
-        // ROI Drag Mode + Presets moved to the sidebar ROI panel (§14.5).
-        settings_->roi_panel()->set_roi_drag_enabled(live);
+        // Presets moved to the sidebar ROI panel (§14.5).
         settings_->roi_panel()->set_presets_enabled(live);
         // Recording + Export moved to the sidebar File Tools panel (§14.5).
         settings_->file_tools_panel()->set_record_enabled(live);
@@ -886,15 +881,13 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(false);
         a_save_biases_->setEnabled(false);
         a_load_biases_->setEnabled(false);
-        // ROI Drag Mode + Presets moved to the sidebar ROI panel (§14.5).
-        settings_->roi_panel()->set_roi_drag_enabled(false);
-        settings_->roi_panel()->set_roi_drag_checked(false);
+        // Presets moved to the sidebar ROI panel (§14.5).
         settings_->roi_panel()->set_presets_enabled(false);
         // Recording + Export moved to the sidebar File Tools panel (§14.5).
         settings_->file_tools_panel()->set_record_enabled(false);
         settings_->file_tools_panel()->set_stop_enabled(false);
         settings_->file_tools_panel()->set_export_enabled(false);
-        display_->set_roi_drag_mode(false);
+        on_toggle_roi_drag(false);
         display_->clear();
         if (auto* pb = findChild<QDockWidget*>("PlaybackDock")) {
             pb->setVisible(false);
@@ -1091,14 +1084,20 @@ void MainWindow::wire_signals() {
                 });
     }
 
-    // ROI panel <-> display widget (Phase 2)
+    // ROI panel <-> display widget / unified state (Phase 2.6 debug D-6)
     auto* roi = settings_->roi_panel();
-    connect(display_, &EventDisplayWidget::roi_dragged,
-            roi, &RoiPanel::set_roi_from_drag);
-    connect(roi, &RoiPanel::roi_applied, display_, &EventDisplayWidget::set_roi_overlay);
+    // Drag-drawn rect goes straight to the unified state source (the panel
+    // no longer owns rect widgets).
+    connect(display_, &EventDisplayWidget::roi_dragged, this,
+            [this](int x, int y, int w, int h) {
+                camera_.set_unified_roi(true, x, y, w, h);
+            });
+    connect(roi, &RoiPanel::roi_enable_toggled, this,
+            &MainWindow::on_roi_enable_toggled);
+    connect(roi, &RoiPanel::roi_settings_requested, this,
+            &MainWindow::open_roi_settings_dialog);
 
-    // ROI Drag Mode + Presets moved from Camera menu to ROI panel (§14.5).
-    connect(roi, &RoiPanel::roi_drag_toggled, this, &MainWindow::on_toggle_roi_drag);
+    // Presets moved from Camera menu to ROI panel (§14.5).
     connect(roi, &RoiPanel::preset_apply_requested, this, &MainWindow::on_apply_preset);
 
     // Recording + Export moved from File menu/toolbar to File Tools panel (§14.5).
@@ -1189,16 +1188,21 @@ void MainWindow::wire_signals() {
                         fp->set_display_preproc_param(key.toStdString(), value.toStdString());
                     }
                 });
-        // Unified ROI (Phase 2.6): the ROI selector drives the single ROI
-        // concept — hardware ROI on a live source, software crop on a file
-        // source. set_unified_roi computes/clamps the rect on both paths;
-        // the overlay frame shows the computed rect (or hides when off).
-        connect(ap, &AlgorithmsPanel::unified_roi_changed, this,
-                [this](bool enabled, int x, int y, int w, int h) {
-                    camera_.set_unified_roi(enabled, x, y, w, h);
-                    bool en = false;
-                    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-                    camera_.unified_roi(en, x0, y0, x1, y1);
+        // Unified ROI (Phase 2.6 debug D-6): the Algorithms page and the
+        // Hardware page each expose an "Enable ROI" checkbox + a "ROI
+        // Settings..." button, all driving the single state source. All
+        // downstream effects (overlay frame, zoom toggle, algorithm path,
+        // checkbox sync) are driven by CameraController::roi_state_changed.
+        connect(ap, &AlgorithmsPanel::roi_enable_toggled, this,
+                &MainWindow::on_roi_enable_toggled);
+        connect(ap, &AlgorithmsPanel::roi_settings_requested, this,
+                &MainWindow::open_roi_settings_dialog);
+        connect(&camera_, &CameraController::roi_state_changed, this,
+                [this, ap](bool en, int x0, int y0, int x1, int y1) {
+                    // Sync both pages' checkboxes (QSignalBlocker inside —
+                    // no re-emission loops).
+                    ap->set_roi_enabled(en);
+                    settings_->roi_panel()->set_roi_enabled(en);
                     // The zoom toggle is only meaningful while the ROI is
                     // active; while zoomed the overlay frame is hidden (the
                     // whole view is the ROI).
@@ -1208,22 +1212,31 @@ void MainWindow::wire_signals() {
                                               en && !zoomed);
                     // Same window drives the algorithm path: every live
                     // instance is resized to the ROI and fed ROI-relative
-                    // events (Phase 2.6 step 3).
-                    algo_bridge_.set_unified_roi_state(en, x0, y0, x1, y1);
+                    // events — except in RONI mode, where the source drops
+                    // inside-rect events at absolute coordinates and the
+                    // instances stay pass-through (debug D-5).
+                    algo_bridge_.set_unified_roi_state(en, x0, y0, x1, y1,
+                                                       camera_.unified_roi_roni());
                 });
         connect(ap, &AlgorithmsPanel::algorithm_toggled, this,
-                [this, ap](const QString& name, bool on) {
+                [this](const QString& name, bool on) {
                     statusBar()->showMessage(
                         tr("%1: %2").arg(name).arg(on ? tr("enabled") : tr("disabled")), 3000);
                     const auto key = name.toStdString();
                     if (on) {
-                        // Phase 2.6 step 3: default-ROI algorithms (e2v / ISI /
-                        // XYT / TimeSurface) auto-enable the unified ROI at the
-                        // default center 128×128 — unless the user has manually
-                        // set a rectangle (roi_user_touched), which wins.
-                        if (AlgorithmsPanel::algo_defaults_to_roi(key) &&
-                            !ap->roi_user_touched()) {
-                            ap->apply_unified_roi(true, -1, -1, 128, 128);
+                        // Phase 2.6 debug D-7: heavy algorithms (e2v / ISI /
+                        // TimeSurface / HoughLine / HoughCircle)
+                        // UNCONDITIONALLY auto-enable the unified ROI at the
+                        // default center 256×144 — they stall at full sensor.
+                        // The prior ROI state is saved and restored on
+                        // disable (algorithm mutex = single slot suffices).
+                        if (AlgorithmsPanel::algo_defaults_to_roi(key)) {
+                            bool en = false;
+                            int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+                            camera_.unified_roi(en, x0, y0, x1, y1);
+                            roi_automation_save_ = {en, x0, y0, x1, y1,
+                                                    camera_.unified_roi_roni()};
+                            camera_.set_unified_roi(true, -1, -1, 256, 144);
                         }
                     } else {
                         // Close the AlgoWindow if open (its closing handler will
@@ -1232,13 +1245,24 @@ void MainWindow::wire_signals() {
                         auto it = algo_windows_.find(key);
                         if (it != algo_windows_.end() && it.value()) it.value()->close();
                         if (key == "xyt_visualizer" && xyt_display_) xyt_display_->close();
-                        // Phase 2.6 step 3: symmetric auto-restore — disabling a
-                        // default-ROI algorithm turns the unified ROI back OFF
-                        // (full-sensor display/record), again only while the user
-                        // has not taken manual control of the rectangle.
+                        // Phase 2.6 debug D-7: restore the ROI state saved
+                        // when the algorithm was enabled (only if the
+                        // automation actually applied one). An empty saved
+                        // rect (never configured) restores as the default
+                        // 256×144 rect in the disabled state.
                         if (AlgorithmsPanel::algo_defaults_to_roi(key) &&
-                            !ap->roi_user_touched()) {
-                            ap->apply_unified_roi(false, -1, -1, 128, 128);
+                            roi_automation_save_.has_value()) {
+                            const auto s = *roi_automation_save_;
+                            const int w = s.x1 - s.x0;
+                            const int h = s.y1 - s.y0;
+                            if (w > 0 && h > 0) {
+                                camera_.set_unified_roi(s.enabled, s.x0, s.y0,
+                                                        w, h, s.roni);
+                            } else {
+                                camera_.set_unified_roi(s.enabled, -1, -1,
+                                                        256, 144, s.roni);
+                            }
+                            roi_automation_save_.reset();
                         }
                     }
                 });
@@ -1418,9 +1442,51 @@ void MainWindow::on_load_biases() {
 }
 
 void MainWindow::on_toggle_roi_drag(bool on) {
+    roi_drag_active_ = on;
     display_->set_roi_drag_mode(on);
     statusBar()->showMessage(on ? tr("ROI drag mode on — draw a rectangle on the display.")
                                 : tr("ROI drag mode off."), 3000);
+}
+
+void MainWindow::on_roi_enable_toggled(bool on) {
+    // Phase 2.6 debug D-6: shared handler for both pages' "Enable ROI"
+    // checkboxes. Applies the CURRENT stored rect (kept by
+    // CameraController/FileFrameGenerator while disabled); falls back to the
+    // default center 256×144 when nothing was ever configured.
+    bool en = false;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    camera_.unified_roi(en, x0, y0, x1, y1);
+    int x = x0, y = y0, w = x1 - x0, h = y1 - y0;
+    if (w <= 0 || h <= 0) {
+        x = -1;
+        y = -1;
+        w = 256;
+        h = 144;
+    }
+    camera_.set_unified_roi(on, x, y, w, h);
+    // Turning ROI on opens the settings dialog so the rect can be adjusted
+    // right away (user decision).
+    if (on) {
+        open_roi_settings_dialog();
+    }
+}
+
+void MainWindow::open_roi_settings_dialog() {
+    bool en = false;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    camera_.unified_roi(en, x0, y0, x1, y1);
+    const auto& si = camera_.sensor_info();
+    UnifiedRoiDialog dlg(this);
+    dlg.set_state(en, x0, y0, x1, y1, camera_.unified_roi_roni(),
+                  si.width > 0 ? si.width : 1280,
+                  si.height > 0 ? si.height : 720, roi_drag_active_);
+    if (dlg.exec() == QDialog::Accepted) {
+        camera_.set_unified_roi(dlg.roi_enabled(), dlg.x(), dlg.y(),
+                                dlg.w(), dlg.h(), dlg.roni());
+        if (dlg.drag_mode() != roi_drag_active_) {
+            on_toggle_roi_drag(dlg.drag_mode());
+        }
+    }
 }
 
 void MainWindow::on_record_start() {
