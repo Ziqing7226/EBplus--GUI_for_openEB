@@ -149,13 +149,18 @@ void AlgorithmsPanel::build_ui() {
                     const int idx = match_enum_index(p.enum_values, p.default_value);
                     if (idx >= 0) cmb->setCurrentIndex(idx);
                     w = cmb;
-                    // The "mode" enum drives per-mode parameter visibility.
-                    // On change, apply the param and refresh which rows show.
-                    if (p.key == "mode") {
+                    // A "mode" (or "decay") enum drives per-mode parameter
+                    // visibility via mode_filter. On change, apply the param
+                    // and refresh which rows show. "decay" is TimeSurface's
+                    // mode-equivalent: it selects Linear (0) vs Exponential (1),
+                    // and decay_time_us / tau_us each carry a mode_filter that
+                    // hides the inactive one — editing a parameter the renderer
+                    // ignores was the root cause of "no effect in Exp mode".
+                    if (p.key == "mode" || p.key == "decay") {
                         algo_panel_state_[algo_name].mode_combo = cmb;
                         connect(cmb, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-                                [this, algo_name, cmb](int) {
-                                    apply_param(algo_name, "mode", cmb->currentText().toStdString());
+                                [this, algo_name, param_key, cmb](int) {
+                                    apply_param(algo_name, param_key, cmb->currentText().toStdString());
                                     refresh_mode_visibility(algo_name);
                                 });
                     } else {

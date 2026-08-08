@@ -424,8 +424,10 @@ TEST(TimeSurfaceTest, ProcessAndRender) {
     EXPECT_EQ(img.cols, 32);
 }
 TEST(TimeSurfaceTest, ExponentialDecay) {
-    // dv EXPONENTIAL (accumulator.hpp): surface = exp(-dt/tau). A pixel hit
-    // exactly tau us before the newest event renders at ~exp(-1) full scale.
+    // dv Accumulator EXPONENTIAL (accumulator.hpp:119-154): per-event
+    // decay + contribute. Defaults: eventContribution=0.15, neutral=0,
+    // [min,max]=[0,1]. A pixel hit once at t=0, rendered tau later:
+    //   display = 0.15 * exp(-1) ≈ 0.0552 → gray ≈ 14.
     TimeSurface ts(32, 32, TimeSurface::Channels::Merged, 100000,
                    TimeSurface::Palette::Gray, 30,
                    TimeSurface::Decay::Exponential, 100000);
@@ -438,15 +440,38 @@ TEST(TimeSurfaceTest, ExponentialDecay) {
     cv::Mat img = ts.render();
     const cv::Vec3b old_px = img.at<cv::Vec3b>(5, 5);
     const cv::Vec3b new_px = img.at<cv::Vec3b>(10, 10);
-    const double expect = 255.0 * std::exp(-1.0);  // ~93.8
-    EXPECT_NEAR(old_px[0], expect, expect * 0.05);
+    // pot=0.15; display = 0.15 * exp(-tau/tau) = 0.15*exp(-1) ≈ 14.1
+    const double expect_old = 255.0 * 0.15 * std::exp(-1.0);
+    EXPECT_NEAR(old_px[0], expect_old, 2.0);
     EXPECT_EQ(old_px[0], old_px[1]);  // Gray palette: all channels equal
     EXPECT_EQ(old_px[1], old_px[2]);
-    EXPECT_EQ(new_px[0], 255);        // dt=0 -> exp(0) = full scale
+    // pot=0.15; dt=0 → display = 0.15 → gray ≈ 38
+    const double expect_new = 255.0 * 0.15;
+    EXPECT_NEAR(new_px[0], expect_new, 2.0);
     EXPECT_EQ(img.at<cv::Vec3b>(0, 0)[0], 0);  // never-hit pixel stays black
     // tau_us setter round-trip.
     ts.set_tau_us(50000);
     EXPECT_EQ(ts.tau_us(), 50000);
+}
+
+TEST(TimeSurfaceTest, ExponentialAccumulation) {
+    // dv Accumulator: multiple events at the same pixel accumulate
+    // (contribute), saturating to max_potential (1.0). With
+    // eventContribution=0.15 and tau=1s, 10 events 100us apart accumulate
+    // well past 1.0 → clamped to 1.0 → gray 255 (dt≈0 at render).
+    TimeSurface ts(32, 32, TimeSurface::Channels::Merged, 100000,
+                   TimeSurface::Palette::Gray, 30,
+                   TimeSurface::Decay::Exponential, 1000000);
+    std::vector<Event> ev;
+    for (int i = 0; i < 10; ++i)
+        ev.emplace_back(5, 5, 1, i * 100);  // 100us apart, << tau=1s
+    ev.emplace_back(10, 10, 1, 1000);       // single event, advances current_t_
+    ts.process(ev.data(), ev.size());
+    cv::Mat img = ts.render();
+    // 10 events saturate to 1.0; dt=100us → exp(-0.0001)≈1.0 → gray 255.
+    EXPECT_EQ(img.at<cv::Vec3b>(5, 5)[0], 255);
+    // Single-event pixel: pot=0.15, dt=0 → gray ≈ 38.
+    EXPECT_NEAR(img.at<cv::Vec3b>(10, 10)[0], 255.0 * 0.15, 2.0);
 }
 TEST(TimeSurfaceTest, LinearDecayUnchangedByDefault) {
     // Default decay stays Linear: hard cut to 0 at the window tail.

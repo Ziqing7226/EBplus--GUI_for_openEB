@@ -11,11 +11,14 @@
 //   pixel = (delta_t - (last_ts - ts)) * ratio   // clamped to [0, 255]
 // 即 last_ts → 255 (亮), last_ts - delta_t → 0 (暗)。
 //
-// 指数衰减模式移植自 dv-processing Accumulator 的 EXPONENTIAL 分支
-// (ref/dv-processing-master .../core/frame/accumulator.hpp:119-127):
-//   potential = (p - neutral) * expf(-(t - t_last) / tau) + neutral
-// 取 neutral = 0、单次单位贡献，即 surface 值 = exp(-dt / tau_us)，
-// 随时间常数 tau_us 渐近衰减到 0（无线性模式的窗口尾部硬切）。
+// 指数衰减模式对齐 dv-processing Accumulator 的 EXPONENTIAL 分支
+// (ref/dv-processing-master .../core/frame/accumulator.hpp:119-154):
+//   decay():     potential = (p - neutral) * exp(-(t - t_last) / tau) + neutral
+//   contribute(): potential = clamp(potential + eventContribution, min, max)
+// accumulate() 对每个事件先 decay 再 contribute，电位在事件间持续累积；
+// generateFrame() 时做同步衰减 (synchronousDecay) 到 current_t_ 再归一化。
+// 默认参数与 dv 一致: eventContribution=0.15, neutral=0, [min,max]=[0,1]。
+// MostRecentTimestampBuffer 充当 dv 的 decayTimeSurface_ (每像素最近事件时间)。
 
 #ifndef GUI_ALGO_CV_TIME_SURFACE_H
 #define GUI_ALGO_CV_TIME_SURFACE_H
@@ -53,7 +56,8 @@ public:
 
     enum class Decay {
         Linear,       ///< OpenEB linear window (hard cut to 0 at the tail).
-        Exponential,  ///< dv-processing EXPONENTIAL: value *= exp(-dt/tau_us).
+        Exponential,  ///< dv-processing Accumulator EXPONENTIAL: per-event
+                       ///< decay + contribute, synchronous decay at render.
     };
 
     /// @brief Constructs the time surface.
@@ -81,53 +85,104 @@ public:
           // channels = 1 (merged) or 2 (split polarity).
           ts_buf_(height, width, static_cast<int>(channels_)) {
         ts_buf_.set_to(-1);  // -1 = sentinel for "never hit" (0 is a legal ts)
+        alloc_potential();
     }
 
-    /// @brief Updates the MostRecentTimestampBuffer with a batch of events.
-    /// 直接调用 OpenEB TimeSurfaceProcessor::process_events 的内联逻辑
-    /// (time_surface_processor_impl.h::compute):
-    ///   buffer[channels * (width * y + x) + c] = t
+    /// @brief Updates the time surface with a batch of events.
+    /// Linear 模式仅更新 MostRecentTimestampBuffer (OpenEB TimeSurfaceProcessor
+    /// 内联逻辑)。Exponential 模式对齐 dv Accumulator::accumulate(): 对每个
+    /// 事件先 decay (按 exp(-dt/tau) 衰减已有电位) 再 contribute (叠加
+    /// eventContribution_，clamp 到 [min, max])，电位在事件间持续累积。
     void process(const Event* events, std::size_t n) {
         if (events == nullptr || n == 0) return;
         const int ch = static_cast<int>(channels_);
+        const bool exp = (decay_ == Decay::Exponential);
+        const float inv_tau = exp ? (1.0f / static_cast<float>(tau_us_)) : 0.0f;
         for (std::size_t i = 0; i < n; ++i) {
             const Event& e = events[i];
             if (e.x >= width_ || e.y >= height_) continue;
             const int c = (ch == 1) ? 0 : (e.p & 1);
+            const Metavision::timestamp prev_t = ts_buf_.at(e.y, e.x, c);
             ts_buf_.at(e.y, e.x, c) = e.t;
             if (e.t > current_t_) current_t_ = e.t;
+            if (exp) {
+                // dv accumulator.hpp decay() + contribute() (lines 119-154).
+                float* row = potential_surface_.ptr<float>(e.y);
+                const int idx = (ch == 1) ? e.x : (e.x + c * width_);
+                float pot = row[idx];
+                if (prev_t >= 0 && e.t > prev_t) {
+                    const float dt = static_cast<float>(e.t - prev_t);
+                    pot = (pot - neutral_potential_) * std::exp(-dt * inv_tau)
+                          + neutral_potential_;
+                }
+                pot = std::min(std::max(pot + event_contribution_, min_potential_),
+                               max_potential_);
+                row[idx] = pot;
+            }
         }
     }
 
     /// @brief Renders the time-decay encoded pseudo-color image (CV_8UC3).
     /// Linear 模式用 OpenEB MostRecentTimestampBuffer::generate_img_time_surface*
-    /// 生成 CV_8UC1 线性衰减灰度图；Exponential 模式按 dv 公式逐像素计算；
-    /// 最后用调色板映射为伪彩色。
+    /// 生成 CV_8UC1 线性衰减灰度图；Exponential 模式对齐 dv Accumulator
+    /// generateFrame() (synchronousDecay=true): 将累积电位同步衰减到 current_t_
+    /// 后按 dv 公式归一化到 [0,255]；最后用调色板映射为伪彩色。
     cv::Mat render() const {
         cv::Mat img(height_, width_, CV_8UC3, cv::Scalar(0, 0, 0));
         if (width_ <= 0 || height_ <= 0) return img;
         if (current_t_ < 0) return img;  // no events yet: all pixels "never hit"
 
-        // OpenEB 线性衰减灰度图生成；指数模式自行按 dv 公式逐像素计算。
+        // OpenEB 线性衰减灰度图生成；指数模式按 dv 累加器归一化。
         cv::Mat gray;
         if (decay_ == Decay::Exponential) {
-            // dv-processing Accumulator EXPONENTIAL (accumulator.hpp:119-127):
-            //   potential = (p - neutral) * expf(-(t - t_last)/tau) + neutral
-            // neutral = 0, unit contribution → value = exp(-dt/tau_us).
-            // Split 模式下 exp 随 dt 单调减，max_across_channels 取最新
-            // 时间戳等价于两通道取最大 surface 值，合并为单帧灰度图。
-            gray.create(height_, width_, CV_8UC1);
-            gray.setTo(0);
-            const double inv_tau = 1.0 / static_cast<double>(tau_us_);
-            for (int y = 0; y < height_; ++y) {
-                auto* dst = gray.ptr<std::uint8_t>(y);
-                for (int x = 0; x < width_; ++x) {
-                    const Metavision::timestamp last =
-                        ts_buf_.max_across_channels_at(y, x);
-                    if (last < 0) continue;  // -1 = "never hit" sentinel
-                    const double v = std::exp(
-                        -static_cast<double>(current_t_ - last) * inv_tau);
-                    dst[x] = static_cast<std::uint8_t>(v * 255.0 + 0.5);
+            // dv Accumulator generateFrame() (accumulator.hpp:276-290):
+            // synchronousDecay=true — 将每像素电位衰减到 current_t_ 后归一化。
+            // 不修改 potential_surface_/ts_buf_ (render 是只读快照)：显示值
+            //   display = (pot - neutral) * exp(-(current_t - last)/tau) + neutral
+            // 下一次 process() 仍从 last (事件时间) 衰减，电位状态一致。
+            const float inv_tau = 1.0f / static_cast<float>(tau_us_);
+            const double scale = 255.0 / static_cast<double>(max_potential_ - min_potential_);
+            const double shift = -static_cast<double>(min_potential_) * scale;
+            const int ch = static_cast<int>(channels_);
+            if (ch == 1) {
+                gray.create(height_, width_, CV_8UC1);
+                gray.setTo(0);
+                for (int y = 0; y < height_; ++y) {
+                    const auto* pot_row = potential_surface_.ptr<float>(y);
+                    auto* dst = gray.ptr<std::uint8_t>(y);
+                    for (int x = 0; x < width_; ++x) {
+                        const Metavision::timestamp last = ts_buf_.at(y, x, 0);
+                        if (last < 0) { dst[x] = 0; continue; }
+                        float v = pot_row[x];
+                        if (current_t_ > last) {
+                            const float dt = static_cast<float>(current_t_ - last);
+                            v = (v - neutral_potential_) * std::exp(-dt * inv_tau)
+                                + neutral_potential_;
+                        }
+                        dst[x] = cv::saturate_cast<std::uint8_t>(v * scale + shift);
+                    }
+                }
+            } else {
+                // Split: 产生并排 [OFF | ON] 灰度图，复用下方 Split 合并路径。
+                gray.create(height_, width_ * 2, CV_8UC1);
+                gray.setTo(0);
+                for (int y = 0; y < height_; ++y) {
+                    const auto* pot_row = potential_surface_.ptr<float>(y);
+                    auto* dst = gray.ptr<std::uint8_t>(y);
+                    for (int c = 0; c < 2; ++c) {
+                        for (int x = 0; x < width_; ++x) {
+                            const Metavision::timestamp last = ts_buf_.at(y, x, c);
+                            const int dst_x = c * width_ + x;
+                            if (last < 0) { dst[dst_x] = 0; continue; }
+                            float v = pot_row[x + c * width_];
+                            if (current_t_ > last) {
+                                const float dt = static_cast<float>(current_t_ - last);
+                                v = (v - neutral_potential_) * std::exp(-dt * inv_tau)
+                                    + neutral_potential_;
+                            }
+                            dst[dst_x] = cv::saturate_cast<std::uint8_t>(v * scale + shift);
+                        }
+                    }
                 }
             }
         } else if (channels_ == Channels::Merged) {
@@ -185,6 +240,7 @@ public:
             channels_ = c;
             ts_buf_.create(height_, width_, static_cast<int>(channels_));
             ts_buf_.set_to(-1);  // -1 = "never hit" sentinel
+            alloc_potential();
         }
     }
     Channels channels() const { return channels_; }
@@ -208,9 +264,11 @@ public:
     void set_refresh_rate_hz(int hz) { refresh_rate_hz_ = clamp_refresh(hz); }
     int refresh_rate_hz() const { return refresh_rate_hz_; }
 
-    /// @brief Clears the timestamp buffer.
+    /// @brief Clears the timestamp buffer and accumulated potential.
     void reset() {
         ts_buf_.set_to(-1);  // -1 = "never hit" sentinel (0 is a legal ts)
+        if (!potential_surface_.empty())
+            potential_surface_.setTo(neutral_potential_);
         current_t_ = -1;
     }
 
@@ -227,6 +285,15 @@ private:
         if (hz < 10) return 10;
         if (hz > 120) return 120;
         return hz;
+    }
+
+    /// @brief Allocates the Exponential-mode potential surface.
+    /// CV_32F, (height, width) for Merged or (height, width*2) for Split
+    /// with [0,width)=OFF, [width,2*width)=ON. Initialized to neutral.
+    void alloc_potential() {
+        const int ch = static_cast<int>(channels_);
+        potential_surface_.create(height_, width_ * ch, CV_32F);
+        potential_surface_.setTo(neutral_potential_);
     }
 
     /// @brief Maps a normalized value in [0, 1] to a palette color.
@@ -290,7 +357,16 @@ private:
     int refresh_rate_hz_;
     Decay decay_;
     Metavision::timestamp tau_us_;  // dv decayParam: exp decay time constant
+    // dv Accumulator defaults (accumulator.hpp:198-213).
+    float event_contribution_{0.15f};   // contribution per event
+    float neutral_potential_{0.0f};     // decay asymptote
+    float max_potential_{1.0f};         // upper clamp
+    float min_potential_{0.0f};         // lower clamp
+    /// Accumulated potential surface (Exponential mode only). CV_32F,
+    /// (height, width) for Merged or (height, width*2) for Split.
+    cv::Mat potential_surface_;
     /// OpenEB MostRecentTimestampBuffer — 直接引用，不自行实现时间戳缓冲区。
+    /// 兼作 dv decayTimeSurface_ (每像素最近事件时间)。
     Metavision::MostRecentTimestampBuffer ts_buf_;
     Metavision::timestamp current_t_{-1};  // -1 = no event processed yet
 };

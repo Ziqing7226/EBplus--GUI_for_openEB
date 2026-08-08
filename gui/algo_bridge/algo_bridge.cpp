@@ -882,11 +882,16 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Overlay, {}});
 
     // §4.3.27 Time Surface
+    // decay is the mode selector (first param): Linear reads decay_time_us,
+    // Exponential reads tau_us (time_surface.h render() branches on decay_).
+    // mode_filter ties each time param to its decay mode so the user can't
+    // edit a parameter the renderer ignores — the root cause of "changing
+    // decay time has no effect in Exp mode".
     add({"time_surface", "Time Surface", "cv", "self",
          AlgoDisplayMode::Standalone,
-         {pint("decay_time_us", "Decay time (us)", "100000", "10000", "5000000"),
-          penum("decay", "Decay", "0", {"0=Linear", "1=Exponential"}),
-          pint("tau_us", "Tau (us)", "100000", "10000", "5000000"),
+         {penum("decay", "Decay", "0", {"0=Linear", "1=Exponential"}),
+          pint("decay_time_us", "Decay time (us)", "100000", "10000", "5000000", "0"),
+          pint("tau_us", "Tau (us)", "100000", "10000", "5000000", "1"),
           penum("palette", "Palette", "1", {"0=Gray", "1=Hot", "2=Plasma", "3=Turbo"}),
           penum("channels", "Channels", "1", {"1=merged", "2=split"}),
           pint("refresh_rate_hz", "Refresh rate (Hz)", "30", "10", "120")}});
