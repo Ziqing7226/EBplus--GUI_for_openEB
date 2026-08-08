@@ -10,6 +10,12 @@
 //   ratio = 255 / delta_t
 //   pixel = (delta_t - (last_ts - ts)) * ratio   // clamped to [0, 255]
 // 即 last_ts → 255 (亮), last_ts - delta_t → 0 (暗)。
+//
+// 指数衰减模式移植自 dv-processing Accumulator 的 EXPONENTIAL 分支
+// (ref/dv-processing-master .../core/frame/accumulator.hpp:119-127):
+//   potential = (p - neutral) * expf(-(t - t_last) / tau) + neutral
+// 取 neutral = 0、单次单位贡献，即 surface 值 = exp(-dt / tau_us)，
+// 随时间常数 tau_us 渐近衰减到 0（无线性模式的窗口尾部硬切）。
 
 #ifndef GUI_ALGO_CV_TIME_SURFACE_H
 #define GUI_ALGO_CV_TIME_SURFACE_H
@@ -45,21 +51,32 @@ public:
         Turbo,
     };
 
+    enum class Decay {
+        Linear,       ///< OpenEB linear window (hard cut to 0 at the tail).
+        Exponential,  ///< dv-processing EXPONENTIAL: value *= exp(-dt/tau_us).
+    };
+
     /// @brief Constructs the time surface.
     /// @param width,height Sensor dimensions.
     /// @param channels Merged or split polarity buffers.
     /// @param decay_time_us Linear decay time window in us (OpenEB delta_t).
     /// @param palette Pseudo-color palette.
     /// @param refresh_rate_hz Target render refresh rate in Hz.
+    /// @param decay Linear (default, unchanged behavior) or Exponential.
+    /// @param tau_us Exponential decay time constant in us (dv decayParam).
     TimeSurface(int width, int height,
                 Channels channels = Channels::Merged,
                 Metavision::timestamp decay_time_us = 100000,
                 Palette palette = Palette::Hot,
-                int refresh_rate_hz = 30)
+                int refresh_rate_hz = 30,
+                Decay decay = Decay::Linear,
+                Metavision::timestamp tau_us = 100000)
         : width_(width), height_(height), channels_(channels),
           decay_time_us_(clamp_decay(decay_time_us)),
           palette_(palette),
           refresh_rate_hz_(clamp_refresh(refresh_rate_hz)),
+          decay_(decay),
+          tau_us_(clamp_decay(tau_us)),
           // OpenEB MostRecentTimestampBuffer: rows=height, cols=width,
           // channels = 1 (merged) or 2 (split polarity).
           ts_buf_(height, width, static_cast<int>(channels_)) {
@@ -83,16 +100,37 @@ public:
     }
 
     /// @brief Renders the time-decay encoded pseudo-color image (CV_8UC3).
-    /// 先用 OpenEB MostRecentTimestampBuffer::generate_img_time_surface*
-    /// 生成 CV_8UC1 线性衰减灰度图，再用调色板映射为伪彩色。
+    /// Linear 模式用 OpenEB MostRecentTimestampBuffer::generate_img_time_surface*
+    /// 生成 CV_8UC1 线性衰减灰度图；Exponential 模式按 dv 公式逐像素计算；
+    /// 最后用调色板映射为伪彩色。
     cv::Mat render() const {
         cv::Mat img(height_, width_, CV_8UC3, cv::Scalar(0, 0, 0));
         if (width_ <= 0 || height_ <= 0) return img;
         if (current_t_ < 0) return img;  // no events yet: all pixels "never hit"
 
-        // OpenEB 线性衰减灰度图生成。
+        // OpenEB 线性衰减灰度图生成；指数模式自行按 dv 公式逐像素计算。
         cv::Mat gray;
-        if (channels_ == Channels::Merged) {
+        if (decay_ == Decay::Exponential) {
+            // dv-processing Accumulator EXPONENTIAL (accumulator.hpp:119-127):
+            //   potential = (p - neutral) * expf(-(t - t_last)/tau) + neutral
+            // neutral = 0, unit contribution → value = exp(-dt/tau_us).
+            // Split 模式下 exp 随 dt 单调减，max_across_channels 取最新
+            // 时间戳等价于两通道取最大 surface 值，合并为单帧灰度图。
+            gray.create(height_, width_, CV_8UC1);
+            gray.setTo(0);
+            const double inv_tau = 1.0 / static_cast<double>(tau_us_);
+            for (int y = 0; y < height_; ++y) {
+                auto* dst = gray.ptr<std::uint8_t>(y);
+                for (int x = 0; x < width_; ++x) {
+                    const Metavision::timestamp last =
+                        ts_buf_.max_across_channels_at(y, x);
+                    if (last < 0) continue;  // -1 = "never hit" sentinel
+                    const double v = std::exp(
+                        -static_cast<double>(current_t_ - last) * inv_tau);
+                    dst[x] = static_cast<std::uint8_t>(v * 255.0 + 0.5);
+                }
+            }
+        } else if (channels_ == Channels::Merged) {
             // 合并极性: generate_img_time_surface_collapsing_channels
             ts_buf_.generate_img_time_surface_collapsing_channels(
                 current_t_, decay_time_us_, gray);
@@ -155,6 +193,14 @@ public:
         decay_time_us_ = clamp_decay(us);
     }
     Metavision::timestamp decay_time_us() const { return decay_time_us_; }
+
+    void set_decay(Decay d) { decay_ = d; }
+    Decay decay() const { return decay_; }
+
+    void set_tau_us(Metavision::timestamp us) {
+        tau_us_ = clamp_decay(us);
+    }
+    Metavision::timestamp tau_us() const { return tau_us_; }
 
     void set_palette(Palette p) { palette_ = p; }
     Palette palette() const { return palette_; }
@@ -242,6 +288,8 @@ private:
     Metavision::timestamp decay_time_us_;
     Palette palette_;
     int refresh_rate_hz_;
+    Decay decay_;
+    Metavision::timestamp tau_us_;  // dv decayParam: exp decay time constant
     /// OpenEB MostRecentTimestampBuffer — 直接引用，不自行实现时间戳缓冲区。
     Metavision::MostRecentTimestampBuffer ts_buf_;
     Metavision::timestamp current_t_{-1};  // -1 = no event processed yet

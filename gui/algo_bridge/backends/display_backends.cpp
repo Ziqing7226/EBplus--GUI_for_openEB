@@ -21,6 +21,9 @@ class TimeSurfaceBackend final : public AlgoBackend {
     int sensor_w_{0}, sensor_h_{0};
     ProcessRegion roi_;
     int decay_time_us_{100000};
+    gui_algo::TimeSurface::Decay decay_{gui_algo::TimeSurface::Decay::Linear};
+    int tau_us_{100000};
+    int refresh_rate_hz_{30};
     gui_algo::TimeSurface::Palette palette_{gui_algo::TimeSurface::Palette::Hot};
     gui_algo::TimeSurface::Channels channels_{gui_algo::TimeSurface::Channels::Merged};
     std::unique_ptr<gui_algo::TimeSurface> algo_;
@@ -39,7 +42,8 @@ public:
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
         algo_ = std::make_unique<gui_algo::TimeSurface>(
-            aw / f, ah / f, channels_, decay_time_us_, palette_, 30);
+            aw / f, ah / f, channels_, decay_time_us_, palette_,
+            refresh_rate_hz_, decay_, tau_us_);
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (preproc_.set_param(k, v)) {
@@ -57,6 +61,16 @@ public:
         if (k == "decay_time_us") {
             decay_time_us_ = to_i(v);
             if (algo_) algo_->set_decay_time_us(decay_time_us_);
+        } else if (k == "decay") {
+            decay_ = (to_i(v) == 1) ? gui_algo::TimeSurface::Decay::Exponential
+                                    : gui_algo::TimeSurface::Decay::Linear;
+            if (algo_) algo_->set_decay(decay_);
+        } else if (k == "tau_us") {
+            tau_us_ = to_i(v);
+            if (algo_) algo_->set_tau_us(tau_us_);
+        } else if (k == "refresh_rate_hz") {
+            refresh_rate_hz_ = to_i(v);
+            if (algo_) algo_->set_refresh_rate_hz(refresh_rate_hz_);
         } else if (k == "palette") {
             int p = to_i(v);
             if (p >= 0 && p <= 3) {
@@ -83,6 +97,10 @@ public:
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
         if (k == "decay_time_us") return from_i(decay_time_us_);
+        if (k == "decay")
+            return from_i(decay_ == gui_algo::TimeSurface::Decay::Exponential ? 1 : 0);
+        if (k == "tau_us") return from_i(tau_us_);
+        if (k == "refresh_rate_hz") return from_i(refresh_rate_hz_);
         if (k == "palette") return from_i(static_cast<int>(palette_));
         if (k == "channels") return from_i(channels_ == gui_algo::TimeSurface::Channels::Split ? 2 : 1);
         return {};

@@ -423,6 +423,44 @@ TEST(TimeSurfaceTest, ProcessAndRender) {
     EXPECT_EQ(img.rows, 32);
     EXPECT_EQ(img.cols, 32);
 }
+TEST(TimeSurfaceTest, ExponentialDecay) {
+    // dv EXPONENTIAL (accumulator.hpp): surface = exp(-dt/tau). A pixel hit
+    // exactly tau us before the newest event renders at ~exp(-1) full scale.
+    TimeSurface ts(32, 32, TimeSurface::Channels::Merged, 100000,
+                   TimeSurface::Palette::Gray, 30,
+                   TimeSurface::Decay::Exponential, 100000);
+    EXPECT_EQ(ts.decay(), TimeSurface::Decay::Exponential);
+    EXPECT_EQ(ts.tau_us(), 100000);
+    std::vector<Event> ev;
+    ev.emplace_back(5, 5, 1, 0);         // reference pixel at t=0
+    ev.emplace_back(10, 10, 1, 100000);  // advances current_t_ by exactly tau
+    ts.process(ev.data(), ev.size());
+    cv::Mat img = ts.render();
+    const cv::Vec3b old_px = img.at<cv::Vec3b>(5, 5);
+    const cv::Vec3b new_px = img.at<cv::Vec3b>(10, 10);
+    const double expect = 255.0 * std::exp(-1.0);  // ~93.8
+    EXPECT_NEAR(old_px[0], expect, expect * 0.05);
+    EXPECT_EQ(old_px[0], old_px[1]);  // Gray palette: all channels equal
+    EXPECT_EQ(old_px[1], old_px[2]);
+    EXPECT_EQ(new_px[0], 255);        // dt=0 -> exp(0) = full scale
+    EXPECT_EQ(img.at<cv::Vec3b>(0, 0)[0], 0);  // never-hit pixel stays black
+    // tau_us setter round-trip.
+    ts.set_tau_us(50000);
+    EXPECT_EQ(ts.tau_us(), 50000);
+}
+TEST(TimeSurfaceTest, LinearDecayUnchangedByDefault) {
+    // Default decay stays Linear: hard cut to 0 at the window tail.
+    TimeSurface ts(32, 32, TimeSurface::Channels::Merged, 100000,
+                   TimeSurface::Palette::Gray);
+    EXPECT_EQ(ts.decay(), TimeSurface::Decay::Linear);
+    std::vector<Event> ev;
+    ev.emplace_back(5, 5, 1, 0);
+    ev.emplace_back(10, 10, 1, 100000);  // dt == decay_time_us -> cut to 0
+    ts.process(ev.data(), ev.size());
+    cv::Mat img = ts.render();
+    EXPECT_EQ(img.at<cv::Vec3b>(5, 5)[0], 0);
+    EXPECT_EQ(img.at<cv::Vec3b>(10, 10)[0], 255);
+}
 
 // =========================================================================
 // Phase 10: algo/analytics/ §4.4.1–4.4.7

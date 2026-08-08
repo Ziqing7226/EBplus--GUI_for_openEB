@@ -269,6 +269,28 @@ TEST_F(RawAlgoTest, TimeSurfaceRenderIsNonEmpty) {
     EXPECT_GT(mx, 0.0);
 }
 
+// Exponential decay mode (dv EXPONENTIAL port): render must be non-empty
+// with all values finite and in [0, 255].
+TEST_F(RawAlgoTest, TimeSurfaceExponentialRenderIsNonEmpty) {
+    const auto& s = stream();
+    TimeSurface ts(s.width(), s.height(), TimeSurface::Channels::Merged,
+                   100000, TimeSurface::Palette::Gray, 30,
+                   TimeSurface::Decay::Exponential, 100000);
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        ts.process(batch.data(), batch.size());
+    }
+    cv::Mat img = ts.render();
+    EXPECT_FALSE(img.empty());
+    EXPECT_EQ(img.rows, s.height());
+    EXPECT_EQ(img.cols, s.width());
+    double mn = 0, mx = 0;
+    cv::minMaxLoc(img, &mn, &mx);
+    EXPECT_GT(mx, 0.0);
+    EXPECT_LE(mx, 255.0);
+    EXPECT_TRUE(is_finite(mn));
+    EXPECT_TRUE(is_finite(mx));
+}
+
 // =========================================================================
 // 6. SparseOpticalFlow — must emit finite flow vectors on real motion.
 // =========================================================================

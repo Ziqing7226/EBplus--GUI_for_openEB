@@ -236,6 +236,24 @@ TEST(AlgoBridgeInstances, ParamRoundTrip) {
     EXPECT_EQ(inst->get_param("no_such_key"), "");
 }
 
+// time_surface decay/tau_us/refresh_rate_hz must round-trip through the
+// TimeSurfaceBackend into the algo (Phase 6-3).
+TEST(AlgoBridgeInstances, TimeSurfaceDecayParamsRoundTrip) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("time_surface");
+    ASSERT_NE(inst, nullptr);
+    // Registered defaults are applied at construction.
+    EXPECT_EQ(inst->get_param("decay"), "0");
+    EXPECT_EQ(inst->get_param("tau_us"), "100000");
+    EXPECT_EQ(inst->get_param("refresh_rate_hz"), "30");
+    inst->set_param("decay", "1");
+    inst->set_param("tau_us", "200000");
+    inst->set_param("refresh_rate_hz", "60");
+    EXPECT_EQ(inst->get_param("decay"), "1");
+    EXPECT_EQ(inst->get_param("tau_us"), "200000");
+    EXPECT_EQ(inst->get_param("refresh_rate_hz"), "60");
+}
+
 TEST(AlgoBridgeInstances, DefaultsAppliedAtConstruction) {
     AlgoBridge bridge;
     auto inst = bridge.find_or_create("hot_pixel_filter");
