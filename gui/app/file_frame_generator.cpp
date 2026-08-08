@@ -64,6 +64,24 @@ void FileFrameGenerator::set_geometry(long width, long height) {
     height_ = height;
     frame_.create(static_cast<int>(height_), static_cast<int>(width_), CV_8UC3);
     display_preproc_.init(static_cast<int>(width), static_cast<int>(height));
+    // Recompute the software ROI rect against the new sensor size.
+    set_display_roi(roi_enabled_, roi_x_, roi_y_, roi_w_, roi_h_);
+}
+
+void FileFrameGenerator::set_display_roi(bool enabled, int x, int y, int w, int h) {
+    roi_enabled_ = enabled;
+    roi_x_ = x; roi_y_ = y; roi_w_ = w; roi_h_ = h;
+    // Compute the rect (auto-center on -1, clamp to sensor), mirroring
+    // ProcessRegion::compute and CameraController::set_unified_roi.
+    const int sw = width_ > 0 ? static_cast<int>(width_) : 1280;
+    const int sh = height_ > 0 ? static_cast<int>(height_) : 720;
+    const int rw = (w <= 0) ? sw : std::min(w, sw);
+    const int rh = (h <= 0) ? sh : std::min(h, sh);
+    const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
+    const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
+    roi_x0_ = rx; roi_y0_ = ry;
+    roi_x1_ = std::min(rx + rw, sw);
+    roi_y1_ = std::min(ry + rh, sh);
 }
 
 void FileFrameGenerator::set_fps(std::uint16_t fps) {
@@ -277,6 +295,22 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
                 });
             window_events->assign(begin_it, end_it);
         }
+    }
+
+    // Software ROI (Phase 2.6): drop events outside the rect so the rendered
+    // frame AND the algorithm feed (events_window_ready) both see the same
+    // ROI-limited stream — identical semantics to a live source with the
+    // hardware ROI enabled.
+    if (roi_enabled_) {
+        auto& evs = *window_events;
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < evs.size(); ++i) {
+            const auto& ev = evs[i];
+            if (ev.x >= roi_x0_ && ev.x < roi_x1_ && ev.y >= roi_y0_ && ev.y < roi_y1_) {
+                evs[kept++] = ev;
+            }
+        }
+        evs.resize(kept);
     }
 
     // Apply FilterChain to the window events for BOTH display rendering and

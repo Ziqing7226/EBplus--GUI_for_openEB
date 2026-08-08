@@ -308,7 +308,10 @@ void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
     form->setContentsMargins(6, 6, 6, 6);
 
     roi_enabled_cb_ = new QCheckBox(tr("Enabled (center 128×128 default)"), gb);
-    roi_enabled_cb_->setChecked(true);
+    // Phase 2.6: the unified ROI defaults to OFF (user decision) — the main
+    // display and all algorithm inputs stay full-sensor until the user or a
+    // default-ROI algorithm explicitly enables it.
+    roi_enabled_cb_->setChecked(false);
     form->addRow(roi_enabled_cb_);
 
     roi_x_sp_ = new QSpinBox(gb);
@@ -337,8 +340,14 @@ void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
 
     parent_layout->addWidget(gb);
 
-    // Wire up: any change applies the ROI to all live instances.
-    auto apply_now = [this]() { apply_global_roi(); };
+    // Wire up: any change applies the ROI to all live instances. A USER edit
+    // also trips roi_user_touched_, which disables the default-ROI
+    // automation (Phase 2.6 step 3) — programmatic apply_unified_roi() uses
+    // QSignalBlocker and never reaches these slots.
+    auto apply_now = [this]() {
+        roi_user_touched_ = true;
+        apply_global_roi();
+    };
     connect(roi_enabled_cb_, &QCheckBox::toggled, this, apply_now);
     connect(roi_x_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
     connect(roi_y_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
@@ -347,17 +356,44 @@ void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
 }
 
 void AlgorithmsPanel::apply_global_roi() {
-    if (!bridge_) return;
-    const std::string enabled = roi_enabled_cb_->isChecked() ? "true" : "false";
-    const std::string x = std::to_string(roi_x_sp_->value());
-    const std::string y = std::to_string(roi_y_sp_->value());
-    const std::string w = std::to_string(roi_w_sp_->value());
-    const std::string h = std::to_string(roi_h_sp_->value());
-    // Delegate to the bridge, which iterates every live self-developed
-    // instance (skipping the OpenEB event-transform stages) AND caches
-    // the values so future instances created via create() inherit the
-    // current ROI (N3).
-    bridge_->apply_global_roi(enabled, x, y, w, h);
+    // Phase 2.6: the ROI selector drives the UNIFIED ROI (hardware ROI on
+    // live camera, software crop on file playback) via MainWindow, instead
+    // of per-backend roi_* parameters (mechanism deleted in Phase 2.6 step 2).
+    emit unified_roi_changed(roi_enabled_cb_->isChecked(),
+                             roi_x_sp_->value(), roi_y_sp_->value(),
+                             roi_w_sp_->value(), roi_h_sp_->value());
+}
+
+void AlgorithmsPanel::apply_unified_roi(bool enabled, int x, int y, int w, int h) {
+    // Programmatic set: block widget signals so this does not count as a
+    // user edit (roi_user_touched_ stays false), then emit the unified ROI
+    // change once via apply_global_roi().
+    {
+        QSignalBlocker be(roi_enabled_cb_);
+        roi_enabled_cb_->setChecked(enabled);
+    }
+    {
+        QSignalBlocker bx(roi_x_sp_);
+        QSignalBlocker by(roi_y_sp_);
+        QSignalBlocker bw(roi_w_sp_);
+        QSignalBlocker bh(roi_h_sp_);
+        roi_x_sp_->setValue(x);
+        roi_y_sp_->setValue(y);
+        roi_w_sp_->setValue(w);
+        roi_h_sp_->setValue(h);
+    }
+    apply_global_roi();
+}
+
+bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
+    // Phase 2.6 step 3 default list (design §6): complex algorithms whose
+    // cost or output size demands a bounded region auto-enable the unified
+    // ROI at the default center 128×128. Hough family and the rest run
+    // full-sensor by default.
+    return algo_name == "event_to_video" ||
+           algo_name == "isi_analyzer" ||
+           algo_name == "xyt_visualizer" ||
+           algo_name == "time_surface";
 }
 
 void AlgorithmsPanel::apply_global_preproc(const std::string& key,
@@ -706,24 +742,12 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
     // user-customised values are preserved.
     if (!first_init_) return;
 
-    const int target_w  = 128;
-    const int target_h  = 128;
+    // Phase 2.6: the old first_init_ block used to apply a center-128 ROI to
+    // EVERY future algorithm instance. With the unified ROI defaulting to
+    // OFF (user decision), e2v's mode init no longer applies any ROI — the
+    // default-ROI-per-algorithm auto-enable is reintroduced in step 3
+    // through the unified path.
     const int target_fps = 24;
-
-    // ROI — global controls.
-    {
-        QSignalBlocker bx(roi_x_sp_);
-        QSignalBlocker by(roi_y_sp_);
-        QSignalBlocker bw(roi_w_sp_);
-        QSignalBlocker bh(roi_h_sp_);
-        QSignalBlocker be(roi_enabled_cb_);
-        roi_x_sp_->setValue(-1);   // auto-center
-        roi_y_sp_->setValue(-1);   // auto-center
-        roi_w_sp_->setValue(target_w);
-        roi_h_sp_->setValue(target_h);
-        roi_enabled_cb_->setChecked(true);
-        apply_global_roi();
-    }
 
     // output_fps — find the per-algo param row by key.
     for (auto& row : state.rows) {

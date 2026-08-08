@@ -68,11 +68,8 @@ public:
             channels_ = (c == 2) ? gui_algo::TimeSurface::Channels::Split
                                   : gui_algo::TimeSurface::Channels::Merged;
             if (algo_) algo_->set_channels(channels_);
-        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); roi_changed = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); roi_changed = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); roi_changed = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); roi_changed = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); roi_changed = true; }
+        }
+        // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
         else if (roi_changed) {
             const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
@@ -85,11 +82,6 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "roi_x") return from_i(roi_.x);
-        if (k == "roi_y") return from_i(roi_.y);
-        if (k == "roi_w") return from_i(roi_.w);
-        if (k == "roi_h") return from_i(roi_.h);
         if (k == "decay_time_us") return from_i(decay_time_us_);
         if (k == "palette") return from_i(static_cast<int>(palette_));
         if (k == "channels") return from_i(channels_ == gui_algo::TimeSurface::Channels::Split ? 2 : 1);

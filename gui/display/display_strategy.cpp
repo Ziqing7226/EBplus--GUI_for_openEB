@@ -192,34 +192,22 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
             }
         }
     }
-    // ROI zoom view (design §5.6.6): if the algo has ROI enabled and an
-    // AlgoWindow with an EventDisplayWidget is open, crop the ROI region from
-    // the annotated main frame and push it to the window. This gives the user
-    // a zoomed-in view of just the ROI region (with the algorithm's overlay
-    // drawn on it), which is otherwise hard to inspect on the sensor-scale
-    // main display.
-    const std::string en_str = ctx.instance->get_param("roi_enabled");
-    const bool roi_on = (en_str == "true" || en_str == "1");
-    if (roi_on) {
-        auto parse_int = [](const std::string& s, int def) -> int {
-            try { return s.empty() ? def : std::stoi(s); }
-            catch (...) { return def; }
-        };
-        int sw = 1280, sh = 720;
-        if (ctx.camera->is_connected()) {
-            const auto& sinfo = ctx.camera->sensor_info();
-            sw = sinfo.width; sh = sinfo.height;
-        }
-        int rx = parse_int(ctx.instance->get_param("roi_x"), -1);
-        int ry = parse_int(ctx.instance->get_param("roi_y"), -1);
-        int rw = parse_int(ctx.instance->get_param("roi_w"), 128);
-        int rh = parse_int(ctx.instance->get_param("roi_h"), 128);
-        int aw = (rw <= 0) ? sw : std::min(rw, sw);
-        int ah = (rh <= 0) ? sh : std::min(rh, sh);
-        int ax = (rx < 0) ? (sw - aw) / 2
-                          : std::min(std::max(0, rx), sw - aw);
-        int ay = (ry < 0) ? (sh - ah) / 2
-                          : std::min(std::max(0, ry), sh - ah);
+    // ROI zoom view (design §5.6.6, Phase 2.6 re-drive): if the UNIFIED ROI
+    // is enabled and an AlgoWindow with an EventDisplayWidget is open, crop
+    // the ROI region from the annotated main frame and push it to the
+    // window. This gives the user a zoomed-in view of just the ROI region
+    // (with the algorithm's overlay drawn on it), which is otherwise hard to
+    // inspect on the sensor-scale main display. The rect comes from
+    // CameraController::unified_roi (already clamped/computed on both the
+    // live hardware-ROI and file software-crop paths).
+    bool roi_on = false;
+    int ax = 0, ay = 0, ax1 = 0, ay1 = 0;
+    if (ctx.camera) {
+        ctx.camera->unified_roi(roi_on, ax, ay, ax1, ay1);
+    }
+    const int aw = ax1 - ax;
+    const int ah = ay1 - ay;
+    if (roi_on && aw > 0 && ah > 0) {
         auto wit = ctx.algo_windows->find(info.name);
         if (wit != ctx.algo_windows->end() && wit.value()) {
             // Use QPointer so the lambda safely no-ops if the AlgoWindow's

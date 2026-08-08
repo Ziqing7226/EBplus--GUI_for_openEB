@@ -42,9 +42,15 @@ public:
     /// per-algorithm param values). The bridge provides the algorithm registry;
     /// active instances are queried for their current values.
     QJsonObject capture_algo_state(AlgoBridge* bridge) const;
-    bool apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj, QString& err) const;
+    bool apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj, QString& err,
+                          std::map<std::string, std::string>* legacy_roi = nullptr) const;
     bool save_algo_params_to_file(AlgoBridge* bridge, const QString& path, QString& err) const;
-    bool load_algo_params_from_file(AlgoBridge* bridge, const QString& path, QString& err) const;
+    /// When @p legacy_roi is non-null, legacy per-algorithm roi_* entries
+    /// (Phase 2.6: the deleted per-backend ROI) are NOT forwarded to
+    /// instances; the FIRST algorithm's roi_* values are collected into
+    /// @p legacy_roi so the caller can map them onto the unified ROI.
+    bool load_algo_params_from_file(AlgoBridge* bridge, const QString& path, QString& err,
+                                    std::map<std::string, std::string>* legacy_roi = nullptr) const;
 
 private:
     QJsonObject capture_biases(CameraController* c) const;

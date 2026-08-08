@@ -53,7 +53,10 @@ inline const gui_algo::Event* as_events(const Metavision::EventCD* p) {
 
 /// @brief Processing region (ROI) for complex algorithms.
 struct ProcessRegion {
-    bool enabled{true};
+    // Phase 2.6: legacy per-backend ROI defaults to DISABLED — the unified
+    // ROI (hardware/software crop) is the single ROI concept. The remaining
+    // mechanism is deleted in step 2.
+    bool enabled{false};
     int x{-1};   ///< -1 = auto-center on sensor
     int y{-1};
     int w{128};  ///< 0 = full sensor width
@@ -437,24 +440,15 @@ struct RoiFilter {
     void set_sensor_dimensions(int w, int h) { init(w, h); }
 
     bool set_param(const std::string& k, const std::string& v) {
-        if (preproc.set_param(k, v)) return true;
-        if (k == "roi_enabled") { region.enabled = to_b(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_x") { region.x = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_y") { region.y = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_w") { region.w = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_h") { region.h = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        return false;
+        // Phase 2.6: the roi_* keys are intentionally NOT handled anymore —
+        // the legacy per-backend ROI was deleted (unified ROI at the source).
+        // Old config entries become unrecognized-param warnings instead of
+        // silently re-enabling per-backend cropping.
+        return preproc.set_param(k, v);
     }
 
     std::string get_param(const std::string& k) const {
-        auto pp = preproc.get_param(k);
-        if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(region.enabled);
-        if (k == "roi_x") return from_i(region.x);
-        if (k == "roi_y") return from_i(region.y);
-        if (k == "roi_w") return from_i(region.w);
-        if (k == "roi_h") return from_i(region.h);
-        return {};
+        return preproc.get_param(k);
     }
 
     std::pair<const gui_algo::Event*, std::size_t> apply(

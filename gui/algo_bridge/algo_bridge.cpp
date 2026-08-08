@@ -19,7 +19,8 @@ namespace gui {
 // ---------------------------------------------------------------------------
 
 AlgoInstance::AlgoInstance(const AlgoInfo& info, int width, int height)
-    : info_(info), width_(width), height_(height) {
+    : info_(info), width_(width), height_(height),
+      create_w_(width), create_h_(height) {
     for (const auto& p : info_.params) {
         param_values_[p.key] = p.default_value;
     }
@@ -200,7 +201,26 @@ void AlgoInstance::push_events(const Metavision::EventCD* begin,
                 rate_window_start_ = now;
             }
             if (!overloaded_) {
-                backend_->push_events(begin, end);
+                // Unified ROI (Phase 2.6): when active, deliver an ROI-cropped,
+                // ROI-relative copy — the backend was resized to the ROI dims
+                // by set_unified_roi, so survivors must land inside [0,rw)×[0,rh).
+                if (uroi_enabled_) {
+                    uroi_buf_.clear();
+                    uroi_buf_.reserve(n);
+                    for (const auto* p = begin; p != end; ++p) {
+                        if (p->x >= uroi_x0_ && p->x < uroi_x1_ &&
+                            p->y >= uroi_y0_ && p->y < uroi_y1_) {
+                            Metavision::EventCD ev = *p;
+                            ev.x = static_cast<std::uint16_t>(ev.x - uroi_x0_);
+                            ev.y = static_cast<std::uint16_t>(ev.y - uroi_y0_);
+                            uroi_buf_.push_back(ev);
+                        }
+                    }
+                    backend_->push_events(uroi_buf_.data(),
+                                          uroi_buf_.data() + uroi_buf_.size());
+                } else {
+                    backend_->push_events(begin, end);
+                }
             }
         } else {
             // OpenEB 包装算法：透传（由 filter_chain 处理）。
@@ -232,11 +252,42 @@ void AlgoInstance::reset() {
 
 void AlgoInstance::set_sensor_dimensions(int width, int height) {
     std::lock_guard<std::mutex> lk(mutex_);
-    width_ = width;
-    height_ = height;
-    if (backend_) {
-        backend_->set_sensor_dimensions(width, height);
+    // Track the source's full-sensor dims (source switch) so a later
+    // set_unified_roi(false) restores the CURRENT sensor size, not the stale
+    // creation size. While the unified ROI is active the effective dims stay
+    // at the ROI window — the source switch must not silently resize the
+    // backend out from under the crop (push_events still feeds
+    // ROI-relative coordinates).
+    create_w_ = width;
+    create_h_ = height;
+    if (uroi_enabled_) {
+        width_ = uroi_x1_ - uroi_x0_;
+        height_ = uroi_y1_ - uroi_y0_;
+    } else {
+        width_ = width;
+        height_ = height;
     }
+    if (backend_) {
+        backend_->set_sensor_dimensions(width_, height_);
+    }
+}
+
+void AlgoInstance::set_unified_roi(bool enabled, int x0, int y0, int x1, int y1) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    uroi_enabled_ = enabled;
+    uroi_x0_ = x0; uroi_y0_ = y0; uroi_x1_ = x1; uroi_y1_ = y1;
+    if (!backend_) return;
+    // The ROI window IS the effective sensor for the algorithm: resize the
+    // backend to the ROI dims (§五-D1 rebuild path handles "rebuild only
+    // when effective dims change"), restore creation dims when disabled.
+    if (enabled) {
+        width_ = x1 - x0;
+        height_ = y1 - y0;
+    } else {
+        width_ = create_w_;
+        height_ = create_h_;
+    }
+    backend_->set_sensor_dimensions(width_, height_);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,26 +324,16 @@ AlgoParamSpec pstring(const std::string& k, const std::string& disp,
     return {k, disp, "string", def, "", "", {}, mf};
 }
 
-/// Returns the 5 ROI parameters (design §5.6.6) shared by all self-developed
-/// algorithms. Defaults: enabled, center 128×128 (x/y=-1 = auto-center,
-/// w/h=128). When enabled the algorithm only processes events inside the
-/// ROI region; the main display frame draws a yellow ROI rectangle.
-std::vector<AlgoParamSpec> roi_params() {
-    return {
-        pbool("roi_enabled", "ROI enable", "true"),
-        pint("roi_x", "ROI x (-1=center)", "-1", "-1", ""),
-        pint("roi_y", "ROI y (-1=center)", "-1", "-1", ""),
-        pint("roi_w", "ROI w (0=full)", "128", "0", ""),
-        pint("roi_h", "ROI h (0=full)", "128", "0", ""),
-    };
-}
-
 /// Returns the shared preprocessing parameters (v1.0.9): a stackable noise
 /// filter + 1/4 downsample applied AFTER the algorithm ROI, in the order
 /// ROI → filter → downsample. These overlay on top of any main algorithm and
 /// are NOT mutually exclusive with it. preproc_downsample defaults to "false"
 /// (audit §五-F1): for most backends it only thins events (coordinates
 /// unchanged), a silent 4× input loss for detection/tracking algorithms; the
+///
+/// NOTE (Phase 2.6): the shared roi_params() registration block was deleted
+/// with the legacy per-backend ROI mechanism. The unified ROI (hardware /
+/// software crop) is driven via AlgorithmsPanel::unified_roi_changed.
 /// panel auto-enables it for coordinate-halving backends (§11.2-I).
 /// preproc_filter_enabled defaults to "false" (opt-in). The preproc_filter_*
 /// params mirror the standalone NoiseFilter params (§4.3.5) so the same 8
@@ -414,9 +455,16 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create_with_info(const AlgoInfo& info)
             for (const auto& [k, v] : preproc_cache_) {
                 inst->set_param(k, v);
             }
-            for (const auto& [k, v] : roi_cache_) {
-                inst->set_param(k, v);
-            }
+            // roi_cache_ replay intentionally stopped (Phase 2.6): the
+            // unified ROI (hardware/software crop) is the single ROI
+            // concept; per-backend roi_* replay would re-enable the legacy
+            // per-backend ROI being removed in step 2.
+        }
+        // Replay the cached unified ROI state (Phase 2.6) so instances
+        // created while a ROI window is active start out cropped/resized.
+        if (info.category != "calibration") {
+            inst->set_unified_roi(uroi_enabled_, uroi_x0_, uroi_y0_,
+                                  uroi_x1_, uroi_y1_);
         }
     }
     return inst;
@@ -477,27 +525,28 @@ void AlgoBridge::apply_global_preproc(const std::string& key,
     }
 }
 
-void AlgoBridge::apply_global_roi(const std::string& enabled,
-                                  const std::string& x,
-                                  const std::string& y,
-                                  const std::string& w,
-                                  const std::string& h) {
-    // Apply the roi_* parameters to every live self-developed instance and
-    // cache them so instances created later inherit the current ROI (N3).
-    // Same snapshot-then-apply-outside-lock pattern as apply_global_preproc
-    // (audit §五-C2). Same source/category filter as apply_global_preproc.
+// Phase 2.6: AlgoBridge::apply_global_roi and roi_cache_ were deleted with
+// the legacy per-backend ROI mechanism. The unified ROI is driven via
+// AlgorithmsPanel::unified_roi_changed -> CameraController::set_unified_roi
+// (display/record path) and AlgoBridge::set_unified_roi_state (algo path).
+
+void AlgoBridge::set_unified_roi_state(bool enabled, int x0, int y0,
+                                       int x1, int y1) {
+    // Cache the state so instances created later inherit it (same pattern as
+    // apply_global_preproc). Snapshot under live_mutex_, apply outside the
+    // lock — set_unified_roi may trigger a backend rebuild (e.g. E2VID
+    // reloads the ONNX model when effective dims change).
     std::vector<std::shared_ptr<AlgoInstance>> snapshot;
     {
         std::lock_guard<std::mutex> lk(live_mutex_);
-        roi_cache_["roi_enabled"] = enabled;
-        roi_cache_["roi_x"] = x;
-        roi_cache_["roi_y"] = y;
-        roi_cache_["roi_w"] = w;
-        roi_cache_["roi_h"] = h;
+        uroi_enabled_ = enabled;
+        uroi_x0_ = x0; uroi_y0_ = y0; uroi_x1_ = x1; uroi_y1_ = y1;
         for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
             if (auto inst = it->second.lock()) {
-                if (inst->info().source == "self" &&
-                    inst->info().category != "calibration") {
+                // Calibration instances manage their own geometry and must
+                // not be resized/cropped by the global ROI (same exemption
+                // as apply_global_preproc).
+                if (inst->info().category != "calibration") {
                     snapshot.push_back(std::move(inst));
                 }
                 ++it;
@@ -507,11 +556,7 @@ void AlgoBridge::apply_global_roi(const std::string& enabled,
         }
     }
     for (auto& inst : snapshot) {
-        inst->set_param("roi_enabled", enabled);
-        inst->set_param("roi_x", x);
-        inst->set_param("roi_y", y);
-        inst->set_param("roi_w", w);
-        inst->set_param("roi_h", h);
+        inst->set_unified_roi(enabled, x0, y0, x1, y1);
     }
 }
 
@@ -635,7 +680,7 @@ void AlgoBridge::register_self_cv() {
         a.category = "cv";
         // All self-developed CV algorithms support ROI (design §5.6.6) and the
         // shared preprocessing stage (v1.0.9: ROI → filter → downsample).
-        for (auto& p : roi_params()) a.params.push_back(std::move(p));
+        // (Phase 2.6: shared roi_params() block removed — unified ROI.)
         for (auto& p : preproc_params()) a.params.push_back(std::move(p));
         registry_[a.name] = std::move(a);
     };
@@ -836,9 +881,8 @@ void AlgoBridge::register_self_analytics() {
     auto add = [&](AlgoInfo a) {
         a.source = "self";
         a.category = "analytics";
-        // All self-developed analytics algorithms support ROI (design §5.6.6)
-        // and the shared preprocessing stage (v1.0.9: ROI → filter → downsample).
-        for (auto& p : roi_params()) a.params.push_back(std::move(p));
+        // Shared preprocessing stage (v1.0.9: ROI → filter → downsample).
+        // (Phase 2.6: shared roi_params() block removed — unified ROI.)
         for (auto& p : preproc_params()) a.params.push_back(std::move(p));
         registry_[a.name] = std::move(a);
     };

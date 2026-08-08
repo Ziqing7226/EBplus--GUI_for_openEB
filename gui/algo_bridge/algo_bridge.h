@@ -150,10 +150,24 @@ public:
     /// dimensions than the instance was originally created with.
     void set_sensor_dimensions(int width, int height);
 
+    /// @brief Applies the unified ROI (Phase 2.6): the source-level crop the
+    /// camera/file playback applies. From the algorithm's perspective the ROI
+    /// window IS the effective sensor — the backend is resized to the ROI
+    /// dimensions (reusing the §五-D1 set_sensor_dimensions path), and
+    /// push_events() drops events outside the rect and shifts the survivors
+    /// to ROI-relative coordinates. Disabled = back to creation dimensions
+    /// and pass-through. Called by AlgoBridge::set_unified_roi_state.
+    void set_unified_roi(bool enabled, int x0, int y0, int x1, int y1);
+
 private:
     AlgoInfo info_;
     int width_;
     int height_;
+    /// "Natural" full-sensor dims: set at creation, updated by
+    /// set_sensor_dimensions (source switch). Restored into width_/height_
+    /// when the unified ROI is disabled.
+    int create_w_;
+    int create_h_;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::string> param_values_;
     std::unique_ptr<AlgoBackend> backend_;
@@ -188,6 +202,12 @@ private:
     static constexpr double kMaxEventRateEvPerSec = 100e6;  // 100 Mev/s
     static constexpr int kFloodStrikes = 4;
     std::function<void()> overload_callback_;
+
+    // Unified ROI state (Phase 2.6). When enabled, push_events() delivers an
+    // ROI-cropped, ROI-relative copy instead of the raw span.
+    bool uroi_enabled_{false};
+    int uroi_x0_{0}, uroi_y0_{0}, uroi_x1_{0}, uroi_y1_{0};
+    std::vector<Metavision::EventCD> uroi_buf_;
 
     // --- Drop-rate telemetry (design §5.6.7) ----------------------------
     // total_pushed_ = events received via push_events (the denominator).
@@ -229,6 +249,12 @@ public:
     std::shared_ptr<AlgoInstance> create_with_info(const AlgoInfo& info);
     std::shared_ptr<AlgoInstance> find_or_create_with_info(const AlgoInfo& info);
 
+    /// @brief Applies the unified ROI state (Phase 2.6) to every live
+    /// instance and caches it so instances created later inherit it. From
+    /// the algorithm's perspective the ROI window is the effective sensor
+    /// (see AlgoInstance::set_unified_roi).
+    void set_unified_roi_state(bool enabled, int x0, int y0, int x1, int y1);
+
     /// @brief Sets the actual sensor dimensions so new instances are created
     /// with the correct width/height instead of the 1280x720 default.
     void set_sensor_dimensions(int width, int height);
@@ -240,12 +266,8 @@ public:
     /// selector so a single control updates all enabled algorithms.
     void apply_global_preproc(const std::string& key, const std::string& value);
 
-    /// @brief Applies shared ROI parameters (roi_*) to every live
-    /// self-developed instance and caches them so future instances
-    /// created via create() inherit the current ROI settings (N3).
-    void apply_global_roi(const std::string& enabled, const std::string& x,
-                          const std::string& y, const std::string& w,
-                          const std::string& h);
+    // Phase 2.6: apply_global_roi + roi_cache_ deleted (legacy per-backend
+    // ROI). The unified ROI is driven via AlgorithmsPanel::unified_roi_changed.
 
     /// @brief Caches per-algorithm parameters for an instance that is not
     /// yet live. The cached values are replayed in create() so that
@@ -296,11 +318,6 @@ private:
     /// (ConfigManager, calibration wizard).
     std::unordered_map<std::string, std::string> preproc_cache_;
 
-    /// Cache of the latest global roi_* parameter values (N3). Replayed
-    /// in create() alongside preproc_cache_ so new instances inherit the
-    /// current ROI settings.
-    std::unordered_map<std::string, std::string> roi_cache_;
-
     /// Per-algorithm parameter cache for instances not yet live (N1).
     /// Populated by ConfigManager::apply_algo_state when an algorithm has
     /// no live instance; replayed in create() so saved values are not lost.
@@ -309,6 +326,11 @@ private:
     /// Flood-guard overload callback, wired into every instance created by
     /// create() (see set_overload_callback).
     std::function<void(const std::string& name)> overload_cb_;
+
+    /// Cached unified ROI state (Phase 2.6). Replayed in create_with_info()
+    /// so instances created later inherit the active ROI window.
+    bool uroi_enabled_{false};
+    int uroi_x0_{0}, uroi_y0_{0}, uroi_x1_{0}, uroi_y1_{0};
 };
 
 } // namespace gui

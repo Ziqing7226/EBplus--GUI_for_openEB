@@ -81,11 +81,7 @@ public:
             hough_decay_factor_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_hough_decay_factor(hough_decay_factor_);
         }
-        else if (k == "roi_enabled") { roi_.enabled = to_b(v); roi_changed = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); roi_changed = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); roi_changed = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); roi_changed = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); roi_changed = true; }
+        // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
         else if (roi_changed) {
             const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
@@ -98,11 +94,6 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "roi_x") return from_i(roi_.x);
-        if (k == "roi_y") return from_i(roi_.y);
-        if (k == "roi_w") return from_i(roi_.w);
-        if (k == "roi_h") return from_i(roi_.h);
         if (k == "threshold" && algo_) return from_i(algo_->threshold());
         if (k == "num_theta_bins") return from_i(num_theta_bins_);
         if (k == "num_rho_bins") return from_i(num_rho_bins_);
@@ -265,11 +256,7 @@ public:
         else if (k == "nr_max") { nr_max_ = to_i(v); if (algo_) algo_->set_nr_max(nr_max_); }
         else if (k == "decay_mode") { decay_mode_ = to_b(v); if (algo_) algo_->set_decay_mode(decay_mode_); }
         else if (k == "loc_depression") { loc_depression_ = to_b(v); if (algo_) algo_->set_loc_depression(loc_depression_); }
-        else if (k == "roi_enabled") { roi_.enabled = to_b(v); roi_changed = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); roi_changed = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); roi_changed = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); roi_changed = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); roi_changed = true; }
+        // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
         else if (roi_changed) {
             const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
@@ -282,11 +269,6 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "roi_x") return from_i(roi_.x);
-        if (k == "roi_y") return from_i(roi_.y);
-        if (k == "roi_w") return from_i(roi_.w);
-        if (k == "roi_h") return from_i(roi_.h);
         if (k == "max_radius") return from_i(max_radius_);
         if (k == "threshold") return from_i(threshold_);
         if (k == "decay" && algo_) return from_d(algo_->decay());

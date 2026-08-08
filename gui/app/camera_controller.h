@@ -109,6 +109,19 @@ public:
     facility::TriggerIn*   trigger_in_facility();
     facility::TriggerOut*  trigger_out_facility();
 
+    /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
+    /// Live camera: applies the hardware ROI (I_ROI, keep-inside mode) so
+    /// the sensor itself only outputs ROI events. File playback: forwards to
+    /// FramePipeline's software crop (same semantics). @p x/@p y = -1 means
+    /// auto-center the window on the sensor. Returns false on failure
+    /// (facility missing / invalid rect) — caller should NOT treat the ROI
+    /// as applied.
+    bool set_unified_roi(bool enabled, int x, int y, int w, int h);
+
+    /// @brief Reads the current unified ROI state (computed rect
+    /// [x0,x1) × [y0,y1]) for overlay rendering.
+    void unified_roi(bool& enabled, int& x0, int& y0, int& x1, int& y1) const;
+
     /// @brief Enables/disables broadcasting of every CD batch via
     /// cd_events_ready(). When false (default), the CD callback takes the
     /// fast path with zero extra copies. Calibration tools flip this to true
@@ -144,6 +157,10 @@ private:
     std::optional<Metavision::CallbackId> status_cb_id_;
     SensorInfo sensor_info_;
     bool is_file_{false};
+    /// Unified ROI state (live path; file path keeps its own in
+    /// FileFrameGenerator and is read via frame_pipeline_.file_roi()).
+    bool roi_enabled_{false};
+    int roi_x0_{0}, roi_y0_{0}, roi_x1_{0}, roi_y1_{0};
 
     FramePipeline frame_pipeline_;
     StatisticsController statistics_;

@@ -89,6 +89,18 @@ public:
     /// Used by RecorderController to choose processed-stream recording.
     bool display_preproc_active() const { return display_preproc_.active(); }
 
+    /// @brief Sets the file-mode software ROI (Phase 2.6): same semantics as
+    /// the hardware ROI — the FileFrameGenerator only renders/emits events
+    /// inside the rect. Live mode ignores this (hardware ROI handles it).
+    void set_file_roi(bool enabled, int x, int y, int w, int h) {
+        file_generator_.set_display_roi(enabled, x, y, w, h);
+    }
+
+    /// @brief Reads the file-mode software ROI state (computed rect).
+    void file_roi(bool& enabled, int& x0, int& y0, int& x1, int& y1) const {
+        file_generator_.display_roi(enabled, x0, y0, x1, y1);
+    }
+
     /// @brief Registers a listener for the display-path-processed event
     /// stream (Phase 2.5 step 5, processed-stream recording). The listener
     /// receives every batch AFTER preprocessing (the raw span when all

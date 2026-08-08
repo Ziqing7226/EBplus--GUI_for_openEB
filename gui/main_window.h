@@ -27,6 +27,7 @@
 #define GUI_MAIN_WINDOW_H
 
 #include <QHash>
+#include <QCheckBox>
 #include <QMainWindow>
 #include <QPointer>
 #include <atomic>
@@ -165,6 +166,12 @@ private:
                                 Metavision::timestamp ts);
 
     EventDisplayWidget* display_{nullptr};
+    /// Main-display ROI view-mode toggle (Phase 2.6 step 4), in a bar below
+    /// the main display: checked = (a) adaptive zoom (frame cropped to the
+    /// unified ROI and scaled to the window); unchecked = (b) full canvas
+    /// with only-ROI content (default). Enabled only while the unified ROI
+    /// is active.
+    QCheckBox* roi_zoom_cb_{nullptr};
     SettingsPanel* settings_{nullptr};
     QDockWidget* settings_dock_{nullptr};  ///< Right-dock wrapper, for hide/show.
     PlaybackControls* playback_controls_{nullptr};
@@ -254,14 +261,6 @@ private:
     /// button. Used to restore the width when content is shown again
     /// (§11.2 point 5). 0 means no saved width (first toggle or never set).
     int saved_sidebar_width_{0};
-
-    /// Draws the ROI rectangle of any enabled self-developed algorithm
-    /// (design §5.6.6: all self-developed algos support ROI) on the main
-    /// display frame so the user can see which region is being processed.
-    /// Called from process_algo_results() with the already-snapshotted
-    /// instances vector to avoid a redundant list_live() call (N7).
-    void draw_roi_overlays(QImage& frame,
-                           const std::vector<std::shared_ptr<AlgoInstance>>& instances);
 
     /// Application theme controller (background color + light/dark mode).
     /// Owned by MainWindow; the SettingsPanel sidebar exposes its UI.

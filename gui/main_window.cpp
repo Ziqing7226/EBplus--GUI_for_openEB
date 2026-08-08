@@ -72,7 +72,35 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1280, 720);
 
     display_ = new EventDisplayWidget(this);
-    setCentralWidget(display_);
+    // Central area = main display + a bottom bar holding the ROI view-mode
+    // toggle (Phase 2.6 step 4). Mode (b) full-canvas is the default; mode
+    // (a) adaptive zoom crops the displayed frame to the unified ROI rect
+    // and lets the widget scale it up.
+    auto* central = new QWidget(this);
+    auto* central_vbox = new QVBoxLayout(central);
+    central_vbox->setContentsMargins(0, 0, 0, 0);
+    central_vbox->setSpacing(0);
+    central_vbox->addWidget(display_, 1);
+    auto* roi_bar = new QHBoxLayout();
+    roi_bar->setContentsMargins(6, 2, 6, 2);
+    roi_bar->addStretch(1);
+    roi_zoom_cb_ = new QCheckBox(tr("Zoom to ROI"), central);
+    roi_zoom_cb_->setToolTip(
+        tr("Adaptive zoom: show only the unified-ROI region, scaled to the "
+           "window. Unchecked: full sensor canvas (ROI content only)."));
+    roi_zoom_cb_->setEnabled(false);  // enabled only while the unified ROI is active
+    roi_bar->addWidget(roi_zoom_cb_);
+    central_vbox->addLayout(roi_bar);
+    setCentralWidget(central);
+    connect(roi_zoom_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        // When zooming, the whole view IS the ROI — hide the yellow overlay
+        // frame (its sensor coordinates no longer map onto the cropped
+        // texture). Restore it when returning to the full-canvas mode.
+        bool en = false;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        camera_.unified_roi(en, x0, y0, x1, y1);
+        display_->set_roi_overlay(x0, y0, x1 - x0, y1 - y0, en && !on);
+    });
 
     // Theme controller must be attached before the menu is built (so the
     // Theme menu actions reflect the persisted choice) and before the
@@ -412,11 +440,37 @@ void MainWindow::build_menus() {
             tr("JSON (*.json);;All Files (*)"));
         if (path.isEmpty()) return;
         QString err;
-        if (config_.load_algo_params_from_file(&algo_bridge_, path, err)) {
+        std::map<std::string, std::string> legacy_roi;
+        if (config_.load_algo_params_from_file(&algo_bridge_, path, err, &legacy_roi)) {
+            auto* ap = settings_->algorithms_panel();
+            // Phase 2.6: legacy per-algorithm roi_* entries were collected
+            // instead of forwarded — map the first algorithm's ROI onto the
+            // unified ROI. Route through the panel so the selector widgets,
+            // the camera/display path AND the algorithm path (step 3:
+            // AlgoBridge::set_unified_roi_state via unified_roi_changed) all
+            // stay in sync.
+            if (!legacy_roi.empty()) {
+                auto parse = [](const std::map<std::string, std::string>& m,
+                                const char* k, int def) {
+                    auto it = m.find(k);
+                    if (it == m.end()) return def;
+                    try { return std::stoi(it->second); } catch (...) { return def; }
+                };
+                const bool on = parse(legacy_roi, "roi_enabled", 0) != 0;
+                const int rx = parse(legacy_roi, "roi_x", -1);
+                const int ry = parse(legacy_roi, "roi_y", -1);
+                const int rw = parse(legacy_roi, "roi_w", 128);
+                const int rh = parse(legacy_roi, "roi_h", 128);
+                if (ap) {
+                    ap->apply_unified_roi(on, rx, ry, rw, rh);
+                } else {
+                    camera_.set_unified_roi(on, rx, ry, rw, rh);
+                }
+            }
             // apply_algo_state wrote instances/caches directly — re-sync the
             // panel controls so the displayed values match the loaded ones
             // (audit §5.9-疑点4).
-            if (auto* ap = settings_->algorithms_panel()) {
+            if (ap) {
                 ap->refresh_param_values();
             }
             statusBar()->showMessage(tr("Algorithm params loaded from %1").arg(path), 3000);
@@ -886,6 +940,22 @@ void MainWindow::wire_signals() {
     connect(camera_.frame_pipeline(), &FramePipeline::frame_ready, this,
             [this](QImage frame, Metavision::timestamp ts) {
                 process_algo_results(frame);
+                // Phase 2.6 step 4 mode (a): adaptive zoom — crop the
+                // (already overlay-annotated) frame to the unified ROI rect;
+                // EventDisplayWidget scales it to the window. Mode (b) is
+                // the pass-through default.
+                if (roi_zoom_cb_->isChecked()) {
+                    bool zen = false;
+                    int zx0 = 0, zy0 = 0, zx1 = 0, zy1 = 0;
+                    camera_.unified_roi(zen, zx0, zy0, zx1, zy1);
+                    if (zen && zx1 > zx0 && zy1 > zy0) {
+                        QRect zr(zx0, zy0, zx1 - zx0, zy1 - zy0);
+                        zr &= frame.rect();
+                        if (!zr.isEmpty() && zr != frame.rect()) {
+                            frame = frame.copy(zr);
+                        }
+                    }
+                }
                 display_->set_frame(frame);
                 settings_->statistics_panel()->set_timestamp(ts);
                 status_ts_->setText(QStringLiteral("t: %1 s").arg(ts / 1.0e6, 0, 'f', 3));
@@ -1119,18 +1189,57 @@ void MainWindow::wire_signals() {
                         fp->set_display_preproc_param(key.toStdString(), value.toStdString());
                     }
                 });
+        // Unified ROI (Phase 2.6): the ROI selector drives the single ROI
+        // concept — hardware ROI on a live source, software crop on a file
+        // source. set_unified_roi computes/clamps the rect on both paths;
+        // the overlay frame shows the computed rect (or hides when off).
+        connect(ap, &AlgorithmsPanel::unified_roi_changed, this,
+                [this](bool enabled, int x, int y, int w, int h) {
+                    camera_.set_unified_roi(enabled, x, y, w, h);
+                    bool en = false;
+                    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+                    camera_.unified_roi(en, x0, y0, x1, y1);
+                    // The zoom toggle is only meaningful while the ROI is
+                    // active; while zoomed the overlay frame is hidden (the
+                    // whole view is the ROI).
+                    roi_zoom_cb_->setEnabled(en);
+                    const bool zoomed = en && roi_zoom_cb_->isChecked();
+                    display_->set_roi_overlay(x0, y0, x1 - x0, y1 - y0,
+                                              en && !zoomed);
+                    // Same window drives the algorithm path: every live
+                    // instance is resized to the ROI and fed ROI-relative
+                    // events (Phase 2.6 step 3).
+                    algo_bridge_.set_unified_roi_state(en, x0, y0, x1, y1);
+                });
         connect(ap, &AlgorithmsPanel::algorithm_toggled, this,
-                [this](const QString& name, bool on) {
+                [this, ap](const QString& name, bool on) {
                     statusBar()->showMessage(
                         tr("%1: %2").arg(name).arg(on ? tr("enabled") : tr("disabled")), 3000);
                     const auto key = name.toStdString();
-                    if (!on) {
+                    if (on) {
+                        // Phase 2.6 step 3: default-ROI algorithms (e2v / ISI /
+                        // XYT / TimeSurface) auto-enable the unified ROI at the
+                        // default center 128×128 — unless the user has manually
+                        // set a rectangle (roi_user_touched), which wins.
+                        if (AlgorithmsPanel::algo_defaults_to_roi(key) &&
+                            !ap->roi_user_touched()) {
+                            ap->apply_unified_roi(true, -1, -1, 128, 128);
+                        }
+                    } else {
                         // Close the AlgoWindow if open (its closing handler will
                         // disable the instance and uncheck the sidebar checkbox —
                         // both are idempotent given the blocker in set_algo_enabled).
                         auto it = algo_windows_.find(key);
                         if (it != algo_windows_.end() && it.value()) it.value()->close();
                         if (key == "xyt_visualizer" && xyt_display_) xyt_display_->close();
+                        // Phase 2.6 step 3: symmetric auto-restore — disabling a
+                        // default-ROI algorithm turns the unified ROI back OFF
+                        // (full-sensor display/record), again only while the user
+                        // has not taken manual control of the rectangle.
+                        if (AlgorithmsPanel::algo_defaults_to_roi(key) &&
+                            !ap->roi_user_touched()) {
+                            ap->apply_unified_roi(false, -1, -1, 128, 128);
+                        }
                     }
                 });
         // When an algorithm is enabled from the sidebar, open its AlgoWindow
@@ -1745,64 +1854,10 @@ void MainWindow::process_algo_results(QImage& frame) {
         }
     }
 
-    // Draw the ROI rectangle of any enabled self-developed algorithm so the
-    // user can see which region is being processed (design §5.6.6: all
-    // self-developed algos support ROI, defaulting to center 128×128).
-    draw_roi_overlays(frame, instances);
-}
-
-void MainWindow::draw_roi_overlays(
-    QImage& frame,
-    const std::vector<std::shared_ptr<AlgoInstance>>& instances) {
-    // All self-developed algorithms support ROI (design §5.6.6). Iterate the
-    // live instances and draw a rectangle for each enabled one with
-    // roi_enabled=true. The overlay coordinates are at sensor scale.
-    int sensor_w = 1280, sensor_h = 720;
-    if (camera_.is_connected()) {
-        const auto& info = camera_.sensor_info();
-        sensor_w = info.width;
-        sensor_h = info.height;
-    }
-    auto parse = [](const std::string& s, int def) -> int {
-        try { return s.empty() ? def : std::stoi(s); }
-        catch (...) { return def; }
-    };
-    std::vector<QRect> boxes;
-    std::vector<std::pair<QString, QPoint>> labels;  // (text, pos)
-    for (auto& inst : instances) {
-        if (!inst->is_enabled()) continue;
-        // Only self-developed algorithms carry the roi_* params (design §5.6.6).
-        const AlgoInfo& info = inst->info();
-        if (info.source != "self") continue;
-        // Skip algorithms whose visible output bypasses the backend ROI path
-        // (uses_algo_roi == false, e.g. xyt_visualizer — its SpaceTimeDisplay
-        // is fed raw events in MainWindow). Drawing the frame for them falsely
-        // implies their output is ROI-cropped.
-        if (!info.uses_algo_roi) continue;
-        const std::string en = inst->get_param("roi_enabled");
-        if (en != "true" && en != "1") continue;
-        const int rx = parse(inst->get_param("roi_x"), -1);
-        const int ry = parse(inst->get_param("roi_y"), -1);
-        const int rw = parse(inst->get_param("roi_w"), 128);
-        const int rh = parse(inst->get_param("roi_h"), 128);
-        // Compute bounds (mirrors ProcessRegion::compute).
-        const int aw = (rw <= 0) ? sensor_w : std::min(rw, sensor_w);
-        const int ah = (rh <= 0) ? sensor_h : std::min(rh, sensor_h);
-        const int ax = (rx < 0) ? (sensor_w - aw) / 2
-                                 : std::min(std::max(0, rx), sensor_w - aw);
-        const int ay = (ry < 0) ? (sensor_h - ah) / 2
-                                 : std::min(std::max(0, ry), sensor_h - ah);
-        boxes.emplace_back(ax, ay, aw, ah);
-        labels.emplace_back(QString::fromStdString(info.name) + " ROI " +
-                            QString::number(aw) + "x" + QString::number(ah),
-                            QPoint(ax + 4, ay + 14));
-    }
-    if (!boxes.empty()) {
-        annotator_.draw_bboxes(frame, boxes, QColor(255, 255, 0));
-        for (const auto& [text, pos] : labels) {
-            annotator_.draw_text(frame, text, pos, QColor(255, 255, 0));
-        }
-    }
+    // Phase 2.6: draw_roi_overlays (per-algorithm yellow ROI frames) was
+    // deleted with the legacy per-backend ROI. The unified ROI's frame is
+    // drawn via EventDisplayWidget::set_roi_overlay, driven by
+    // unified_roi_changed / RoiPanel::roi_applied.
 }
 
 void MainWindow::on_intrinsic_wizard() {

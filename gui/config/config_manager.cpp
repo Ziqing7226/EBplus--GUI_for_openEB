@@ -437,7 +437,8 @@ QJsonObject ConfigManager::capture_algo_state(AlgoBridge* bridge) const {
     return root;
 }
 
-bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj, QString& err) const {
+bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj, QString& err,
+                                     std::map<std::string, std::string>* legacy_roi) const {
     if (!bridge) { err = tr("No algorithm bridge."); return false; }
     if (obj.value("format").toString() != "GUI-for-openEB-algo-params") {
         err = tr("Not an algorithm parameter file.");
@@ -498,6 +499,17 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
                              name.c_str(), key.c_str(), mit->second.c_str());
                     key = mit->second;
                 }
+            }
+
+            // Phase 2.6: legacy per-algorithm roi_* keys (the deleted
+            // per-backend ROI). When the caller collects them, record the
+            // FIRST algorithm's values for mapping onto the unified ROI and
+            // skip silently (no warning, no forwarding — backends no longer
+            // honour them anyway).
+            if (legacy_roi && key.rfind("roi_", 0) == 0) {
+                if (legacy_roi->empty()) (*legacy_roi)[key] = val;
+                else if (legacy_roi->count(key)) (*legacy_roi)[key] = val;
+                continue;
             }
 
             // Warn on parameter keys the algorithm no longer registers (e.g.
@@ -595,7 +607,8 @@ bool ConfigManager::save_algo_params_to_file(AlgoBridge* bridge, const QString& 
     return true;
 }
 
-bool ConfigManager::load_algo_params_from_file(AlgoBridge* bridge, const QString& path, QString& err) const {
+bool ConfigManager::load_algo_params_from_file(AlgoBridge* bridge, const QString& path, QString& err,
+                                               std::map<std::string, std::string>* legacy_roi) const {
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
         err = tr("Cannot open file for reading:\n%1").arg(path);
@@ -607,7 +620,7 @@ bool ConfigManager::load_algo_params_from_file(AlgoBridge* bridge, const QString
         err = pe.errorString();
         return false;
     }
-    return apply_algo_state(bridge, doc.object(), err);
+    return apply_algo_state(bridge, doc.object(), err, legacy_roi);
 }
 
 } // namespace gui

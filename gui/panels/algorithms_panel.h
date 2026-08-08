@@ -64,6 +64,23 @@ public:
     /// values while the algorithms run with the loaded ones (audit §5.9-疑点4).
     void refresh_param_values();
 
+    /// @brief Programmatically sets the unified ROI selector controls and
+    /// emits unified_roi_changed (Phase 2.6 step 3). Used by MainWindow to
+    /// auto-apply the default center ROI when a default-ROI algorithm is
+    /// enabled (and to restore OFF when it is disabled). Uses QSignalBlocker
+    /// internally so it does NOT count as a user edit (roi_user_touched_).
+    void apply_unified_roi(bool enabled, int x, int y, int w, int h);
+    /// @brief True once the user has manually edited any ROI selector
+    /// control. While true, the default-ROI automation (Phase 2.6 step 3)
+    /// must not override the user's rectangle.
+    bool roi_user_touched() const { return roi_user_touched_; }
+    /// @brief True if the named algorithm auto-enables the unified ROI at
+    /// the default center 128×128 when enabled (Phase 2.6 step 3 default
+    /// list): the complex algorithms whose cost/unboundedness demands a
+    /// bounded region (design §6: e2v / isi_analyzer / xyt_visualizer /
+    /// time_surface).
+    static bool algo_defaults_to_roi(const std::string& algo_name);
+
 signals:
     /// @brief Emitted when an algorithm's enable state changes.
     void algorithm_toggled(const QString& name, bool enabled);
@@ -74,6 +91,10 @@ signals:
     /// (preproc_* key + value). MainWindow forwards it to the display-path
     /// preprocessing in FramePipeline (Phase 2.5).
     void preproc_display_param_changed(const QString& key, const QString& value);
+    /// @brief Emitted when the ROI selector changes (Phase 2.6). Drives the
+    /// unified ROI: hardware ROI on live camera, software crop on file
+    /// playback (routed by MainWindow via CameraController::set_unified_roi).
+    void unified_roi_changed(bool enabled, int x, int y, int w, int h);
     /// @brief Emitted (from the SDK data thread, via the bridge's overload
     /// callback) when the flood guard auto-disables an algorithm. Connected
     /// queued to on_algorithm_overloaded so the checkbox sync runs on the
@@ -217,6 +238,15 @@ private:
     /// Once the user manually toggles, this flips true and auto-setting
     /// stops — the user's choice is respected thereafter.
     bool preproc_downsample_user_touched_{false};
+
+    /// Tracks whether the user has manually edited the unified ROI selector
+    /// (Phase 2.6 step 3). While false, enabling a default-ROI algorithm
+    /// auto-applies the center 128×128 ROI and disabling it restores OFF.
+    /// Once the user edits any ROI control, this flips true and the
+    /// automation stops — the user's rectangle is respected thereafter.
+    /// Programmatic apply_unified_roi() uses QSignalBlocker so it does not
+    /// trip this flag.
+    bool roi_user_touched_{false};
 
     /// Returns true if the named algorithm's backend halves event
     /// coordinates when 1/4 downsample is enabled (vs. just thinning

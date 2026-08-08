@@ -207,11 +207,9 @@ public:
             preproc_.set_param("preproc_downsample", v);
             if (prev != v) rebuild();
             return;
-        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        }
+        // Phase 2.6: roi_* keys intentionally not handled (legacy per-backend
+        // ROI deleted; unified ROI at the source).
         if (need_rebuild) {
             // Only rebuild (which reloads the ONNX model) when the effective
             // dimensions actually change. ROI position changes (x, y) don't
@@ -260,11 +258,7 @@ public:
         if (k == "unsharp_amount") return from_d(unsharp_amount_);
         if (k == "unsharp_sigma") return from_d(unsharp_sigma_);
         if (k == "bilateral_sigma") return from_d(bilateral_sigma_);
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "roi_x") return from_i(roi_.x);
-        if (k == "roi_y") return from_i(roi_.y);
-        if (k == "roi_w") return from_i(roi_.w);
-        if (k == "roi_h") return from_i(roi_.h);
+        // Phase 2.6: roi_* keys intentionally not handled.
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -420,11 +414,8 @@ public:
         } else if (k == "max_isi_ms") {
             max_isi_ms_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_max_isi_ms(max_isi_ms_);
-        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); roi_changed = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); roi_changed = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); roi_changed = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); roi_changed = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); roi_changed = true; }
+        }
+        // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
         else if (roi_changed) {
             const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
@@ -437,9 +428,9 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(roi_.enabled);
         if (k == "per_pixel") return from_b(per_pixel_);
         if (k == "max_isi_ms") return from_d(max_isi_ms_);
+        // Phase 2.6: roi_* keys intentionally not handled.
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
