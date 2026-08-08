@@ -365,6 +365,124 @@ AVI 组的第 7 个独立提交（一次提交一个问题）。
 - **拆分提交**：①统一 ROI 基础设施（live 硬件 + 文件软裁剪 + 面板驱动切换）
   ②删除算法 ROI 机制（后端/bridge/黄框/旧配置映射）③默认启用清单迁移
   ④主显示模式按钮，各一提交一测，② 前后各做一次全算法回归。
+- **实施状态**：①~④ 已提交（`caf37d1`/`90ce1ad`/`c98f338`/`e314637`，304 项测试全绿），
+  但实测发现 7 个回归/问题——**Phase 2.6 不能视为完成**。以下 Debug 项全部通过
+  实测后 2.6 才算完成。
+
+### Phase 2.6 Debug：实测回归修复 + ROI 全面统一（GUI 收敛）
+
+> 触发：Phase 2.6 实测暴露 7 个问题。已对基线 caee2c0 与 d32f5e8..HEAD 做逐文件
+> 考古，以下根因全部代码核实。**用户约束**：不丢弃任何捕捉到的事件（哪怕积压）、
+> 只优化性能、不魔改、输出必须是传感器+预处理的完整结果；GUI 一律全英文。
+
+#### D1 算法小窗显示回归（考古结论：Phase 2.6 未严格保持基线小窗逻辑）
+
+**基线（caee2c0 代码核实，自 92cb363 起所有版本一致）的小窗显示语义**：
+
+- 主显示 = 全幅累积帧 + 在算法处理区域绘制的 overlay（圆/线/框/着色事件/轨迹，
+  `OverlayStrategy` → `FrameAnnotator`，`process_algo_results` 在 `set_frame` 之前）；
+- Overlay/self 算法小窗 = **zoom 放大视图**：已绘制 overlay 的主帧按算法 ROI
+  （per-backend `roi_enabled` 默认 true、中心 128×128——**基线历史默认，当前新
+  默认为 256×144，见 D3**）裁剪放大——即用户描述的"事件累积帧+检测到的圆/线"
+  的放大图。hough 的 aux 累加器图每帧先于 zoom 推入同一 widget、被 zoom 覆盖，
+  **基线实践中从未可见**（用户确认，本 Debug 删除）；仅用户手动关 ROI 时小窗才
+  显示 aux（旧代码全幅时 aux 同样巨大——"大 aux"是全幅的自然结果，回归在于
+  **默认态**从 128×128 变成全幅）；
+- Standalone（e2v/ISI/TimeSurface）小窗 = 自有帧；Passive/freq_detector = 仅 status
+  文本；background_mask（Replace）小窗无 display widget。
+
+**Phase 2.6 的错误**：把"per-backend ROI 默认开"改为"统一 ROI 默认关"时未保持
+小窗显示逻辑——zoom 被统一 ROI 门控（R1）、坐标平移未配套回移（R2）、默认态
+变全幅（R3）。另注：本人曾提议"小窗=主显示镜像"系错误——基线小窗是**放大视图**，
+非同尺度镜像（用户纠正，目标设计已确认=恢复基线行为）。四处回归：
+
+- **R1（14 个 Overlay/self 算法小窗永久空白）**：orientation/direction_selective/
+  sparse_optical_flow/blob/object_tracker/corner/line_segment/orientation_cluster/
+  cluster_lif/bandpass/overlay/active_marker/particle_counter/auto_bias/optical_gyro
+  等小窗唯一帧源是 zoom view，现由统一 ROI 门控（默认关）→ 永远收不到帧，
+  "No camera connected" 占位常驻（`display_strategy.cpp:203-225`）。
+- **R2（统一 ROI 开启时主显示 overlay 坐标错位，新引入的真 BUG）**：
+  `AlgoInstance::push_events` 把事件平移为 ROI 相对坐标（`algo_bridge.cpp:211-217`），
+  但 overlay 结果画回主显示时**没有任何路径平移回传感器坐标**；hough 的 shift-back
+  依赖内部 `roi_.enabled`（现恒 false → 偏移 0，`cv_vector_backends.cpp:123-131`）。
+  后果：overlay 画在左上角偏移区而非 ROI 上；主显示 "Zoom to ROI" 放大视图里
+  也只有事件、没有 overlay（小窗 zoom 路由已随 R1 决策删除）。
+  Replace 模式的 background_mask 输出帧同理尺寸/位置不匹配。
+- **R3（hough 小窗默认显示巨型 aux）**：zoom 停推后 aux 成为小窗唯一内容——
+  hough_line aux=1468×90（基线默认 181×90）、hough_circle aux=640×360（基线
+  64×64，大 45 倍）；且旧注释自认的"默认 128×128 限制 ~750K cells 防 freeze"
+  保护已被默认关闭（`cv_vector_backends.cpp:171-176` 注释过时）。
+- **R4（XYT 3D 云被自动 ROI 裁剪）**：XYT 从不用 ROI（用户确认），移出名单即恢复。
+
+**修复方案（目标=恢复基线行为，用户已确认；叠加用户新决策——主显示 zoom 已
+逐像素等价于小窗放大视图，Overlay 小窗冗余）**：
+
+- **R1=Overlay 算法不再弹 AlgoWindow**（orientation/hough/object_tracker 等 14 个）：
+  主显示画 overlay（基线行为）+ 主显示 "Zoom to ROI" 放大（2.6④）已覆盖其小窗
+  全部内容；原小窗唯一增量信息 **status 文本（检测数/有效参数回显）移到侧栏**——
+  该算法组内新增一行只读标签，每次 pull 更新。display_strategy 的 zoom 路由随之
+  删除。Standalone（e2v/ISI/TimeSurface，自有帧不上主显示）与 Passive（status
+  文本窗）的 AlgoWindow **保留不变**。
+- **R2=OverlayStrategy 绘制时统一 +(x0,y0) 回移**（覆盖 RoiFilter 系与 hough 系；
+  Replace 模式同查）。
+- **R3=删除 hough aux 显示**（用户确认：基线实践中 aux 从未可见——每帧被 zoom
+  覆盖，仅手动关 ROI 时成为小窗唯一内容；7ad7160 仿 jAER 的调试视图）：
+  hough_line/circle 后端不再生成 `aux_frame`（省每帧 colormap 开销）、
+  display_strategy 的 aux 路由删除；hough 进默认名单恢复小工作域（256×144）+
+  修过时注释（`cv_vector_backends.cpp:171-176`）。原"限宽防御"方案取消。
+- **R4=XYT 移出名单。**
+
+#### D2 P1 高事件率或然黑屏（结论：非性能回归，最可能是 R5）
+
+- 用户现场确认：出事时滤波/降采样/去畸变全关。008d121..HEAD 逐文件 diff：
+  **预处理全关时热路径零显著增量**（每 CD 批仅 +1 次无竞争锁 + 布尔判断，~几十 ns；
+  文件路径全关时零拷贝）。滤波器语义解释（SpatialBP/Harmonic）已排除。
+- **最可能根因 R5**：Phase 2.6③ 的自动硬件 ROI——启用 e2v/ISI/XYT/TimeSurface 时
+  传感器物理上只输出中心 128×128 事件（当前 HEAD 的自动矩形；D6 将改为 256×144）
+  → 主显示大面积无事件。场景活动在中心外时
+  即"或然不显示任何事件"；此行为 2.6 之前不存在，与"以往没出现过"的时间线吻合。
+  Debug 的自动化语义重做（256×144 默认 + 恢复前态 + 黄框/zoom 可见）使其可预期。
+- 用户否决"丢批/mailbox"式防护（不丢事件）。**本 Debug 不做 P1 代码改动**；
+  若完成后仍复现，再按候选做 instrumentation（时间戳离群检测、帧延迟埋点）。
+- 缓议（条件性性能项，仅在 preproc 开或 processed 录制时存在）：SDK 线程上的
+  O(n) 拷贝+滤波（`frame_pipeline.cpp:146-152`）、录制写盘上 SDK 线程
+  （`recorder_controller.cpp:133-154`）——与 Phase 3 复现决策合并评估。
+
+#### D3 ROI 全面统一（GUI 收敛，用户已逐项决策）
+
+- **单一状态源**：`CameraController`（live 写 I_ROI；file 转发 FileFrameGenerator）。
+  所有写入者（勾选框/弹窗/拖拽/配置加载/自动化）一律经 `set_unified_roi`；
+  新增 `roi_state_changed(enabled,x0,y0,x1,y1)` 信号单驱动：黄框、zoom 按钮、
+  `AlgoBridge::set_unified_roi_state`、两页面勾选框回显。状态扩展 `mode`（ROI/RONI），
+  **文件软裁剪配套支持 RONI**。修复"RoiPanel 直连 facility 不更新缓存 → zoom 变
+  128×128 + 黄框残留"的实测 BUG（缓存只在 set_unified_roi 内写即永远新鲜）。
+- **GUI 合并**：硬件页、算法页各保留 **"Enable ROI" 勾选框 + "ROI Settings..." 按钮**；
+  勾选→开启并弹窗，取消→关闭；按钮随时再开弹窗；两勾选框经信号双向同步。
+  **删除** PreprocessingPanel 的 "ROI Filter" 组及 FilterChain 的 RoiFilterStage
+  （旧配置走 unknown-key 警告）。RoiPanel 其余部分仅保留偏置预设（与 ROI 矩形无关）。
+- **统一 ROI 设置弹窗**（新 `UnifiedRoiDialog`，**模态**，全英文）：内容=现 RoiPanel
+  设置区（Enable/Mode/X/Y/W/H/拖拽模式），**数值合法性校验**（W/H>0 且不超 sensor、
+  X/Y∈[−1,sensor−W]，非法禁 OK）；**默认 256×144 居中**；文件回放同样可用。
+- **自动化语义重做**：名单 `event_to_video`/`isi_analyzer`/`time_surface`/`hough_line`/
+  `hough_circle`（移出 XYT）；**删除 roi_user_touched_ 门控，无条件自动开**；
+  启用时保存当前 ROI 状态→强制中心 256×144，**禁用时恢复启用前状态**。
+  （e2v 注意：旧 AGENTS.md 约束 128×128 → 新默认 256×144+1/4 降采样=工作 128×72，
+  需实测 ONNX 动态维度重建正常，同步更新 AGENTS.md。）
+- **ConfigManager/拖拽改道**：`apply_roi` 改调 `set_unified_roi`、`capture_roi` 改读
+  缓存；`roi_dragged` 经 `set_unified_roi`（不再直连 facility）。
+- **ISI 输出**：恒定输出 512×256 图表（删除 resize-to-工作分辨率分支），小窗
+  letterbox 缩放。
+
+#### D4 提交拆分（一次一问题，每步编译+ctest 全绿）
+
+1. R1 Overlay 算法不弹 AlgoWindow + status 文本进侧栏只读标签 + 删 zoom 路由
+   （Standalone/Passive 窗口保留）
+2. R3 删 hough aux 显示（后端生成 + aux 路由 + 过时注释）
+3. R2 overlay 坐标回移（OverlayStrategy + Replace 核查）
+4. P6 ISI 恒定 512×256
+5. 统一 ROI 状态源扩展（mode/信号/文件 RONI/ConfigManager/拖拽改道/黄框单驱动）
+6. GUI 合并（两页面勾选框+设置按钮、模态弹窗含校验、删 ROI Filter）
+7. 自动化语义重做（名单±、删门控、256×144、保存/恢复前态）
 
 ### Phase 3：E2VID 线程化 —— **复现驱动，可整体跳过**
 
