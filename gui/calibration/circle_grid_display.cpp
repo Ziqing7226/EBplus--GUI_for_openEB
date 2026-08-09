@@ -27,6 +27,16 @@ void CircleGridDisplay::set_pattern(int cols, int rows) {
     update();
 }
 
+void CircleGridDisplay::set_layers(int layers) {
+    // Clamp to the supported odd values. Even layer counts would make the
+    // innermost band black (same as the background), making the center
+    // invisible — enforce odd.
+    layers_ = std::max(3, layers);
+    if (layers_ % 2 == 0) layers_ += 1;
+    recompute_layout();
+    update();
+}
+
 void CircleGridDisplay::set_square_size_mm(float mm) {
     // Perf: no update() — the mm value does not affect pixel layout, so there
     // is nothing to repaint. The wizard reads the value via square_size_mm().
@@ -69,16 +79,27 @@ void CircleGridDisplay::recompute_layout() {
     cache_.fill(Qt::black);
     QPainter p(&cache_);
     p.setRenderHint(QPainter::Antialiasing, true);
-    // White filled circles at asymmetric-grid positions:
+    // Zhou's Ring Grid: concentric rings at asymmetric-grid positions.
     //   x = (2*c + (r & 1)) * spacing, y = r * spacing
     // (matches IntrinsicCalibration's AsymmetricCircles object-point formula).
-    p.setBrush(Qt::white);
+    //
+    // Each circle position draws `layers_` filled circles from largest to
+    // smallest, alternating white/black. The outermost (layer 0) is white
+    // with radius = dot_radius_px_; each subsequent layer shrinks by the
+    // ring thickness t = R / layers_. For odd layers_ the innermost band
+    // (a small circle of radius t) is white.
     p.setPen(Qt::NoPen);
+    const double R = static_cast<double>(dot_radius_px_);
+    const double t = R / layers_;
     for (int r = 0; r < rows_; ++r) {
         for (int c = 0; c < cols_; ++c) {
-            const int cx = origin_x_ + (2 * c + (r & 1)) * spacing_px_;
-            const int cy = origin_y_ + r * spacing_px_;
-            p.drawEllipse(QPoint(cx, cy), dot_radius_px_, dot_radius_px_);
+            const double cx = origin_x_ + (2 * c + (r & 1)) * spacing_px_;
+            const double cy = origin_y_ + r * spacing_px_;
+            for (int layer = 0; layer < layers_; ++layer) {
+                const double radius = R - layer * t;
+                p.setBrush((layer % 2 == 0) ? Qt::white : Qt::black);
+                p.drawEllipse(QPointF(cx, cy), radius, radius);
+            }
         }
     }
 }

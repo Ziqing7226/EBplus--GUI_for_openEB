@@ -14,6 +14,7 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHideEvent>
+#include <QComboBox>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMessageBox>
@@ -24,6 +25,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScreen>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
@@ -48,18 +50,25 @@ namespace {
 // Aim-feedback poll rate. 30 Hz matches the FocusAssistant.
 constexpr int kCameraPollMs = 33;
 
-// Default asymmetric circle-grid board: 6×6 (36 circles). A square grid is
-// orientation-agnostic (the user need not rotate the camera) and gives a
-// 11×5-cell footprint that conditions calibrateCamera well.
+// Default asymmetric circle-grid board: 6×5 (30 circles). cols+rows = 11
+// (odd) is required for OpenCV's CALIB_CB_ASYMMETRIC_GRID — a square grid
+// (cols==rows) triggers an assertion failure because the symmetric/asymmetric
+// pattern is ambiguous. The wizard's spinbox handler rejects any change that
+// would make cols == rows.
 constexpr int kDefaultCols = 6;
-constexpr int kDefaultRows = 6;
+constexpr int kDefaultRows = 5;
 constexpr double kDefaultSquareMm = 5.0;
 constexpr int kDefaultTargetFrames = 15;
 
-// Space-capture window: the most recent 500 µs of CD events (polarity
-// ignored). Per the Phase 4 plan this may need widening if static-pattern
-// detection rate is too low (decided at field test per §0).
-constexpr Metavision::timestamp kCaptureWindowUs = 500;
+// Default concentric-ring layers (Zhou's Ring Grid). Must be odd so the
+// innermost band is white (matching the outermost). Options: 5, 7, 9.
+constexpr int kDefaultLayers = 7;
+
+// Space-capture window: the most recent 5000 µs of CD events (polarity
+// ignored). Widened from 500 µs after field-test analysis showed 500 µs
+// produced <1% dark pixels and zero detectable blobs; 5000 µs with the
+// ring-grid pattern provides sufficient event density.
+constexpr Metavision::timestamp kCaptureWindowUs = 5000;
 
 // Register cross-thread metatypes used by the worker signals/slots.
 Q_DECL_UNUSED static const int kRegCvMat = qRegisterMetaType<cv::Mat>("cv::Mat");
@@ -109,7 +118,7 @@ void CalibrationCameraView::paintEvent(QPaintEvent* /*event*/) {
 // ---------------------------------------------------------------------------
 
 CalibrationWizard::CalibrationWizard(QWidget* parent) : QDialog(parent) {
-    setWindowTitle(tr("Intrinsic Calibration"));
+    setWindowTitle(tr("Intrinsic Calibration (based on Zhou's Ring Grid)"));
     // Qt::Window (instead of the default Qt::Dialog) gives a full top-level
     // window with working minimize/maximize/close buttons. The default
     // Qt::Dialog on X11 shows a maximize button that is visually present but
@@ -188,7 +197,7 @@ void CalibrationWizard::show_intrinsic() {
     activateWindow();
     camera_timer_->start();
     // Start streaming CD events into the tap so a Space press has a recent
-    // 500 µs window to grab.
+    // 5000 µs window to grab.
     if (camera_ && camera_->is_connected()) {
         tap_.clear();
         camera_->set_cd_broadcast(true);
@@ -422,6 +431,7 @@ void CalibrationWizard::enable_capture(bool on) {
 void CalibrationWizard::apply_pattern_to_display() {
     if (pattern_) {
         pattern_->set_pattern(cols_->value(), rows_->value());
+        pattern_->set_layers(layers_->currentData().toInt());
         pattern_->set_square_size_mm(static_cast<float>(square_mm_->value()));
     }
 }
@@ -503,6 +513,18 @@ void CalibrationWizard::build_ui() {
     dims_lay->addStretch();
     form->addRow(tr("Grid (circles)"), dims_row);
 
+    // Zhou's Ring Grid: concentric-ring layer count (5/7/9, default 7).
+    // More layers = more ring edges = denser events, but thinner rings that
+    // may be harder to resolve on small displays.
+    layers_ = new QComboBox(params_widget);
+    layers_->addItem(QString::number(5), 5);
+    layers_->addItem(QString::number(7), 7);
+    layers_->addItem(QString::number(9), 9);
+    layers_->setCurrentIndex(1);  // default 7
+    layers_->setToolTip(tr("Number of concentric layers per circle (rings + "
+        "center). More layers produce denser events but thinner rings."));
+    form->addRow(tr("Ring layers"), layers_);
+
     square_mm_ = new QDoubleSpinBox(params_widget);
     square_mm_->setRange(0.1, 500.0);
     square_mm_->setDecimals(2);
@@ -558,7 +580,7 @@ void CalibrationWizard::build_ui() {
 
     // ---- Capture hint ----
     hint_ = new QLabel(tr(
-        "Press <b>Space</b> to capture a frame (500 µs event window, polarity "
+        "Press <b>Space</b> to capture a frame (5000 µs event window, polarity "
         "ignored). Move the camera between captures for varied angles."), this);
     hint_->setWordWrap(true);
     hint_->setProperty("class", "hint");
@@ -585,9 +607,31 @@ void CalibrationWizard::build_ui() {
     status_->setWordWrap(true);
     outer->addWidget(status_);
 
+    // Cols/Rows spinbox handlers with square-grid rejection: OpenCV's
+    // CALIB_CB_ASYMMETRIC_GRID asserts (isAsymmetricGrid ^ isSymmetricGrid)
+    // when cols == rows — the pattern is ambiguous. If a user's change would
+    // make cols == rows, revert to the previous (valid) value silently.
     connect(cols_, QOverload<int>::of(&QSpinBox::valueChanged), this,
-        [this](int) { on_config_changed(); });
+        [this](int v) {
+            if (v == rows_->value()) {
+                QSignalBlocker b(cols_);
+                cols_->setValue(prev_cols_);
+            } else {
+                prev_cols_ = v;
+                on_config_changed();
+            }
+        });
     connect(rows_, QOverload<int>::of(&QSpinBox::valueChanged), this,
+        [this](int v) {
+            if (v == cols_->value()) {
+                QSignalBlocker b(rows_);
+                rows_->setValue(prev_rows_);
+            } else {
+                prev_rows_ = v;
+                on_config_changed();
+            }
+        });
+    connect(layers_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
         [this](int) { on_config_changed(); });
     connect(square_mm_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
         [this](double) { on_config_changed(); });

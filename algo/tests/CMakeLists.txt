@@ -236,3 +236,32 @@ target_link_libraries(test_loop_flip PRIVATE
 )
 add_test(NAME loop_flip COMMAND test_loop_flip ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
+# Diagnostic (Phase 4 D10): reproduce calibration capture rejection on a .raw
+# recording. Renders the last W us of CD events several ways (flat binary like
+# the wizard, decay accumulation like the main display, morphological fill,
+# tuned blob detector) and runs findCirclesGrid on each, saving PNGs + a tally
+# so we can see why 500 us captures are rejected and what makes detection work.
+# Not registered with CTest (needs a user-supplied .raw with a calibration board).
+add_executable(calib_capture_probe
+    calib_capture_probe.cpp
+)
+target_link_libraries(calib_capture_probe PRIVATE
+    MetavisionSDK::base
+    MetavisionSDK::core
+    MetavisionSDK::stream
+    ${OpenCV_LIBS}
+)
+target_compile_options(calib_capture_probe PRIVATE -Wall -Wextra)
+
+# Diagnostic helper (Phase 4 D10): loads a PNG saved by calib_capture_probe and
+# tries findCirclesGrid with many board sizes / symmetric vs asymmetric / tuned
+# detector, so we can identify the actual calibration board geometry without
+# re-reading the full .raw. Links OpenCV only.
+add_executable(analyze_calib_png
+    analyze_calib_png.cpp
+)
+target_link_libraries(analyze_calib_png PRIVATE
+    ${OpenCV_LIBS}
+)
+target_compile_options(analyze_calib_png PRIVATE -Wall -Wextra)
+

@@ -4,9 +4,14 @@
 // Replaces the flashing ChessboardDisplay. The grid is STATIC (no flipping):
 // per the Phase 4 design, events come from the user's hand micro-motion and
 // the screen's refresh while the camera looks at the pattern; the wizard
-// captures a 500 µs window on demand (Space key, polarity ignored). Black
-// background with white circles matches the OpenCV CALIB_CB_ASYMMETRIC_GRID
-// convention.
+// captures a 5000 µs window on demand (Space key, polarity ignored).
+//
+// Zhou's Ring Grid: each grid position is drawn as a set of concentric rings
+// (white/black alternating, outermost = white) instead of a single solid
+// circle. Multiple ring edges per circle produce a denser, richer event
+// pattern that findCirclesGrid can detect more reliably than single-edge
+// solid circles. The number of layers (rings + center circle) is configurable
+// (5/7/9, default 7); all are odd so the innermost band is always white.
 //
 // The physical cell spacing (mm) is supplied by the user — we deliberately
 // do NOT derive it from QScreen::physicalDotsPerInch(), which is unreliable
@@ -35,6 +40,11 @@ public:
     /// Recomputes the pixel layout and re-renders the cached pixmap.
     void set_pattern(int cols, int rows);
 
+    /// @brief Sets the number of concentric layers per circle (rings + center
+    /// circle). Must be odd (5/7/9); the outermost band is white and bands
+    /// alternate white/black inward. Recomputes the cached pixmap.
+    void set_layers(int layers);
+
     /// @brief Sets the physical cell spacing (mm). Stored for retrieval only
     /// — it does NOT affect pixel layout (no DPI derivation), so no repaint is
     /// triggered. Changing this value has zero visual effect; it sets the
@@ -43,6 +53,7 @@ public:
 
     int cols() const { return cols_; }
     int rows() const { return rows_; }
+    int layers() const { return layers_; }
     float square_size_mm() const { return square_size_mm_; }
     /// @brief Current pixel spacing between adjacent grid cells.
     int spacing_px() const { return spacing_px_; }
@@ -54,8 +65,9 @@ protected:
 private:
     void recompute_layout();
 
-    int cols_{4};
-    int rows_{11};
+    int cols_{6};
+    int rows_{5};
+    int layers_{7};
     int spacing_px_{0};
     int dot_radius_px_{0};
     int origin_x_{0};

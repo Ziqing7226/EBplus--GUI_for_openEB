@@ -4,13 +4,18 @@
 // layout is a top row of three equal columns — parameters | live camera
 // aim-view | captured-frame preview — above a large full-width circle-grid
 // pattern so the user can aim the camera at it. On Space, the wizard takes the
-// last 500 µs of CD events (polarity ignored), renders a full-resolution
+// last 5000 µs of CD events (polarity ignored), renders a full-resolution
 // binary frame, and submits it to a CalibrationWorker that runs
 // cv::findCirclesGrid with CALIB_CB_ASYMMETRIC_GRID on a background thread.
 // cv::calibrateCamera also runs on the worker; the result is exported to YAML
 // (auto-mkdir). Detection is capture-triggered only (never per-frame); the
 // capture button is serialized — disabled while a frame is being judged and
 // re-enabled once the accept/reject verdict returns.
+//
+// Zhou's Ring Grid: the on-screen pattern uses concentric rings (white/black
+// alternating) instead of solid circles, producing denser events at each
+// circle position and improving findCirclesGrid detection rate. The ring
+// layer count (5/7/9) is user-configurable via a dropdown.
 //
 // Phase 4 bug-absorption (see devlog/v2_audit_and_plan.md §6 Phase 4):
 //  - tap attach() disconnects first (no duplicate Connection);
@@ -32,6 +37,7 @@
 
 #include "calibration_event_tap.h"
 
+class QComboBox;
 class QDoubleSpinBox;
 class QEvent;
 class QLabel;
@@ -132,8 +138,13 @@ private:
     // Configuration.
     QSpinBox*       cols_{nullptr};
     QSpinBox*       rows_{nullptr};
+    QComboBox*      layers_{nullptr};
     QDoubleSpinBox* square_mm_{nullptr};
     QSpinBox*       target_frames_{nullptr};
+    // Last valid (non-square) cols/rows — used to revert a spinbox change
+    // that would make cols == rows (invalid for ASYMMETRIC_GRID).
+    int prev_cols_{6};
+    int prev_rows_{5};
 
     // Top row: params | live camera aim-view | captured preview; bottom: pattern.
     CircleGridDisplay* pattern_{nullptr};

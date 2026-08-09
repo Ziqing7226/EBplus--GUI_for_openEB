@@ -27,7 +27,7 @@ CalibrationWorker::CalibrationWorker(QObject* parent)
     : QObject(parent),
       intrinsic_(std::make_unique<gui_algo::IntrinsicCalibration>()) {
     intrinsic_->set_pattern(gui_algo::CalibrationPattern::AsymmetricCircles,
-                            4, 11, 5.0f);
+                            6, 5, 5.0f);
 }
 
 CalibrationWorker::~CalibrationWorker() = default;

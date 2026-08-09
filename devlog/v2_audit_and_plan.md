@@ -538,8 +538,8 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
   - §8.2 旧 BUG 遗留动作全部吸收：tap UniqueConnection ✓、`QPointer<QScreen>` ✓、
     mm 手输不走 DPI ✓；AsymmetricCircles 物点公式已修（`test_intrinsic.AsymmetricObjectGridFormula` 验证
     `x=(2c+(r&1))·s, y=r·s`）。④ `cv::medianBlur` 兜底按 §0 协议留待现场实测决定。
-  - **Phase 4 完成。** 注意：500µs 抓拍窗口事件量是否足够，仍需现场实测（§0 协议，必要时
-    调整窗口长度后 amend）。
+  - **Phase 4 完成。** 500µs 抓拍窗口事件量经现场实测不足（见 D10），已改为 5000µs +
+    Zhou's Ring Grid 同心圆环图案。
 
 ### Phase 4 Debug：实测 UI/UX 回归修复（标定向导现场实测）
 
@@ -713,8 +713,9 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
   （`grep` 核实）；`kCameraPollMs=33`（30 Hz）已回退为原值，未私自改 10 Hz。`event_display_widget.cpp`、
   `main_window.cpp` 同样无残留。**当前态已干净，无需再撤。**
 - 保留的有益改动：事件 tap batch-ring（SDK 线程 O(N)→O(1)/批）、点阵预渲染 QPixmap、`Qt::Window`
-  + `WindowMinMaxButtonsHint`（使最大化按钮可见可用）、`setGeometry()` 初始满屏、6×6 默认网格、
-  Circle spacing 英文 tooltip、三态相机提示、capture 串行化、worker 线程 `calibrateCamera`。
+  + `WindowMinMaxButtonsHint`（使最大化按钮可见可用）、`setGeometry()` 初始满屏、6×5 默认网格 +
+  Zhou's Ring Grid 同心圆环、Circle spacing 英文 tooltip、三态相机提示、capture 串行化、worker
+  线程 `calibrateCamera`。
 - 本轮新增仅 `changeEvent` 一处（约 15 行 + 注释），无画蛇添足。
 
 **实施状态**：编译通过；`ctest` 322/323 通过，唯一失败 `loop_flip` 为时序敏感 flaky 测试，单独重跑通过
@@ -742,6 +743,58 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
 
 **实施状态**：编译通过；`ctest` 320/320 通过（排除 `loop_flip`/`raw_e2v`/`playback_e2v` 三个慢/flaky，
 前两者此前已验证）。amend 入 Phase 4 提交。
+
+#### D10 标定板检测失败根因分析与 Zhou's Ring Grid 修复
+
+> 触发：用户报告"明明看到画面有完整的标定板，但捕获结果被丢弃"。录制 raw
+> （`/home/justin/文档/EBplus/recordings/record.raw`，796 MB，全程有完整标定板）供离线分析。
+
+**诊断工具**
+- `algo/tests/calib_capture_probe.cpp`——回放 raw，在采样时刻以多种策略（500µs 二值 / 50ms 二值 /
+  50ms 衰减 / 形态学闭 / 调参 blob 检测器）渲染帧并跑 `findCirclesGrid`，输出 PNG + 检测统计。
+- `algo/tests/analyze_calib_png.cpp`——加载 PNG，以多种板型（非对称/对称、多尺寸）× 多种预处理
+  （原始 / 形态学闭 / 膨胀 / 高斯模糊+阈值 / 反色）穷举 `findCirclesGrid`，定位实际板型与有效预处理。
+
+**三个独立根因（每个都足以导致检测失败）**
+
+1. **6×6 非对称网格触发 OpenCV 断言失败**：`findCirclesGrid(Size(6,6), CALIB_CB_ASYMMETRIC_GRID)`
+   抛出 `(-215:Assertion failed) isAsymmetricGrid ^ isSymmetricGrid`——正方形网格（cols==rows）的
+   对称性歧义。`detect_only()` / `process_frame()` 无 try/catch，异常传播到 Qt 事件循环 → 每次捕获静默失败。
+   - 非对称网格要求 `cols != rows` 且 `cols + rows` 为奇数。
+
+2. **500µs 捕获窗口太短**：实测 500µs 帧仅 0.7% 暗像素、3112 个噪声连通分量、**零**中等 blob——
+   标定板在帧中完全不存在。即使加 blur 预处理也无法检测。50ms 窗口帧则有 4–22% 暗像素、100+ 中等 blob。
+
+3. **事件画的是"环"不是"盘"**：事件相机在亮度变化处触发，圆点边缘产生事件 → 暗色圆环（outline），
+   而非实心圆盘。`SimpleBlobDetector` 需要实心 blob，无法匹配环形结构。高斯模糊(15×15) + 均值阈值化
+   可填充圆环，但用户选择了更根本的方案（改图案而非加预处理）。
+
+**实际板型**：经 `analyze_calib_png` 在 50ms 二值帧和 50ms 衰减帧上均一致检测到 **5×4 非对称**（20 圆点）。
+
+**用户决策的修复方案（Zhou's Ring Grid）**
+
+不采用 blur 预处理，而是**改点阵图案本身**——把白色实心圆改为黑白相间同心圆环，从源头产生更密集的事件：
+
+1. **板型**：默认 6×5 非对称（cols+rows=11 奇数，OpenCV 合法）。UI 中若用户修改导致 cols==rows
+   （正方形），修改失败、回退到修改前的值（`prev_cols_`/`prev_rows_` + `QSignalBlocker` 回退）。
+2. **窗口**：500µs → **5000µs**（用户实测足够）。`kKeepWindowUs` 同步从 2000µs → 6000µs
+   （须 ≥ 捕获窗口 + 余量）。
+3. **图案**：`CircleGridDisplay` 白色实心圆 → **黑白相间同心圆环**（Zhou's Ring Grid）：
+   - 最外层白色，半径 = 旧白色圆半径；从外向里白黑交替；圆环厚度均等 = R/N；
+   - 最里层为小圆，半径 = 圆环厚度；总层数默认 7（奇数，保证最里层白色）；
+   - GUI 下拉框选择层数：5 / 7 / 9（默认 7）。
+4. **标题**：`"Intrinsic Calibration"` → `"Intrinsic Calibration (based on Zhou's Ring Grid)"`。
+5. **CalibrationWorker** 默认板型同步改为 6×5。
+
+**原理**：同心圆环每个圆位置产生多个亮度跃变边界 → 事件密度远高于单边缘实心圆 → 5000µs 窗口内
+足以形成可检测的 blob 结构，无需预处理。
+
+**修改文件**：`circle_grid_display.{h,cpp}`（同心圆环绘制 + `set_layers()`）、
+`calibration_wizard.{h,cpp}`（6×5 默认 + 5000µs 窗口 + 层下拉框 + 正方形拒绝 + 标题）、
+`calibration_worker.cpp`（默认 6×5）、`calibration_event_tap.h`（`kKeepWindowUs` 6000µs）。
+诊断工具 `calib_capture_probe.cpp` + `analyze_calib_png.cpp` + `CMakeLists.txt` 一并提交。
+
+**实施状态**：编译通过；`ctest` 323/323 全绿。
 
 ### Phase 5：调焦工具（新代码，替换锐度计）
 
