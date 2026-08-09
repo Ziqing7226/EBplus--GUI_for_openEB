@@ -1,13 +1,22 @@
-// gui/calibration/calibration_wizard.h — intrinsic calibration UI.
+// gui/calibration/calibration_wizard.h — intrinsic calibration UI (Phase 4).
 //
-// Phase 9 (design §4.5, §5.3), rebuilt around a flashing on-screen chessboard
-// + auto-capture workflow suited to event cameras: the chessboard inverts at
-// 20 Hz, each flip generates a burst of events along the edges, and a 1 ms
-// accumulation window aligned with the flip captures the pattern "for free".
-// The wizard picks the max-event 1 ms window out of every 50 ms cycle,
-// detects the chessboard, rejects duplicates via MSE, and auto-ends after a
-// configurable frame count (default 30) — then runs cv::calibrateCamera and
-// exports the result to YAML.
+// Redesigned around a STATIC asymmetric circle grid + Space-key capture. The
+// layout is a top row of three equal columns — parameters | live camera
+// aim-view | captured-frame preview — above a large full-width circle-grid
+// pattern so the user can aim the camera at it. On Space, the wizard takes the
+// last 500 µs of CD events (polarity ignored), renders a full-resolution
+// binary frame, and submits it to a CalibrationWorker that runs
+// cv::findCirclesGrid with CALIB_CB_ASYMMETRIC_GRID on a background thread.
+// cv::calibrateCamera also runs on the worker; the result is exported to YAML
+// (auto-mkdir). Detection is capture-triggered only (never per-frame); the
+// capture button is serialized — disabled while a frame is being judged and
+// re-enabled once the accept/reject verdict returns.
+//
+// Phase 4 bug-absorption (see devlog/v2_audit_and_plan.md §6 Phase 4):
+//  - tap attach() disconnects first (no duplicate Connection);
+//  - no QScreen::physicalDotsPerInch() — cell spacing mm is user-input;
+//  - no raw QScreen* held (the pattern is embedded; no screen tracking, so
+//    the hot-plug dangling-pointer concern is eliminated by design).
 
 #ifndef GUI_CALIBRATION_CALIBRATION_WIZARD_H
 #define GUI_CALIBRATION_CALIBRATION_WIZARD_H
@@ -15,28 +24,55 @@
 #include <QDialog>
 #include <QImage>
 #include <QPointer>
-#include <memory>
+#include <QString>
+#include <QWidget>
 
-#include "algo/calibration/intrinsic.h"
+#include <opencv2/core.hpp>
+#include <metavision/sdk/base/events/event_cd.h>
+
 #include "calibration_event_tap.h"
 
-class QComboBox;
 class QDoubleSpinBox;
+class QEvent;
 class QLabel;
+class QPaintEvent;
 class QProgressBar;
 class QPushButton;
 class QScrollArea;
+class QShowEvent;
 class QSpinBox;
-class QTabWidget;
+class QThread;
 class QTimer;
 
 namespace gui {
 
 class CameraController;
-class ChessboardDisplay;
+class CircleGridDisplay;
+class CalibrationWorker;
 class EventDisplayWidget;
 
-/// @brief Dialog hosting the intrinsic calibration wizard.
+/// @brief Lightweight live-camera preview widget. Stores a QImage and paints
+/// it via QPainter::drawImage in paintEvent — same approach as
+/// FocusCameraView. Also handles the "no camera" / "not running" text states.
+class CalibrationCameraView : public QWidget {
+public:
+    explicit CalibrationCameraView(QWidget* parent = nullptr);
+
+    /// @brief Shows @p frame (scaled to fit). Clears any prior message.
+    void set_frame(const QImage& frame);
+
+    /// @brief Shows @p msg centered (no frame). Clears any prior frame.
+    void set_message(const QString& msg);
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    QImage frame_;
+    QString message_;
+};
+
+/// @brief Dialog hosting the intrinsic calibration workflow.
 class CalibrationWizard : public QDialog {
     Q_OBJECT
 public:
@@ -44,71 +80,88 @@ public:
     ~CalibrationWizard();
 
     /// @brief Provides the live camera so the wizard can tap CD events.
-    /// Safe to call with nullptr (capture buttons disabled until set).
+    /// Safe to call with nullptr (capture stays disabled).
     void set_camera(CameraController* controller);
 
-    /// @brief Provides the event display (unused by the auto-capture loop
-    /// but kept for the manual fallback and for sensor geometry lookup).
+    /// @brief Provides the event display whose current frame is polled for the
+    /// side-by-side aim view.
     void set_display(EventDisplayWidget* display);
 
 public slots:
     void show_intrinsic();
 
+protected:
+    void keyPressEvent(QKeyEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    void changeEvent(QEvent* event) override;
+
+signals:
+    /// @brief Cross-thread: reconfigure the worker's board geometry.
+    void configure_requested(int cols, int rows, double square_mm, int target);
+    /// @brief Cross-thread: submit a rendered capture frame for detection.
+    void submit_frame(const cv::Mat& frame);
+    /// @brief Cross-thread: run cv::calibrateCamera on the worker.
+    void run_calibration_requested();
+    /// @brief Cross-thread: write the calibration YAML on the worker.
+    void export_requested(const QString& path);
+
 private slots:
-    // Intrinsic tab.
-    void on_show_chessboard();
-    void on_start_capture();
-    void on_stop_capture();
+    void on_camera_tick();
     void on_intrinsic_reset();
-    void on_intrinsic_save();
-    void on_capture_tick();
+    void on_capture_pressed();
+    void on_frame_accepted(QImage annotated, std::size_t accepted, std::size_t target);
+    void on_frame_rejected(QString reason);
+    void on_capture_complete(std::size_t accepted);
+    void on_calibration_done(bool ok, double rms, int frames_used, QString error);
+    void on_export_pressed();
+    void on_export_done(bool ok, QString message);
+    void on_config_changed();
 
 private:
-    void build_intrinsic_tab();
-    void update_intrinsic_preview(const QImage& img);
+    void build_ui();
     void set_status(const QString& text);
-    void rebuild_screen_combo();
+    void apply_pattern_to_display();
+    void configure_worker();
+    void enable_capture(bool on);
+    cv::Mat render_event_frame(const std::vector<Metavision::EventCD>& evs,
+                               int sensor_w, int sensor_h);
+    void teardown_worker();
     QString default_export_path() const;
-    QImage cv_to_qimage(const cv::Mat& mat);
-    /// @brief Renders a 1 ms event window to a single-channel cv::Mat at
-    ///        sensor resolution (background grey, ON events white, OFF black).
-    cv::Mat render_event_window(const std::vector<Metavision::EventCD>& evs,
-                                int sensor_w, int sensor_h);
-    /// @brief Mean-squared-error between two grayscale Mats of equal size.
-    static double mse_gray(const cv::Mat& a, const cv::Mat& b);
 
-    // Shared.
-    QTabWidget* tabs_{nullptr};
+    // Configuration.
+    QSpinBox*       cols_{nullptr};
+    QSpinBox*       rows_{nullptr};
+    QDoubleSpinBox* square_mm_{nullptr};
+    QSpinBox*       target_frames_{nullptr};
 
-    // Intrinsic controls.
-    QComboBox*  in_screen_{nullptr};
-    QSpinBox*   in_cols_{nullptr};
-    QSpinBox*   in_rows_{nullptr};
-    QSpinBox*   in_target_frames_{nullptr};
-    QDoubleSpinBox* in_mse_threshold_{nullptr};
-    QLabel*     in_status_{nullptr};
-    QLabel*     in_preview_label_{nullptr};
-    QScrollArea* in_preview_area_{nullptr};
-    QProgressBar* in_progress_{nullptr};
-    QPushButton* in_show_board_btn_{nullptr};
-    QPushButton* in_start_btn_{nullptr};
-    QPushButton* in_stop_btn_{nullptr};
-    QPushButton* in_reset_btn_{nullptr};
-    QPushButton* in_save_btn_{nullptr};
+    // Top row: params | live camera aim-view | captured preview; bottom: pattern.
+    CircleGridDisplay* pattern_{nullptr};
+    CalibrationCameraView* camera_view_{nullptr};
 
-    std::unique_ptr<gui_algo::IntrinsicCalibration> intrinsic_;
-    gui_algo::IntrinsicResult intrinsic_result_;
-    QImage in_last_preview_;
+    // Progress / preview / status.
+    QLabel*       hint_{nullptr};
+    QLabel*       spacing_note_{nullptr};  ///< Circle-spacing measurement instruction.
+    QLabel*       preview_label_{nullptr};
+    QScrollArea*  preview_area_{nullptr};
+    QProgressBar* progress_{nullptr};
+    QLabel*       status_{nullptr};
 
-    // Auto-capture state.
+    QPushButton* capture_btn_{nullptr};
+    QPushButton* reset_btn_{nullptr};
+    QPushButton* export_btn_{nullptr};
+
+    QTimer* camera_timer_{nullptr};
+
+    // Event capture + worker.
     CalibrationEventTap tap_;
-    QTimer* capture_timer_{nullptr};
-    bool capturing_{false};
-    cv::Mat last_accepted_gray_;  ///< For MSE duplicate check.
+    CalibrationWorker* worker_{nullptr};
+    QThread* worker_thread_{nullptr};
+    bool capture_in_flight_{false};   ///< Ignore Space while a frame is processing.
+    bool capture_done_{false};        ///< Target reached; further captures blocked until reset.
 
     CameraController* camera_{nullptr};
     QPointer<EventDisplayWidget> display_;
-    QPointer<ChessboardDisplay> chessboard_;
 };
 
 } // namespace gui

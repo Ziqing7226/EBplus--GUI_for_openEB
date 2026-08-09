@@ -2,6 +2,8 @@
 
 #include "intrinsic.h"
 
+#include <cmath>
+
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -63,7 +65,7 @@ std::vector<cv::Point3f> IntrinsicCalibration::make_object_grid() const {
     return pts;
 }
 
-DetectionResult IntrinsicCalibration::add_frame(const cv::Mat& frame, bool annotate) {
+DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool annotate) {
     DetectionResult result;
     if (frame.empty()) {
         result.found = false;
@@ -113,12 +115,38 @@ DetectionResult IntrinsicCalibration::add_frame(const cv::Mat& frame, bool annot
         }
         cv::drawChessboardCorners(result.image, board_size_, corners, found);
     }
+    // NOTE: no accumulation here — the caller decides via accept().
+    return result;
+}
 
-    if (found) {
-        image_points_.push_back(corners);
-        object_points_.push_back(make_object_grid());
+void IntrinsicCalibration::accept(const std::vector<cv::Point2f>& points) {
+    image_points_.push_back(points);
+    object_points_.push_back(make_object_grid());
+}
+
+DetectionResult IntrinsicCalibration::add_frame(const cv::Mat& frame, bool annotate) {
+    DetectionResult result = detect_only(frame, annotate);
+    if (result.found) {
+        accept(result.points);
     }
     return result;
+}
+
+bool IntrinsicCalibration::is_duplicate_pose(
+    const std::vector<cv::Point2f>& points, double threshold_px) const {
+    if (points.empty()) return false;
+    for (const auto& stored : image_points_) {
+        if (stored.size() != points.size()) continue;
+        double sum = 0.0;
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            const double dx = stored[i].x - points[i].x;
+            const double dy = stored[i].y - points[i].y;
+            sum += std::sqrt(dx * dx + dy * dy);
+        }
+        const double mean = sum / static_cast<double>(points.size());
+        if (mean < threshold_px) return true;
+    }
+    return false;
 }
 
 IntrinsicResult IntrinsicCalibration::run() {

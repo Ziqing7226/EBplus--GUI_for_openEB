@@ -57,6 +57,20 @@ target_compile_options(test_phase8_10 PRIVATE -Wall -Wextra -Werror)
 
 gtest_discover_tests(test_phase8_10)
 
+# Test executable for Phase 4 (algo/calibration/) — IntrinsicCalibration
+# AsymmetricCircles formula, detect_only/accept split, duplicate-pose check.
+add_executable(test_intrinsic
+    test_intrinsic.cpp
+)
+target_link_libraries(test_intrinsic PRIVATE
+    gui_algo
+    GTest::GTest
+    GTest::Main
+    ${OpenCV_LIBS}
+)
+target_compile_options(test_intrinsic PRIVATE -Wall -Wextra -Werror)
+gtest_discover_tests(test_intrinsic)
+
 # Raw-event integration tests: exercises every streaming algorithm against a
 # real Metavision .raw recording (algo/tests/sparklers.raw, committed). Unlike
 # the synthetic-event unit tests above, these assert real-world behaviour:

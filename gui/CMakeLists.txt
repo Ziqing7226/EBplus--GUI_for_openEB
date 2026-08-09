@@ -47,12 +47,13 @@ set(GUI_LIB_SOURCES
     recorder/recorder_controller.cpp
 )
 
-# Phase 9 — calibration wizard + tools (built when sources are present).
+# Phase 9 / Phase 4 — calibration wizard + tools (built when sources are present).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_wizard.cpp")
     list(APPEND GUI_LIB_SOURCES
         calibration/calibration_wizard.cpp
-        calibration/chessboard_display.cpp
+        calibration/circle_grid_display.cpp
         calibration/calibration_event_tap.cpp
+        calibration/calibration_worker.cpp
         calibration/focus_dialog.cpp
     )
 endif()

@@ -57,11 +57,32 @@ public:
                      int cols, int rows,
                      float square_size_mm);
 
-    /// @brief Attempts to detect the calibration pattern in @p frame.
+    /// @brief Attempts to detect the calibration pattern in @p frame and, on
+    /// success, accumulates the observation. Convenience wrapper around
+    /// detect_only() + accept() for callers that want detect-and-keep in one
+    /// call (preserves the original Phase 9 contract).
     /// @param frame Grayscale or BGR accumulated event frame.
     /// @param annotate If true, @p result.image contains a drawn preview.
     /// @return DetectionResult with found state and corner points.
     DetectionResult add_frame(const cv::Mat& frame, bool annotate = true);
+
+    /// @brief Runs pattern detection only — does NOT accumulate. Lets the
+    /// caller reject a frame (duplicate pose, insufficient coverage, …)
+    /// before committing it via accept(). Records image_size_ on first call.
+    DetectionResult detect_only(const cv::Mat& frame, bool annotate = true);
+
+    /// @brief Commits an already-detected point set as a calibration
+    /// observation. @p points must come from a successful detect_only() on a
+    /// frame of the configured geometry.
+    void accept(const std::vector<cv::Point2f>& points);
+
+    /// @brief Returns true if @p points match (within @p threshold_px mean
+    /// Euclidean distance) any already-accepted observation. Used by the
+    /// Phase 4 wizard to reject duplicate-pose captures. Element-wise
+    /// comparison assumes findCirclesGrid returns points in a consistent
+    /// order for a given board pose.
+    bool is_duplicate_pose(const std::vector<cv::Point2f>& points,
+                           double threshold_px) const;
 
     /// @brief Runs cv::calibrateCamera on all collected observations.
     IntrinsicResult run();
@@ -71,6 +92,11 @@ public:
 
     std::size_t frame_count() const { return image_points_.size(); }
     cv::Size image_size() const { return image_size_; }
+
+    /// @brief The object-point grid for the currently configured geometry
+    /// (read-only). Exposed so the wizard/tests can verify the configured
+    /// board matches the displayed pattern.
+    std::vector<cv::Point3f> object_grid() const { return make_object_grid(); }
 
 private:
     CalibrationPattern pattern_{CalibrationPattern::Chessboard};

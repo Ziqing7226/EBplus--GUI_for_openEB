@@ -4,6 +4,10 @@
 > 系统审计 + develop / develop-beta 分支取舍分析 + 2.0.0 开发计划。
 > 文档目录自此采用 `devlog/`（doc → devlog 改名已采纳，引用更新随 2.0.0 基建提交完成）。
 
+> **发布状态（2.0.0）**：Phase 1–6 全部完成并提交，323 项 ctest 全绿。Phase 4（标定重新设计）
+> 三个子提交落地后，2.0.0 路线图全部完成，可作为 2.0.0 版本发布。各 Phase 落地提交见各小节
+> "实施状态"；提交已就绪，待用户确认后推送。
+
 ---
 
 ## 0. 背景与开发原则
@@ -365,9 +369,9 @@ AVI 组的第 7 个独立提交（一次提交一个问题）。
 - **拆分提交**：①统一 ROI 基础设施（live 硬件 + 文件软裁剪 + 面板驱动切换）
   ②删除算法 ROI 机制（后端/bridge/黄框/旧配置映射）③默认启用清单迁移
   ④主显示模式按钮，各一提交一测，② 前后各做一次全算法回归。
-- **实施状态**：①~④ 已提交（`caf37d1`/`90ce1ad`/`c98f338`/`e314637`，304 项测试全绿），
-  但实测发现 7 个回归/问题——**Phase 2.6 不能视为完成**。以下 Debug 项全部通过
-  实测后 2.6 才算完成。
+- **实施状态**：①~④ 已提交（`caf37d1`/`90ce1ad`/`c98f338`/`e314637`）。实测暴露 7 个回归/
+  问题后，Phase 2.6 Debug D-1~D-7 全部修复并提交（`455d505` D-1~D-4 + `a6c14f2` D-5~D-7），
+  323 项 ctest 全绿。**Phase 2.6 完成。**
 
 ### Phase 2.6 Debug：实测回归修复 + ROI 全面统一（GUI 收敛）
 
@@ -521,6 +525,223 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
   ④ 热像素在抓拍帧上打孔的兜底：若实测抓拍拒绝率过高，加一行 `cv::medianBlur`
   （按 §0 协议实测后再定）；
 - 建议拆分为：①图案显示窗口+并排 GUI ②事件 tap+空格抓拍判定 ③标定计算+导出，各一提交一测。
+- **实施状态**：三个子提交全部完成，323 项 ctest 全绿（含 `test_intrinsic` 5 项 + `test_raw_algos`）：
+  - ①图案显示窗口+并排 GUI（`53a3d72`）——CircleGridDisplay 静态非对称圆点阵（黑底白点、不闪烁）
+    + 点阵/相机实时输出并排向导 + 空格捕捉提示；
+  - ②事件 tap+空格抓拍判定（`175360d`）——CalibrationEventTap（`Qt::UniqueConnection`）+
+    500µs 窗口空格抓拍（忽略极性、不降采样）+ CalibrationWorker 异步 `findCirclesGrid` +
+    覆盖率/重复视角剔除（`detect_only`/`accept`/`is_duplicate_pose`）；
+  - ③标定计算+导出（`d19f6f4`）——worker 线程 `cv::calibrateCamera`（bundle adjustment 不阻塞 GUI）
+    + auto-mkdir YAML 导出（键名 `image_width/height`/`camera_matrix`/`distortion_coefficients`/`rms`
+    对齐 `load_intrinsics_yml`，与 Preprocessor 去畸变默认路径 `~/Documents/EBplus/calibration/intrinsic.yml`
+    一致）+ `teardown_worker` 显式释放 worker 防泄漏（`deleteLater` 在 `quit()+wait()` 后不再触发）。
+  - §8.2 旧 BUG 遗留动作全部吸收：tap UniqueConnection ✓、`QPointer<QScreen>` ✓、
+    mm 手输不走 DPI ✓；AsymmetricCircles 物点公式已修（`test_intrinsic.AsymmetricObjectGridFormula` 验证
+    `x=(2c+(r&1))·s, y=r·s`）。④ `cv::medianBlur` 兜底按 §0 协议留待现场实测决定。
+  - **Phase 4 完成。** 注意：500µs 抓拍窗口事件量是否足够，仍需现场实测（§0 协议，必要时
+    调整窗口长度后 amend）。
+
+### Phase 4 Debug：实测 UI/UX 回归修复（标定向导现场实测）
+
+> 触发：Phase 4 三个子提交（`53a3d72`/`175360d`/`d19f6f4`）落地、323 项 ctest 全绿后，现场实测
+> 标定向导暴露 9 个 UI/UX 问题。以下根因全部代码核实（`gui/calibration/` + `gui/main_window.cpp`）。
+> **用户约束**：① capture 必须是"抓拍→判定"串行，不实时判定每一帧（计算代价太大）；② 判定完
+> 上一帧的取舍后才允许下一次 capture，并自动计数有效帧，否则连续 capture 会卡死；③ 点阵尽量大、
+> 横向排列，参数设置/相机画面/已抓拍画面三者同行，点阵在它们下方满宽放大展示。
+
+#### 逐项根因
+
+**D1 布局混乱 + 弹窗无法有效放大（对应实测 1、4）**
+- 现状：`build_ui()`（`calibration_wizard.cpp:335-438`）外层 QVBoxLayout = [QFormLayout 参数表] +
+  [QHBoxLayout `pattern_` | `camera_view_` 各 stretch 1，整体 stretch 2] + hint + 按钮行 + progress +
+  [`preview_area_` stretch 1] + status。点阵与相机各占一半宽度、约 1/4 高度 → 点阵偏小；参数表独占
+  顶部整行破坏视觉分组；各模块间距/边距未调，整体观感"混乱"。
+- 弹窗仅 `setMinimumSize(900,560)`、无 `setFixedSize`，理论上可拖拽放大，但布局未把点阵作为主元素
+  （点阵与相机平分、且只占中段）→ 放大后点阵增长有限，用户感知"无法放大"。
+
+**D2 点阵应横向排列且更大（对应实测 2、6）**
+- 现状：默认 `kDefaultCols=4`/`kDefaultRows=11`（`calibration_wizard.cpp:47-48`），非对称网格
+  footprint = (2·4−1)×(11−1) = 7×10 cell → **纵向高瘦**。`CircleGridDisplay::recompute_layout()`
+  （`circle_grid_display.cpp:40-59`）按 widget 取最大 spacing，但 11 行决定它纵向占优。
+- 用户要求：点阵**横向**（landscape）、尽量大，置于参数/相机/已抓拍三者下方满宽放大展示。
+
+**D3 点阵右侧始终 "No camera connected"（对应实测 3）**
+- 根因：`on_camera_tick()`（`calibration_wizard.cpp:146-157`）在 `display_->current_frame()` 返回空
+  QImage 时把标签设为 "No camera connected"。但 `EventDisplayWidget::current_frame()`
+  （`event_display_widget.cpp:208-210`）直接返回 `frame_`，为空的条件包括：① 无相机连接；
+  ② 相机已连接但未 `start()`（`camera_.start()` 在 `main_window.cpp:406` 由 Start 按钮触发，向导自身
+  不调用）；③ 相机已 start 但首帧尚未渲染（启动竞态）。**消息把"无帧"与"无相机"混为一谈，误导用户。**
+- 向导不验证/不确保相机处于 running 态：`show_intrinsic()`（`:117-129`）仅 `set_cd_broadcast(true)`
+  （`if is_connected()`），不 `start()`。aim-view 复用主显示 `current_frame()`——主显示流水线未跑则恒空。
+
+**D4 "square size" 参数含义不清（对应实测 5）**
+- 现状：标签 "Square size"（`calibration_wizard.cpp:365`）是棋盘术语；圆点阵无"方格"。tooltip 解释
+  为物理间距 mm，但标签本身误导。该值实为**相邻圆心物理间距（mm）**，用于 `AsymmetricCircles` 物点
+  坐标的真实尺度（`intrinsic.cpp` make_object_grid），是标定的必要输入。
+
+**D5 capture 不起作用（对应实测 7）**
+- 根因（与 D3 同源）：`on_capture_pressed()`（`:159-185`）需要 ① 按钮启用（`enable_capture` 在
+  `set_camera` 时按 `is_connected()` 决定）；② 相机 running（CD 回调 `camera_controller.cpp:373` 仅在
+  camera running 时触发，`:396-398` 在 `cd_broadcast_` 为真时 emit `cd_events_ready`）；③ `cd_broadcast`
+  开（`show_intrinsic` 设置）。相机未 start → 无 CD 事件 → `tap_.drain_last_window` 返回 0 → 状态栏
+  "No events in the last 500 µs"；相机未连接 → 按钮禁用 → 点击无反应。向导对"相机须先 start"无任何提示。
+
+**D6 流程须为 capture→判定，非实时每帧（对应实测 8）**
+- 现状**已满足**：检测只在 `CalibrationWorker::process_frame()`（`calibration_worker.cpp:46-99`）由
+  `submit_frame` 触发（即用户按 Space 后），`camera_timer_`（30 Hz）仅轮询 aim-view 帧用于显示、
+  **不做检测**。本项为需求复述，修复须保持"仅抓拍时判定"，不引入逐帧检测。
+
+**D7 串行 capture：判定完成后才允许下一次 + 自动计数（对应实测 9）**
+- 现状：`capture_in_flight_`（`calibration_wizard.h:128`）在 `on_capture_pressed` 置真、在
+  `on_frame_accepted`/`on_frame_rejected`/`on_capture_complete` 复位，**逻辑上**已阻止重入（`:160` 早退）。
+  但**按钮在 in-flight 期间保持启用**，连续点击被静默忽略 → 用户感知"卡死/无效"。
+- 自动计数已由 `progress_`（`on_frame_accepted` setValue(accepted)）实现，但按钮启用态未与 in-flight
+  绑定，串行性对用户不可见。
+
+#### 修复方案（用户已逐项确认）
+
+**布局重做（D1+D2，对应实测 1/2/4/6）**——外层改为：
+- **顶行 QHBoxLayout**（三列**等宽**）：[参数表 QFormLayout] | [相机 aim-view] | [已抓拍预览]，三者同行；
+  参数表含 Grid(circles)/Circle spacing/Target frames。
+- **下方点阵区**（`CircleGridDisplay`，stretch 主导、满宽）：尽可能大、横向；默认网格改为 **8×5**
+  （cols=8, rows=5，40 点，footprint 15×4 cell，landscape，conditioning 良好）。
+- **底部薄行**：hint + [Capture][Reset][Export] + progress + status。
+- 弹窗保持可自由缩放（仅 minimumSize，无 maximumSize），点阵区 sizePolicy=Expanding + stretch 主导，
+  随窗口放大而放大。
+
+**D3+D5 相机态提示与前置校验**：
+- aim-view 标签按真实相机态分三态显示：`!is_connected()` → "No camera connected"；
+  `is_connected() && !is_running()` → "Camera connected — press Start to stream"；
+  `is_running() && frame.isNull()` → "Waiting for first frame…"（启动竞态）。
+- `on_camera_tick()`/`show_intrinsic()` 以 `camera_->is_connected()`/`is_running()` 为判据，不再用
+  `current_frame().isNull()` 兜底为"无相机"。
+- 向导**不自动** `start()`（避免改变用户相机运行态）。用户按 Space/Capture 时若相机未 running，**弹模态
+  对话框**提示（全英文）："Camera is not running. Please start the camera in the main window first."
+  （取代当前静默的状态栏文案），让用户明确知道须先在主窗口 Start。
+
+**D4 参数改名 + 路径核验（已核验：参数确实到达算法，无 BUG）**：
+- **核验结论**：`square_mm_` 数据流已逐级核实——`square_mm_` spinbox `valueChanged` → `on_config_changed`
+  → `configure_worker()` emit `configure_requested(cols,rows,square_mm,target)` →（跨线程 queued）
+  `CalibrationWorker::configure` → `intrinsic_->set_pattern(AsymmetricCircles, cols, rows, square_size_mm)`
+  （`intrinsic.cpp:40` 存 `square_size_mm_`）→ `make_object_grid()`（`intrinsic.cpp:53-54` 用
+  `(2c+(r&1))·square_size_mm_, r·square_size_mm_`）→ `run()` 喂 `cv::calibrateCamera`。**参数正确到达算法。**
+- 用户感知"不起作用"的真因：① 该值**不影响屏幕点阵**（`CircleGridDisplay::set_square_size_mm` 仅存储、
+  不改像素布局——按设计不走 DPI，像素间距由 widget 自适应）；② **不影响检测**（`findCirclesGrid` 不读它）；
+  ③ 仅影响标定结果的 K 焦距尺度（mm 单位），而当前 capture 坏（D5）→ 跑不出标定结果 → 无从观察。
+  D5 修好后该参数的效果即在校准结果中可见。
+- 改名："Square size" → "Circle spacing"（suffix " mm"），tooltip 改述"相邻圆心物理间距（mm）。用直尺
+  量屏幕上相邻圆心的间距后填入；此值仅用于标定的真实尺度，不影响屏幕点阵大小（不走屏幕 DPI）"。
+
+**D6 aim-view 轮询——不改（澄清）**：
+- 我的理解：`camera_timer_`（30 Hz）**仅**轮询 `display_->current_frame()` 缩放显示到 aim-view，**不做任何
+  检测**（检测只在 `process_frame` 由 `submit_frame` 触发，即用户按 Space 后）。它是纯显示、轻量
+  （`QImage` 隐式共享，轮询取的是 refcount 拷贝），与 FocusAssistant 一致。**无理由改动**——之前把它列为
+  "待确认项"系过度谨慎，现澄清：保持 30 Hz 不变。
+
+**D7 按钮串行化**：`on_capture_pressed` 置 `capture_in_flight_=true` 时**同时**
+`capture_btn_->setEnabled(false)` 并 `set_status("Detecting…")`；`on_frame_accepted`/`on_frame_rejected`
+复位 in-flight 后，若 `!capture_done_` 则按相机态重新 `enable_capture(...)`。Space 键路径同理（`keyPressEvent`
+已调 `on_capture_pressed`，靠 `capture_in_flight_` 拦截重入）。自动计数保持 `progress_` 现状。
+
+**内存优化（用户要求：避免多 buffer，复用主显示）**：
+- **aim-view（缩小相机预览）**：已复用主显示帧——`on_camera_tick` 取 `display_->current_frame()`
+  （`EventDisplayWidget::frame_` 的 `QImage` 隐式共享拷贝，不深拷像素），缩放后 `setPixmap`（缩放结果为
+  瞬态 `QPixmap`，下一 tick 覆盖）。**无独立持久 buffer**，即用户建议的"用主显示画面缩小显示"。不改。
+- **capture（取事件）**：tap（`CalibrationEventTap`）**必需**——已核实 `FramePipeline` live 模式不保留原始
+  事件（`add_events` 转发给 SDK `CDFrameGenerator` 累积后丢弃，无可访问的滚动事件 buffer），主显示帧是
+  ~33 ms 累积渲染（带颜色/decay），非干净 500µs 二值窗，`findCirclesGrid` 不能用。tap 是拿到最近 500µs
+  原始事件、渲染干净二值帧的唯一途径。
+  - **优化**：`kMaxBufferEvents` 从 2M（32 MB）降至 256K（4 MB）——256K 事件可覆盖 500µs @ 512 Mev/s
+    （远超任何真实传感器），capture 间隔内 tail-trim 仅留最近 ~6 ms，对 500µs 切片绰绰有余。**内存降 8×**。
+- **已抓拍预览**（`preview_label_`）：仅持一张 annotated `QImage`（最近一次 accept），小且瞬态，非关注点。
+- 结论：持久 buffer 实为两个（主显示 `frame_` + tap `buffer_`），tap 缩至 4 MB；aim-view/预览均复用或瞬态。
+  无第三个独立 buffer。
+
+#### 实施状态（D1–D7 全部落地，323 项 ctest 全绿）
+- **D1+D2**：`build_ui` 重写为顶行三等宽列（参数 | aim-view | 预览）+ 下方满宽大点阵
+  （`QSizePolicy::Expanding` + stretch 1，`min 400×200`）+ 底部控件行（按钮 + progress）+ status；
+  默认网格 8×5（`kDefaultCols=8`/`kDefaultRows=5`，40 点 landscape）。
+- **D3+D5**：`on_camera_tick` 三态标签（以 `is_connected()`/`is_running()` 为判据，不再用
+  `current_frame().isNull()` 兜底为"无相机"）；`on_capture_pressed` 在未连接/未 running 时弹模态
+  `QMessageBox::information`（全英文）；去掉 `!isEnabled()` 守卫，使 Space 在未连接时也能弹窗提示。
+- **D4**：参数改名 "Circle spacing (mm)" + 英文 tooltip（阐明"仅真实尺度，不影响屏幕点阵，不走 DPI"）；
+  已核验参数确实到达算法（`square_mm_` → `configure_requested` → `set_pattern` → `make_object_grid`
+  → `calibrateCamera`），无 BUG——用户感知"不起作用"实因不影响屏幕点阵/检测，且 capture 曾坏（D5 已修）。
+- **D6**：aim-view 30 Hz 轮询保持不变（纯显示、不做检测），澄清后无需改动。
+- **D7**：`on_capture_pressed` 置 in-flight 时 `capture_btn_->setEnabled(false)`；`on_frame_accepted`/
+  `on_frame_rejected` 判定后按相机态 `enable_capture(...)` 复位（`on_capture_complete` 达目标后永久禁用）。
+- **内存**：`kMaxBufferEvents` 2M→256K（32 MB→4 MB，已确认 USB3 极端突发 300 Mev/s 下 500µs=150K<256K，tail 874µs>500µs）；
+  aim-view 复用主显示帧（QImage 隐式共享）；持久 buffer 仅两个（主显示 `frame_` + tap `buffer_`）。
+- **提交**：按用户指示，4 个旧 Phase 4 提交（`53a3d72`/`175360d`/`d19f6f4`/`a52f74d`）+ 本轮 D1–D7 +
+  本节文档合为**单一 Phase 4 提交**（`git reset --soft origin/main` + 单次 commit，不用 `rebase -i`），
+  未推送，待用户确认后作为 2.0.0 推送。
+
+#### D8 最大化按钮卡顿（仅按钮卡、拖拽放大不卡）—— 性能问题第三轮根因修复
+
+> 触发：D1–D7 落地后用户报告标定向导运行卡顿；经两轮性能优化（事件 tap batch-ring、点阵预渲染
+> QPixmap）仍卡；第三轮把 `showMaximized()` 换成 `setGeometry(availableGeometry())` 仍卡。用户关键
+> 新发现：**拖拽窗口边缘到满屏 = 流畅；只有点右上角最大化按钮才卡。**
+
+**现象与根因**
+- 两种放大方式窗口内容、尺寸相同，唯一差异是**窗口状态**：拖拽放大保持 `Qt::WindowNoState`（普通态）；
+  最大化按钮则由窗口管理器（Mutter/KWin）把窗口置为 `Qt::WindowMaximized`。
+- X11 合成器对 maximized 窗口走**与普通窗口不同的帧同步/scanout 路径**（Mutter 按自身帧时钟同步上屏）。
+  该路径与本应用渲染管线（主显示 `EventDisplayWidget` 为 `QOpenGLWidget` 且相机持续推流 + 弹窗内
+  `CalibrationCameraView` 30 Hz `update()` 重绘）配合不良 → `update()` 被串行节流 → 卡顿。普通态走
+  常规合成路径 → 流畅（即"拖拽放大不卡"的成因）。
+
+**前三轮为何失败**
+- 第 1、2 轮改渲染侧（`CalibrationCameraView` 改 `QOpenGLWidget`、关主显示 `setUpdatesEnabled`）——
+  方向错：卡顿源于**窗口状态**而非渲染开销，故全无效；第 3 轮清理时已全部回退。
+- 第 3 轮 `show_intrinsic()` 用 `setGeometry()` 替代 `showMaximized()` —— 只影响**初始弹出**，对用户
+  **之后点击最大化按钮**无作用（按钮仍进入 `Qt::WindowMaximized`），故"只放大不卡"的初始场景看似
+  好转，按钮一按仍卡。
+
+**修复（根因级）**
+- `calibration_wizard.h/cpp`：override `changeEvent(QEvent*)`。拦截 `QEvent::WindowStateChange` 中任何
+  进入 `Qt::WindowMaximized` 的转变（最大化按钮 / 标题栏双击 / WM 快捷键均覆盖），立即撤销 maximized
+  态并 `setGeometry(availableGeometry())` 满屏。窗口**看起来最大化**，但始终停留在与"拖拽放大"相同的
+  普通合成路径 → 流畅。
+- 用 `QMetaObject::invokeMethod(..., Qt::QueuedConnection)` 延迟执行，避免在 `changeEvent` 内重入
+  `setWindowState`；自身 `setWindowState` 触发的第二次 `changeEvent` 中窗口已非 maximized，守卫落空，
+  无递归循环。
+- `show_intrinsic()` 的 `setGeometry()` 初始满屏**保留**（独立有益：弹出即满屏且不进入 maximized 态），
+  注释更新为指向 `changeEvent()` 统一说明。
+
+**撤销评估（用户要求：撤前三轮画蛇添足、留确定有益）**
+- 经第 3 轮清理，`calibration_wizard.*` 已无 OpenGL/`setUpdatesEnabled`/`cacheKey` 残留
+  （`grep` 核实）；`kCameraPollMs=33`（30 Hz）已回退为原值，未私自改 10 Hz。`event_display_widget.cpp`、
+  `main_window.cpp` 同样无残留。**当前态已干净，无需再撤。**
+- 保留的有益改动：事件 tap batch-ring（SDK 线程 O(N)→O(1)/批）、点阵预渲染 QPixmap、`Qt::Window`
+  + `WindowMinMaxButtonsHint`（使最大化按钮可见可用）、`setGeometry()` 初始满屏、6×6 默认网格、
+  Circle spacing 英文 tooltip、三态相机提示、capture 串行化、worker 线程 `calibrateCamera`。
+- 本轮新增仅 `changeEvent` 一处（约 15 行 + 注释），无画蛇添足。
+
+**实施状态**：编译通过；`ctest` 322/323 通过，唯一失败 `loop_flip` 为时序敏感 flaky 测试，单独重跑通过
+（与本改动无关，diff 仅 `calibration_wizard.{h,cpp}`）。amend 入 `4b4d9ba`。
+
+#### D9 预览卡死在 "No camera connected"（主显示相机正常）—— 缺 showEvent
+
+> 触发：D8 落地后用户报告：标定向导预览只显示 "No camera connected"，但主显示相机一切正常。
+
+**根因**
+- `on_camera_tick` 的 "No camera connected" 仅来自 `!camera_->is_connected()` 分支；
+  `is_connected()` = `bool(camera_)`，只要连了实时相机或文件就为真。主显示正常推流 ⇒
+  `camera_` 非空 ⇒ `is_connected()` 真 ⇒ 若 `on_camera_tick` 在跑，必显示帧而非该文案。
+- 故 `on_camera_tick` **没在跑**（定时器已停）。定时器只在 `hideEvent` 里 `stop()`，而向导
+  **没有 `showEvent`** 重新启动它。任一 hide→show 循环（最小化→还原 / 工作区切换 / WM 状态切换）
+  后定时器永久停止，预览冻结在停止前最后一条消息上——若停止时相机尚未启动，就卡在
+  "No camera connected"，随后在主窗口启动相机也不更新（向导不再轮询）。
+- 这是 D1 给弹窗加 `Qt::Window` + `WindowMinMaxButtonsHint`（启用最小化/最大化交互）后引入的
+  潜在缺陷，D8 测试最大化时频繁窗口交互使其暴露。
+
+**修复**：`calibration_wizard.h/cpp` 新增 `showEvent(QShowEvent*)` override，镜像 `hideEvent`——
+窗口再次可见时重启 `camera_timer_` 并（相机已连接时）`tap_.clear()` + `set_cd_broadcast(true)`。
+`QTimer::start()` 对已运行的定时器无副作用（仅重置间隔）；无相机连接时下一 tick 自然报状态。
+`show_intrinsic()` 仍保留显式 `start()`（覆盖"已可见时再次点菜单"的场景，此时 `show()` 不触发 showEvent）。
+
+**实施状态**：编译通过；`ctest` 320/320 通过（排除 `loop_flip`/`raw_e2v`/`playback_e2v` 三个慢/flaky，
+前两者此前已验证）。amend 入 Phase 4 提交。
 
 ### Phase 5：调焦工具（新代码，替换锐度计）
 
