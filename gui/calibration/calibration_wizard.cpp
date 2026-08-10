@@ -63,15 +63,16 @@ constexpr int kDefaultTargetFrames = 15;
 // the solid ring thickness equals dot_gap.
 constexpr int kDefaultDotGap = 2;
 
-// Space-capture event window (µs), user-tunable 100–1000 in 100 µs steps.
-// The screw-head detector uses event polarity (gold/white) for ring
-// verification, so the window must be short enough to capture one motion
-// direction (hand micro-tremor) — a long window blurs the leading/trailing
-// half-circle structure. Default 500 µs.
-constexpr int kCaptureWindowMinUs = 100;
-constexpr int kCaptureWindowMaxUs = 1000;
-constexpr int kCaptureWindowStepUs = 100;
-constexpr int kDefaultCaptureWindowUs = 500;
+// Space-capture event window (µs), user-tunable 200–20000 in 1 µs steps.
+// The screw-head detector verifies rings geometrically (radial-histogram peak +
+// angular coverage), NOT by polarity, so the window can span multiple motion
+// directions. 5000 µs is enough to gather a dense ring signal under hand
+// micro-tremor; 200 µs is the minimum for a sparse ring, 20000 µs the max for
+// a slow-moving scene. Default 5000 µs.
+constexpr int kCaptureWindowMinUs = 200;
+constexpr int kCaptureWindowMaxUs = 20000;
+constexpr int kCaptureWindowStepUs = 1;
+constexpr int kDefaultCaptureWindowUs = 5000;
 
 // Register cross-thread metatypes used by the worker signals/slots.
 Q_DECL_UNUSED static const int kRegCvMat = qRegisterMetaType<cv::Mat>("cv::Mat");
@@ -572,18 +573,18 @@ void CalibrationWizard::build_ui() {
         "equals the gap. Smaller gaps give a denser cross."));
     form->addRow(tr("Dot gap"), dot_gap_);
 
-    // Capture window (µs), 100–1000 in 100 µs steps. Short enough to capture
-    // one micro-tremor direction so the ring's leading/trailing half-circles
-    // keep opposite polarities.
+    // Capture window (µs), 200–20000 in 1 µs steps. Long enough to gather a
+    // dense ring signal; the detector verifies rings geometrically (not by
+    // polarity) so the window can span multiple motion directions.
     capture_window_ = new QSpinBox(params_widget);
     capture_window_->setRange(kCaptureWindowMinUs, kCaptureWindowMaxUs);
     capture_window_->setSingleStep(kCaptureWindowStepUs);
     capture_window_->setValue(kDefaultCaptureWindowUs);
     capture_window_->setSuffix(tr(" µs"));
     capture_window_->setToolTip(tr("Event capture window in microseconds "
-        "(100–1000). Shorter windows keep a cleaner polarity signal; longer "
-        "windows gather more events. Hold the camera steady and rely on hand "
-        "micro-tremor to trigger events."));
+        "(200–20000). Longer windows gather more events for a denser ring "
+        "signal; the detector verifies rings geometrically. Hold the camera "
+        "steady and rely on hand micro-tremor to trigger events."));
     form->addRow(tr("Capture window"), capture_window_);
 
     square_mm_ = new QDoubleSpinBox(params_widget);

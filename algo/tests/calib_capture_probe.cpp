@@ -9,7 +9,7 @@
 // what the screw-head detector finds in real event data.
 //
 // Usage: calib_capture_probe <file.raw> [window_us] [dot_gap] [sample_period_us] [max_samples]
-//   window_us   default 500  (wizard default capture window)
+//   window_us   default 5000 (wizard default capture window)
 //   dot_gap     default 2    (wizard default dashed-cross dot gap)
 //   sample_period_us  default 300000
 //   max_samples default 20
@@ -49,7 +49,7 @@ const cv::Vec3b kBlend = (kGold + kWhite) * 0.5;
 // gold=ON, white=OFF, blend where both fired). Identical to
 // CalibrationWizard::render_event_frame. Iterates the ring from the back
 // (newest) and stops once t < t0 — the ring holds ~60 ms but a capture window
-// is ≤1000 µs, so a front-to-back scan would waste >98% of iterations.
+// is ≤20000 µs, so a front-to-back scan would waste most iterations.
 cv::Mat render_three_valued(const std::deque<EventCD>& ring, timestamp t_last,
                             timestamp window_us, int w, int h) {
     cv::Mat frame(h, w, CV_8UC3, cv::Scalar(0, 0, 0));
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const std::string path = argv[1];
-    const timestamp window_us = (argc > 2) ? std::max(timestamp(100), std::atoll(argv[2])) : 500;
+    const timestamp window_us = (argc > 2) ? std::max(timestamp(200), std::atoll(argv[2])) : 5000;
     const int dot_gap = (argc > 3) ? std::clamp(std::atoi(argv[3]), 1, 3) : 2;
     const timestamp sample_period = (argc > 4) ? std::atoll(argv[4]) : 300000;
     const int max_samples = (argc > 5) ? std::atoi(argv[5]) : 20;
