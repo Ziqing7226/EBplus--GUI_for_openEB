@@ -4,6 +4,7 @@
 add_library(gui_algo STATIC
     common/frame_generator.cpp
     calibration/intrinsic.cpp
+    calibration/screwhead_detect.cpp
 )
 
 target_include_directories(gui_algo PUBLIC

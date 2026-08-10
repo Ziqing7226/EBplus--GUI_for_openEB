@@ -58,7 +58,7 @@ target_compile_options(test_phase8_10 PRIVATE -Wall -Wextra -Werror)
 gtest_discover_tests(test_phase8_10)
 
 # Test executable for Phase 4 (algo/calibration/) — IntrinsicCalibration
-# AsymmetricCircles formula, detect_only/accept split, duplicate-pose check.
+# ScrewHeadGrid object-grid formula, detect_only/accept split, duplicate-pose check.
 add_executable(test_intrinsic
     test_intrinsic.cpp
 )
@@ -70,6 +70,21 @@ target_link_libraries(test_intrinsic PRIVATE
 )
 target_compile_options(test_intrinsic PRIVATE -Wall -Wextra -Werror)
 gtest_discover_tests(test_intrinsic)
+
+# Test executable for the Zhou's Screw-Head Grid detector
+# (algo/calibration/screwhead_detect.cpp). Renders synthetic three-valued colour
+# frames and exercises the full four-stage detection pipeline.
+add_executable(test_screwhead_detect
+    test_screwhead_detect.cpp
+)
+target_link_libraries(test_screwhead_detect PRIVATE
+    gui_algo
+    GTest::GTest
+    GTest::Main
+    ${OpenCV_LIBS}
+)
+target_compile_options(test_screwhead_detect PRIVATE -Wall -Wextra -Werror)
+gtest_discover_tests(test_screwhead_detect)
 
 # Raw-event integration tests: exercises every streaming algorithm against a
 # real Metavision .raw recording (algo/tests/sparklers.raw, committed). Unlike
@@ -178,6 +193,7 @@ add_executable(test_filter_in_render
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
     ${CMAKE_SOURCE_DIR}/algo/calibration/intrinsic.cpp
+    ${CMAKE_SOURCE_DIR}/algo/calibration/screwhead_detect.cpp
 )
 target_include_directories(test_filter_in_render PRIVATE
     ${CMAKE_SOURCE_DIR}/gui
@@ -236,16 +252,16 @@ target_link_libraries(test_loop_flip PRIVATE
 )
 add_test(NAME loop_flip COMMAND test_loop_flip ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
-# Diagnostic (Phase 4 D10): reproduce calibration capture rejection on a .raw
-# recording. Renders the last W us of CD events several ways (flat binary like
-# the wizard, decay accumulation like the main display, morphological fill,
-# tuned blob detector) and runs findCirclesGrid on each, saving PNGs + a tally
-# so we can see why 500 us captures are rejected and what makes detection work.
+# Diagnostic (Zhou's Method): reproduce calibration capture on a .raw recording.
+# Renders the last W us of CD events as a three-valued colour frame (matching
+# CalibrationWizard::render_event_frame) and runs detect_screwheads on it,
+# saving annotated PNGs + a tally so we can see which windows succeed.
 # Not registered with CTest (needs a user-supplied .raw with a calibration board).
 add_executable(calib_capture_probe
     calib_capture_probe.cpp
 )
 target_link_libraries(calib_capture_probe PRIVATE
+    gui_algo
     MetavisionSDK::base
     MetavisionSDK::core
     MetavisionSDK::stream

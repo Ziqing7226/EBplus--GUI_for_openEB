@@ -1,8 +1,8 @@
-// gui/calibration/calibration_wizard.cpp — see header (Phase 4).
+// gui/calibration/calibration_wizard.cpp — see header (Zhou's Method).
 //
-// Wires the event tap (drain_last_window) + CalibrationWorker (async
-// circle-grid detection + duplicate/coverage rejection, on-worker
-// cv::calibrateCamera, auto-mkdir YAML export) to the Space-key capture.
+// Wires the event tap (drain_last_window) + CalibrationWorker (async screw-head
+// grid detection + duplicate/coverage rejection, on-worker cv::calibrateCamera,
+// auto-mkdir YAML export) to the Space-key capture.
 
 #include "calibration_wizard.h"
 
@@ -50,27 +50,28 @@ namespace {
 // Aim-feedback poll rate. 30 Hz matches the FocusAssistant.
 constexpr int kCameraPollMs = 33;
 
-// Default asymmetric circle-grid board: 6×5 (30 circles). cols+rows = 11
-// (odd) is required for OpenCV's CALIB_CB_ASYMMETRIC_GRID — a square grid
-// (cols==rows) triggers an assertion failure because the symmetric/asymmetric
-// pattern is ambiguous. The wizard's spinbox handler rejects any change that
-// would make cols == rows.
-constexpr int kDefaultCols = 6;
-constexpr int kDefaultRows = 5;
+// Fixed asymmetric grid: 6×5 (30 markers). The row offset (odd rows shifted by
+// one half-cell) gives 8-fold orientation disambiguation, so there is no
+// cols/rows spinbox and no square-grid rejection.
+constexpr int kGridCols = 6;
+constexpr int kGridRows = 5;
 constexpr double kDefaultSquareMm = 5.0;
 constexpr int kDefaultTargetFrames = 15;
 
-// Default waffle dot size (Zhou's Circle Grid). 1/2/3 are the supported
-// values. Default 2: a 2×2 white-dot waffle is coarser than dot_size=1 but
-// still produces ample brightness transitions, and is less GPU/compositor
-// load than the finest 1px grid on full-screen windows.
-constexpr int kDefaultDotSize = 2;
+// Dashed-cross dot gap (Zhou's screw-head grid). 1/2/3 are the supported
+// values; default 2. The cross dots are 1px, spaced (1+dot_gap) px apart, and
+// the solid ring thickness equals dot_gap.
+constexpr int kDefaultDotGap = 2;
 
-// Space-capture window: the most recent 5000 µs of CD events (polarity
-// ignored). Widened from 500 µs after field-test analysis showed 500 µs
-// produced <1% dark pixels and zero detectable blobs; 5000 µs with the
-// ring-grid pattern provides sufficient event density.
-constexpr Metavision::timestamp kCaptureWindowUs = 5000;
+// Space-capture event window (µs), user-tunable 100–1000 in 100 µs steps.
+// The screw-head detector uses event polarity (gold/white) for ring
+// verification, so the window must be short enough to capture one motion
+// direction (hand micro-tremor) — a long window blurs the leading/trailing
+// half-circle structure. Default 500 µs.
+constexpr int kCaptureWindowMinUs = 100;
+constexpr int kCaptureWindowMaxUs = 1000;
+constexpr int kCaptureWindowStepUs = 100;
+constexpr int kDefaultCaptureWindowUs = 500;
 
 // Register cross-thread metatypes used by the worker signals/slots.
 Q_DECL_UNUSED static const int kRegCvMat = qRegisterMetaType<cv::Mat>("cv::Mat");
@@ -139,7 +140,7 @@ void CalibrationCameraView::paintEvent(QPaintEvent* /*event*/) {
 // ---------------------------------------------------------------------------
 
 CalibrationWizard::CalibrationWizard(QWidget* parent) : QDialog(parent) {
-    setWindowTitle(tr("Intrinsic Calibration (based on Zhou's Circle Grid)"));
+    setWindowTitle(tr("Intrinsic Calibration (Zhou's Screw-Head Grid Method)"));
     // Qt::Window (instead of the default Qt::Dialog) gives a full top-level
     // window with working minimize/close buttons. The maximize button is
     // deliberately OMITTED: a maximized window covers the full workarea, which
@@ -347,10 +348,11 @@ void CalibrationWizard::on_capture_pressed() {
     }
 
     std::vector<Metavision::EventCD> evs;
-    const std::size_t n = tap_.drain_last_window(kCaptureWindowUs, evs);
+    const Metavision::timestamp window_us = capture_window_->value();
+    const std::size_t n = tap_.drain_last_window(window_us, evs);
     if (n == 0 || evs.empty()) {
         set_status(tr("No events in the last %1 µs — move the camera or wait.")
-            .arg(kCaptureWindowUs));
+            .arg(window_us));
         return;
     }
 
@@ -471,15 +473,16 @@ void CalibrationWizard::enable_capture(bool on) {
 
 void CalibrationWizard::apply_pattern_to_display() {
     if (pattern_) {
-        pattern_->set_pattern(cols_->value(), rows_->value());
-        pattern_->set_dot_size(dot_size_->currentData().toInt());
+        pattern_->set_pattern(kGridCols, kGridRows);
+        pattern_->set_dot_gap(dot_gap_->currentData().toInt());
         pattern_->set_square_size_mm(static_cast<float>(square_mm_->value()));
     }
 }
 
 void CalibrationWizard::configure_worker() {
-    emit configure_requested(cols_->value(), rows_->value(),
-                             square_mm_->value(), target_frames_->value());
+    emit configure_requested(square_mm_->value(),
+                             target_frames_->value(),
+                             dot_gap_->currentData().toInt());
 }
 
 QString CalibrationWizard::default_export_path() const {
@@ -494,16 +497,34 @@ QString CalibrationWizard::default_export_path() const {
 
 cv::Mat CalibrationWizard::render_event_frame(
     const std::vector<Metavision::EventCD>& evs, int sensor_w, int sensor_h) {
-    // Full-resolution binary frame: WHITE background, any event (ON or OFF)
-    // → BLACK. Polarity is IGNORED per the Phase 4 design; the capture frame
-    // is NOT downsampled. Dark-on-light is the polarity cv::findCirclesGrid's
-    // default blob detector expects (dark blobs on a light field) — the
-    // on-screen CircleGridDisplay is the inverse (white-on-black) for camera
-    // contrast; the rendered capture frame is dark-on-light for detection.
-    cv::Mat frame(sensor_h, sensor_w, CV_8UC1, cv::Scalar(255));
+    // Three-valued colour frame (BGR): black background, ON (polarity != 0) =
+    // gold, OFF (polarity == 0) = white. A pixel hit by BOTH polarities takes
+    // the simple average of gold and white (no event-count weighting). The
+    // screw-head detector reads polarity from the colour (R-B channel) for ring
+    // verification; the averaged blend is a legitimate colour and does not need
+    // exclusion. The frame is NOT downsampled.
+    static const cv::Vec3b kGold(0, 215, 255);
+    static const cv::Vec3b kWhite(255, 255, 255);
+    static const cv::Vec3b kBlend = (kGold + kWhite) * 0.5;  // (127, 235, 255)
+
+    cv::Mat frame(sensor_h, sensor_w, CV_8UC3, cv::Scalar(0, 0, 0));
+    cv::Mat has_on(sensor_h, sensor_w, CV_8U, cv::Scalar(0));
+    cv::Mat has_off(sensor_h, sensor_w, CV_8U, cv::Scalar(0));
     for (const auto& ev : evs) {
         if (ev.x < 0 || ev.x >= sensor_w || ev.y < 0 || ev.y >= sensor_h) continue;
-        frame.ptr<uchar>(ev.y)[ev.x] = 0;
+        if (ev.p != 0) has_on.at<uchar>(ev.y, ev.x) = 1;
+        else           has_off.at<uchar>(ev.y, ev.x) = 1;
+    }
+    for (int y = 0; y < sensor_h; ++y) {
+        const uchar* on = has_on.ptr<uchar>(y);
+        const uchar* off = has_off.ptr<uchar>(y);
+        cv::Vec3b* f = frame.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < sensor_w; ++x) {
+            if (on[x] && off[x])      f[x] = kBlend;
+            else if (on[x])           f[x] = kGold;
+            else if (off[x])          f[x] = kWhite;
+            // else: stays black (background)
+        }
     }
     return frame;
 }
@@ -538,55 +559,51 @@ void CalibrationWizard::build_ui() {
     auto* form = new QFormLayout(params_widget);
     form->setContentsMargins(0, 0, 0, 0);
 
-    cols_ = new QSpinBox(params_widget);
-    cols_->setRange(2, 30);
-    cols_->setValue(kDefaultCols);
-    rows_ = new QSpinBox(params_widget);
-    rows_->setRange(2, 30);
-    rows_->setValue(kDefaultRows);
-    auto* dims_row = new QWidget(params_widget);
-    auto* dims_lay = new QHBoxLayout(dims_row);
-    dims_lay->setContentsMargins(0, 0, 0, 0);
-    dims_lay->addWidget(new QLabel(tr("Cols:"), dims_row));
-    dims_lay->addWidget(cols_);
-    dims_lay->addWidget(new QLabel(tr("Rows:"), dims_row));
-    dims_lay->addWidget(rows_);
-    dims_lay->addStretch();
-    form->addRow(tr("Grid (circles)"), dims_row);
+    // Zhou's screw-head grid — dashed-cross dot gap (1/2/3, default 2). The
+    // cross is 1px white dots spaced (1+dot_gap) px apart; the solid ring
+    // thickness equals dot_gap. Smaller gaps give a denser cross.
+    dot_gap_ = new QComboBox(params_widget);
+    dot_gap_->addItem(QString::number(1), 1);
+    dot_gap_->addItem(QString::number(2), 2);
+    dot_gap_->addItem(QString::number(3), 3);
+    dot_gap_->setCurrentIndex(dot_gap_->findData(kDefaultDotGap));
+    dot_gap_->setToolTip(tr("Dashed-cross dot gap in pixels (1/2/3). The cross "
+        "is 1px white dots spaced (1+gap) px apart; the solid ring thickness "
+        "equals the gap. Smaller gaps give a denser cross."));
+    form->addRow(tr("Dot gap"), dot_gap_);
 
-    // Zhou's Circle Grid — waffle dot size (1/2/3, default 2). Each circle is
-    // rendered as a white edge ring (dot_size px thick) plus an interior
-    // waffle grid whose cell size and spacing are both dot_size. Smaller
-    // values give a finer, denser waffle → more brightness transitions →
-    // denser events for the event camera.
-    dot_size_ = new QComboBox(params_widget);
-    dot_size_->addItem(QString::number(1), 1);
-    dot_size_->addItem(QString::number(2), 2);
-    dot_size_->addItem(QString::number(3), 3);
-    dot_size_->setCurrentIndex(dot_size_->findData(kDefaultDotSize));
-    dot_size_->setToolTip(tr("Waffle dot size in pixels (1/2/3). Each circle "
-        "is a white edge ring (this many px thick) plus an interior grid of "
-        "white dots with this cell size and spacing. Smaller values produce a "
-        "finer, denser waffle and denser events."));
-    form->addRow(tr("Dot size"), dot_size_);
+    // Capture window (µs), 100–1000 in 100 µs steps. Short enough to capture
+    // one micro-tremor direction so the ring's leading/trailing half-circles
+    // keep opposite polarities.
+    capture_window_ = new QSpinBox(params_widget);
+    capture_window_->setRange(kCaptureWindowMinUs, kCaptureWindowMaxUs);
+    capture_window_->setSingleStep(kCaptureWindowStepUs);
+    capture_window_->setValue(kDefaultCaptureWindowUs);
+    capture_window_->setSuffix(tr(" µs"));
+    capture_window_->setToolTip(tr("Event capture window in microseconds "
+        "(100–1000). Shorter windows keep a cleaner polarity signal; longer "
+        "windows gather more events. Hold the camera steady and rely on hand "
+        "micro-tremor to trigger events."));
+    form->addRow(tr("Capture window"), capture_window_);
 
     square_mm_ = new QDoubleSpinBox(params_widget);
     square_mm_->setRange(0.1, 500.0);
     square_mm_->setDecimals(2);
     square_mm_->setValue(kDefaultSquareMm);
     square_mm_->setSuffix(tr(" mm"));
-    square_mm_->setToolTip(tr("Physical spacing between adjacent circle centers "
-        "(mm). This value sets the real-world scale for the calibration "
-        "algorithm only; it does NOT change the on-screen pattern size (screen "
+    square_mm_->setToolTip(tr("Physical distance (mm) between two adjacent "
+        "marker centers in the same row or column. Sets the real-world scale "
+        "for calibration; does NOT change the on-screen pattern size (screen "
         "DPI is deliberately not used)."));
-    form->addRow(tr("Circle spacing"), square_mm_);
+    form->addRow(tr("Marker spacing"), square_mm_);
 
-    // Measurement instruction directly below the spinbox so the user knows
-    // the correct flow: measure on-screen → enter mm → calibration uses it.
+    // Measurement instruction: one short sentence. The user measures the
+    // same-row (or same-column) adjacent marker distance; the algorithm uses
+    // it directly (d = measured/2, no √2).
     spacing_note_ = new QLabel(
-        tr("Measure the on-screen spacing between adjacent circle centers "
-           "with a ruler, then enter that value in mm here. This sets the "
-           "real-world scale for calibration."), params_widget);
+        tr("Measure the center-to-center distance between two adjacent markers "
+           "in the same row or column, then enter it in mm."),
+        params_widget);
     spacing_note_->setWordWrap(true);
     spacing_note_->setStyleSheet("font-size:11px; color:#888;");
     form->addRow(spacing_note_);
@@ -625,8 +642,9 @@ void CalibrationWizard::build_ui() {
 
     // ---- Capture hint ----
     hint_ = new QLabel(tr(
-        "Press <b>Space</b> to capture a frame (5000 µs event window, polarity "
-        "ignored). Move the camera between captures for varied angles."), this);
+        "Hold the camera steady; rely on hand micro-tremor to trigger events. "
+        "Press <b>Space</b> to capture. Move the camera between captures for "
+        "varied angles."), this);
     hint_->setWordWrap(true);
     hint_->setProperty("class", "hint");
     outer->addWidget(hint_);
@@ -652,31 +670,12 @@ void CalibrationWizard::build_ui() {
     status_->setWordWrap(true);
     outer->addWidget(status_);
 
-    // Cols/Rows spinbox handlers with square-grid rejection: OpenCV's
-    // CALIB_CB_ASYMMETRIC_GRID asserts (isAsymmetricGrid ^ isSymmetricGrid)
-    // when cols == rows — the pattern is ambiguous. If a user's change would
-    // make cols == rows, revert to the previous (valid) value silently.
-    connect(cols_, QOverload<int>::of(&QSpinBox::valueChanged), this,
-        [this](int v) {
-            if (v == rows_->value()) {
-                QSignalBlocker b(cols_);
-                cols_->setValue(prev_cols_);
-            } else {
-                prev_cols_ = v;
-                on_config_changed();
-            }
-        });
-    connect(rows_, QOverload<int>::of(&QSpinBox::valueChanged), this,
-        [this](int v) {
-            if (v == cols_->value()) {
-                QSignalBlocker b(rows_);
-                rows_->setValue(prev_rows_);
-            } else {
-                prev_rows_ = v;
-                on_config_changed();
-            }
-        });
-    connect(dot_size_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+    // Config-change handlers. The grid is fixed at 6×5 (no cols/rows spinbox),
+    // so there is no square-grid rejection. dot_gap/capture_window/square_mm/
+    // target all trigger a re-configure + display refresh.
+    connect(dot_gap_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this](int) { on_config_changed(); });
+    connect(capture_window_, QOverload<int>::of(&QSpinBox::valueChanged), this,
         [this](int) { on_config_changed(); });
     connect(square_mm_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
         [this](double) { on_config_changed(); });

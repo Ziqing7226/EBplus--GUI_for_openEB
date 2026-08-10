@@ -1,15 +1,15 @@
 // gui/calibration/calibration_worker.h — off-GUI-thread calibration work
-// (Phase 4).
+// (Zhou's Method).
 //
-// Owns an IntrinsicCalibration and runs circle-grid detection (+, in 4-3,
+// Owns an IntrinsicCalibration and runs screw-head grid detection (+, in 4-3,
 // cv::calibrateCamera) on a dedicated QThread so the GUI stays responsive
 // while OpenCV blocks for tens of milliseconds per frame. The wizard submits
-// rendered binary frames via the submit_frame signal; the worker emits
-// frame_accepted / frame_rejected / capture_complete back to the GUI thread.
+// rendered three-valued colour frames via the submit_frame signal; the worker
+// emits frame_accepted / frame_rejected / capture_complete back to the GUI.
 //
-// Phase 4 uses only the AsymmetricCircles pattern, so the pattern type is
-// fixed here (the configure() slot takes geometry only) — this also avoids
-// having to register the CalibrationPattern enum for queued connections.
+// The pattern is fixed to ScrewHeadGrid (asymmetric 6×5); the configure() slot
+// takes scale/target/dot_gap only — this also avoids registering the
+// CalibrationPattern enum for queued connections.
 
 #ifndef GUI_CALIBRATION_CALIBRATION_WORKER_H
 #define GUI_CALIBRATION_CALIBRATION_WORKER_H
@@ -34,10 +34,10 @@ public:
     ~CalibrationWorker();
 
 public slots:
-    /// @brief Configures the board geometry + target frame count. Runs on the
-    /// worker thread (queued from the GUI). IntrinsicCalibration clears
-    /// accumulated observations when the geometry changes.
-    void configure(int cols, int rows, double square_size_mm, int target_frames);
+    /// @brief Configures the board scale + target frame count + dot gap. Runs on
+    /// the worker thread (queued from the GUI). The grid is fixed at 6×5;
+    /// IntrinsicCalibration clears accumulated observations when the scale changes.
+    void configure(double square_size_mm, int target_frames, int dot_gap);
 
     /// @brief Discards all accumulated observations.
     void reset();

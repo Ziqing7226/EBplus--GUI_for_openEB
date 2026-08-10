@@ -26,16 +26,18 @@ constexpr double kDuplicateThresholdPx = 10.0;
 CalibrationWorker::CalibrationWorker(QObject* parent)
     : QObject(parent),
       intrinsic_(std::make_unique<gui_algo::IntrinsicCalibration>()) {
-    intrinsic_->set_pattern(gui_algo::CalibrationPattern::AsymmetricCircles,
+    intrinsic_->set_pattern(gui_algo::CalibrationPattern::ScrewHeadGrid,
                             6, 5, 5.0f);
+    intrinsic_->set_dot_gap(2);
 }
 
 CalibrationWorker::~CalibrationWorker() = default;
 
-void CalibrationWorker::configure(int cols, int rows,
-                                  double square_size_mm, int target_frames) {
-    intrinsic_->set_pattern(gui_algo::CalibrationPattern::AsymmetricCircles,
-                            cols, rows, static_cast<float>(square_size_mm));
+void CalibrationWorker::configure(double square_size_mm,
+                                  int target_frames, int dot_gap) {
+    intrinsic_->set_pattern(gui_algo::CalibrationPattern::ScrewHeadGrid,
+                            6, 5, static_cast<float>(square_size_mm));
+    intrinsic_->set_dot_gap(dot_gap);
     target_ = static_cast<std::size_t>(std::max(1, target_frames));
 }
 
@@ -52,7 +54,7 @@ void CalibrationWorker::process_frame(const cv::Mat& frame) {
     auto res = intrinsic_->detect_only(frame, true);
 
     if (!res.found) {
-        emit frame_rejected(tr("Circle grid not detected — re-aim and try again."));
+        emit frame_rejected(tr("Markers not detected — re-aim and try again."));
         return;
     }
 

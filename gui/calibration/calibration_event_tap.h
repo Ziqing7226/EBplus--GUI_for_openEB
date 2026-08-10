@@ -86,10 +86,10 @@ private:
     CameraController* camera_{nullptr};
 
     /// Keep batches whose last event is within this many microseconds of the
-    /// most recent event. Must be >= the capture window (kCaptureWindowUs in
-    /// the wizard) so drain_last_window always finds a full window. 6 ms gives
-    /// 1 ms margin beyond the 5 ms capture window.
-    static constexpr Metavision::timestamp kKeepWindowUs = 6000;
+    /// most recent event. Must be >= the capture window (user-tunable 100–1000 µs
+    /// in the wizard, default 500 µs) so drain_last_window always finds a full
+    /// window. 1100 µs gives a 100 µs margin beyond the 1000 µs maximum window.
+    static constexpr Metavision::timestamp kKeepWindowUs = 1100;
 
     /// Safety cap on the number of batches (pathological case: tiny batches at
     /// an extreme event rate). 256 batches × typical 1–10 K events/batch =

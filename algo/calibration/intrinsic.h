@@ -24,7 +24,8 @@ namespace gui_algo {
 enum class CalibrationPattern {
     Chessboard,     ///< Standard chessboard (inner corners)
     CircleGrid,     ///< Regular circle grid
-    AsymmetricCircles ///< Asymmetric circle grid
+    ScrewHeadGrid   ///< Zhou's screw-head grid (dashed cross + solid ring),
+                    ///< asymmetric 6×5 layout, polarity-verified detection
 };
 
 /// @brief Result of a single frame's corner detection.
@@ -56,6 +57,11 @@ public:
     void set_pattern(CalibrationPattern pattern,
                      int cols, int rows,
                      float square_size_mm);
+
+    /// @brief Sets the dashed-cross dot-gap parameter (1/2/3) used by
+    /// ScrewHeadGrid detection (dilate radius = dot_gap+1). No-op for other
+    /// patterns. Stored only; does not affect object-point geometry.
+    void set_dot_gap(int dot_gap);
 
     /// @brief Attempts to detect the calibration pattern in @p frame and, on
     /// success, accumulates the observation. Convenience wrapper around
@@ -102,6 +108,7 @@ private:
     CalibrationPattern pattern_{CalibrationPattern::Chessboard};
     cv::Size board_size_{0, 0};    ///< Inner-corner count for chessboard (== OpenCV patternSize), (cols, rows) for circles
     float square_size_mm_{1.0f};
+    int dot_gap_{2};               ///< ScrewHeadGrid dashed-cross dot gap (1/2/3)
     cv::Size image_size_{0, 0};
 
     std::vector<std::vector<cv::Point2f>> image_points_;

@@ -2,12 +2,15 @@
 
 #include "intrinsic.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <opencv2/core/persistence.hpp>
+
+#include "screwhead_detect.h"
 
 namespace gui_algo {
 
@@ -40,19 +43,24 @@ void IntrinsicCalibration::set_pattern(CalibrationPattern pattern,
     square_size_mm_ = square_size_mm;
 }
 
+void IntrinsicCalibration::set_dot_gap(int dot_gap) {
+    dot_gap_ = std::clamp(dot_gap, 1, 3);
+}
+
 std::vector<cv::Point3f> IntrinsicCalibration::make_object_grid() const {
     std::vector<cv::Point3f> pts;
     pts.reserve(static_cast<std::size_t>(board_size_.width) *
                 static_cast<std::size_t>(board_size_.height));
-    if (pattern_ == CalibrationPattern::AsymmetricCircles) {
-        // OpenCV asymmetric circle grid: rows are horizontally spaced by
-        // 2*square, alternate rows offset by one square (§四-M4).
+    if (pattern_ == CalibrationPattern::ScrewHeadGrid) {
+        // Asymmetric grid: positions (2c+(r&1), r)·d, where d is the half-cell.
+        // The user measures the same-row (or same-column) adjacent marker
+        // distance = 2d, so d = square_size_mm / 2. No √2: same-row and
+        // same-column neighbours are both 2d; the diagonal (d·√2) is closer but
+        // is NOT what the user measures.
+        const float d = square_size_mm_ / 2.0f;
         for (int r = 0; r < board_size_.height; ++r) {
             for (int c = 0; c < board_size_.width; ++c) {
-                pts.emplace_back(
-                    (2 * c + (r & 1)) * square_size_mm_,
-                    r * square_size_mm_,
-                    0.0f);
+                pts.emplace_back((2 * c + (r & 1)) * d, r * d, 0.0f);
             }
         }
     } else {
@@ -73,6 +81,13 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
     }
     if (image_size_.area() == 0) {
         image_size_ = frame.size();
+    }
+
+    // ScrewHeadGrid takes the three-valued colour frame directly (polarity is
+    // encoded in colour); the OpenCV patterns below need grayscale.
+    if (pattern_ == CalibrationPattern::ScrewHeadGrid) {
+        return detect_screwheads(frame, board_size_.width, board_size_.height,
+                                 dot_gap_, annotate);
     }
 
     cv::Mat gray;
@@ -98,10 +113,8 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
         case CalibrationPattern::CircleGrid:
             found = cv::findCirclesGrid(gray, board_size_, corners);
             break;
-        case CalibrationPattern::AsymmetricCircles:
-            found = cv::findCirclesGrid(gray, board_size_, corners,
-                cv::CALIB_CB_ASYMMETRIC_GRID);
-            break;
+        case CalibrationPattern::ScrewHeadGrid:
+            break;  // handled above
     }
 
     result.found = found;

@@ -1,26 +1,27 @@
-// gui/calibration/calibration_wizard.h — intrinsic calibration UI (Phase 4).
+// gui/calibration/calibration_wizard.h — intrinsic calibration UI (Zhou's Method).
 //
-// Redesigned around a STATIC asymmetric circle grid + Space-key capture. The
+// Redesigned around a STATIC asymmetric screw-head grid + Space-key capture. The
 // layout is a top row of three equal columns — parameters | live camera
-// aim-view | captured-frame preview — above a large full-width circle-grid
-// pattern so the user can aim the camera at it. On Space, the wizard takes the
-// last 5000 µs of CD events (polarity ignored), renders a full-resolution
-// binary frame, and submits it to a CalibrationWorker that runs
-// cv::findCirclesGrid with CALIB_CB_ASYMMETRIC_GRID on a background thread.
+// aim-view | captured-frame preview — above a large full-width pattern so the
+// user can aim the camera at it. On Space, the wizard takes the last
+// (user-tunable 100–1000 µs, default 500 µs) of CD events, renders a
+// three-valued colour frame (black/gold=ON/white=OFF, blend where both fired),
+// and submits it to a CalibrationWorker that runs screw-head detection
+// (cross-centre + ring polarity verification) on a background thread.
 // cv::calibrateCamera also runs on the worker; the result is exported to YAML
 // (auto-mkdir). Detection is capture-triggered only (never per-frame); the
 // capture button is serialized — disabled while a frame is being judged and
 // re-enabled once the accept/reject verdict returns.
 //
-// Zhou's Circle Grid: the on-screen pattern uses a waffle texture — each
-// circle is a white edge ring (dot_size px thick) plus an interior grid of
-// white dots — instead of a solid disc, producing far more brightness
-// transitions per circle and improving findCirclesGrid detection rate. The
-// dot size (1/2/3, default 2) is user-configurable via a dropdown.
+// Zhou's screw-head grid: each marker is a dashed cross (pins the centre)
+// inside a solid thin ring (supplies the polarity signal), white on black.
+// Marker centres sit on an asymmetric 6×5 layout whose row offset gives 8-fold
+// orientation disambiguation (no missing corners). dot_gap (1/2/3, default 2)
+// is user-configurable.
 //
-// Phase 4 bug-absorption (see devlog/v2_audit_and_plan.md §6 Phase 4):
+// Bug-absorption (see devlog/v2_audit_and_plan.md §6 Phase 4):
 //  - tap attach() disconnects first (no duplicate Connection);
-//  - no QScreen::physicalDotsPerInch() — cell spacing mm is user-input;
+//  - no QScreen::physicalDotsPerInch() — marker spacing mm is user-input;
 //  - no raw QScreen* held (the pattern is embedded; no screen tracking, so
 //    the hot-plug dangling-pointer concern is eliminated by design).
 
@@ -104,8 +105,9 @@ protected:
     void changeEvent(QEvent* event) override;
 
 signals:
-    /// @brief Cross-thread: reconfigure the worker's board geometry.
-    void configure_requested(int cols, int rows, double square_mm, int target);
+    /// @brief Cross-thread: reconfigure the worker's board scale + target + dot
+    /// gap. The grid is fixed at asymmetric 6×5.
+    void configure_requested(double square_mm, int target, int dot_gap);
     /// @brief Cross-thread: submit a rendered capture frame for detection.
     void submit_frame(const cv::Mat& frame);
     /// @brief Cross-thread: run cv::calibrateCamera on the worker.
@@ -136,16 +138,13 @@ private:
     void teardown_worker();
     QString default_export_path() const;
 
-    // Configuration.
-    QSpinBox*       cols_{nullptr};
-    QSpinBox*       rows_{nullptr};
-    QComboBox*      dot_size_{nullptr};
+    // Configuration. The grid is fixed at asymmetric 6×5 (no cols/rows spinbox):
+    // the row offset gives 8-fold orientation disambiguation, so no square-grid
+    // rejection is needed.
+    QComboBox*      dot_gap_{nullptr};
+    QSpinBox*       capture_window_{nullptr};
     QDoubleSpinBox* square_mm_{nullptr};
     QSpinBox*       target_frames_{nullptr};
-    // Last valid (non-square) cols/rows — used to revert a spinbox change
-    // that would make cols == rows (invalid for ASYMMETRIC_GRID).
-    int prev_cols_{6};
-    int prev_rows_{5};
 
     // Top row: params | live camera aim-view | captured preview; bottom: pattern.
     CircleGridDisplay* pattern_{nullptr};
