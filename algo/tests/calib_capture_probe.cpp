@@ -3,13 +3,12 @@
 // Replays a .raw file and, at sampled timestamps, renders the last W µs of CD
 // events several ways, then runs cv::findCirclesGrid(ASYMMETRIC_GRID) on each —
 // reproducing exactly what CalibrationWizard + IntrinsicCalibration do, plus
-// alternative strategies (longer window, decay accumulation like the main
-// display, morphological fill, tuned blob detector). Saves PNGs and prints a
-// per-strategy detection tally so we can see WHY the 500 µs capture is rejected
-// and WHAT makes detection succeed.
+// alternative strategies (decay accumulation, erode+dilate preprocessing, tuned
+// blob detector). Saves PNGs and prints a per-strategy detection tally so we
+// can see WHY captures are rejected and WHAT makes detection succeed.
 //
 // Usage: calib_capture_probe <file.raw> [cols] [rows] [sample_period_us] [max_samples]
-//   cols/rows default 6 6 (wizard default grid).
+//   cols/rows default 6 5 (wizard default grid).
 
 #include <algorithm>
 #include <chrono>
@@ -68,11 +67,22 @@ cv::Mat render_decay(const std::deque<EventCD>& ring, timestamp t_last,
     return frame;
 }
 
-cv::Mat morph_close(const cv::Mat& gray, int ksize) {
-    cv::Mat out;
-    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE,
-                                                     cv::Size(ksize, ksize));
-    cv::morphologyEx(gray, out, cv::MORPH_CLOSE, kernel);
+// Erode then dilate (user-suggested preprocessing): erode with a small kernel
+// removes isolated noise pixels; dilate with a larger kernel expands the
+// remaining event clusters, potentially merging waffle edges into filled blobs.
+// erode_k=0 skips erode; dilate_k=0 skips dilate.
+cv::Mat erode_dilate(const cv::Mat& gray, int erode_k, int dilate_k) {
+    cv::Mat out = gray.clone();
+    if (erode_k > 0) {
+        const cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE,
+                                                     cv::Size(erode_k, erode_k));
+        cv::erode(out, out, k);
+    }
+    if (dilate_k > 0) {
+        const cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE,
+                                                     cv::Size(dilate_k, dilate_k));
+        cv::dilate(out, out, k);
+    }
     return out;
 }
 
@@ -114,7 +124,7 @@ int main(int argc, char** argv) {
     }
     const std::string path = argv[1];
     const int cols = (argc > 2) ? std::max(1, std::atoi(argv[2])) : 6;
-    const int rows = (argc > 3) ? std::max(1, std::atoi(argv[3])) : 6;
+    const int rows = (argc > 3) ? std::max(1, std::atoi(argv[3])) : 5;
     const timestamp sample_period = (argc > 4) ? std::atoll(argv[4]) : 300000;
     const int max_samples = (argc > 5) ? std::atoi(argv[5]) : 20;
     const cv::Size board(cols, rows);
@@ -140,20 +150,33 @@ int main(int argc, char** argv) {
     std::deque<EventCD> ring;
     timestamp last_t = 0;
 
-    // Strategy table: (window_us, decay?, morph ksize (0=none), tuned?, tag).
+    // Strategy table: (window_us, decay?, erode_k, dilate_k, tuned?, tag).
+    // erode_k/dilate_k: 0=skip. When both >0, erode (remove noise) then dilate
+    // (merge waffle cells into filled blobs) — user-suggested preprocessing.
     struct Strat {
         timestamp window_us;
         bool decay;
-        int morph;
+        int erode_k;
+        int dilate_k;
         bool tuned;
         const char* tag;
     };
     const std::vector<Strat> strats = {
-        {500,   false, 0, false, "bin_500us_def"},
-        {50000, false, 0, false, "bin_50ms_def"},
-        {50000, true,  0, false, "decay50ms_def"},
-        {50000, true,  0, true,  "decay50ms_tuned"},
-        {50000, true,  9, true,  "decay50ms_close9_tuned"},
+        // 5000µs = actual wizard capture window (binary = what the wizard does).
+        {5000,  false, 0, 0, false, "bin_5ms_def"},
+        {5000,  false, 0, 0, true,  "bin_5ms_tuned"},
+        // 5000µs + erode(denoise) + dilate(merge waffle cells), various kernel sizes.
+        {5000,  false, 3, 5,  true,  "bin_5ms_e3d5_tuned"},
+        {5000,  false, 3, 7,  true,  "bin_5ms_e3d7_tuned"},
+        {5000,  false, 3, 9,  true,  "bin_5ms_e3d9_tuned"},
+        {5000,  false, 3, 11, true,  "bin_5ms_e3d11_tuned"},
+        {5000,  false, 3, 15, true,  "bin_5ms_e3d15_tuned"},
+        // 5000µs decay + erode/dilate.
+        {5000,  true,  0, 0, true,  "decay5ms_tuned"},
+        {5000,  true,  3, 9, true,  "decay5ms_e3d9_tuned"},
+        // 50ms for comparison (denser events).
+        {50000, false, 0, 0, true,  "bin_50ms_tuned"},
+        {50000, false, 3, 9, true,  "bin_50ms_e3d9_tuned"},
     };
     std::vector<int> hits(strats.size(), 0);
     int total_samples = 0;
@@ -164,7 +187,7 @@ int main(int argc, char** argv) {
     timestamp next_sample = sample_period;
     int sample_idx = 0;
     bool done = false;
-    const std::string outdir = "/tmp/calib_probe";
+    const std::string outdir = "/tmp/ring_probe";
 
     cam.cd().add_callback([&](const EventCD* b, const EventCD* e) {
         for (const EventCD* p = b; p != e; ++p) {
@@ -185,7 +208,9 @@ int main(int argc, char** argv) {
             cv::Mat gray = st.decay
                 ? render_decay(ring, last_t, st.window_us, W, H, 40)
                 : render_binary(ring, last_t, st.window_us, W, H);
-            if (st.morph > 0) gray = morph_close(gray, st.morph);
+            if (st.erode_k > 0 || st.dilate_k > 0) {
+                gray = erode_dilate(gray, st.erode_k, st.dilate_k);
+            }
 
             // Quick structural stats: dark-pixel ratio + connected-component
             // count (tells us whether the frame has filled blobs vs sparse dots).

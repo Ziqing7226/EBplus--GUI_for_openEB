@@ -40,6 +40,23 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[analyze] dark=%.1f%%  CC=%d  big(>=20)=%d  med[50,5000]=%d\n",
                  100.0 * dark / (img.cols * img.rows), ncc - 1, big_blobs, med_blobs);
 
+    // Spatial density map: divide frame into 12×8 grid, report dark % per cell.
+    // Reveals whether events form a structured pattern or are uniform noise.
+    {
+        const int gw = 12, gh = 8;
+        const int cw = img.cols / gw, ch = img.rows / gh;
+        std::fprintf(stderr, "[analyze] spatial density (%% dark per 12x8 cell):\n");
+        for (int gy = 0; gy < gh; ++gy) {
+            std::fprintf(stderr, "  ");
+            for (int gx = 0; gx < gw; ++gx) {
+                cv::Rect roi(gx * cw, gy * ch, cw, ch);
+                double d = 100.0 * cv::countNonZero(bw(roi)) / (cw * ch);
+                std::fprintf(stderr, "%4.1f ", d);
+            }
+            std::fprintf(stderr, "\n");
+        }
+    }
+
     // Tuned detector: relaxed filters for noisy event-painted blobs.
     cv::SimpleBlobDetector::Params p;
     p.thresholdStep = 10;
@@ -64,49 +81,55 @@ int main(int argc, char** argv) {
     }
 
     // --- Preprocessing strategies ---
-    // Event cameras fire on EDGES (brightness transitions), so circle outlines
-    // become dark RINGS, not filled disks. SimpleBlobDetector needs filled blobs.
-    // We try several ways to "fill" the rings:
-    //   raw       — no preprocessing (baseline)
-    //   close9    — morphological close (dilate+erode) with 9x9 kernel
-    //   close15   — same with 15x15 (fills bigger circles)
-    //   close21   — same with 21x21
-    //   dilate7   — dilate only (expands dark regions, merges ring edges)
-    //   blur15    — Gaussian blur 15x15 then re-threshold at mean
-    //   inv_raw   — invert (circle interiors become dark "blobs")
-    //   inv_blur  — invert + blur (smooth interior blobs)
+    // Event frame polarity: dark (0) = events, white (255) = background.
+    // In OpenCV: erode = MIN filter (expands dark), dilate = MAX (shrinks dark).
+    //
+    // To remove noise then fill rings, the correct sequence is:
+    //   dilate(small) → removes isolated dark noise pixels (shrinks dark)
+    //   erode(large)  → expands remaining dark ring edges, merging/filling interiors
+    //
+    // Strategies:
+    //   raw        — no preprocessing (baseline)
+    //   d3e5/7/9/11/15 — dilate 3x3 (denoise) then erode NxN (fill rings)
+    //   blur15/21  — Gaussian blur then re-threshold at mean
+    //   blur15_e3  — blur15 then dilate3+erode3 (smooth + clean up)
+    //   inv_blur   — invert + blur (smooth interior blobs)
     struct PreProc { const char* tag; };
     const std::vector<PreProc> preprocs = {
         {"raw"},
-        {"close9"},
-        {"close15"},
-        {"close21"},
-        {"dilate7"},
+        {"d3e5"},
+        {"d3e7"},
+        {"d3e9"},
+        {"d3e11"},
+        {"d3e15"},
         {"blur15"},
-        {"inv_raw"},
+        {"blur21"},
+        {"blur15_e3"},
         {"inv_blur"},
     };
     auto preprocess = [&](const cv::Mat& src, const std::string& tag) -> cv::Mat {
         cv::Mat out = src.clone();
-        if (tag == "close9") {
-            auto k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(9, 9));
-            cv::morphologyEx(out, out, cv::MORPH_CLOSE, k);
-        } else if (tag == "close15") {
-            auto k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15));
-            cv::morphologyEx(out, out, cv::MORPH_CLOSE, k);
-        } else if (tag == "close21") {
-            auto k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(21, 21));
-            cv::morphologyEx(out, out, cv::MORPH_CLOSE, k);
-        } else if (tag == "dilate7") {
-            auto k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
-            cv::dilate(out, out, k);
+        if (tag.substr(0, 3) == "d3e") {
+            const int ek = std::stoi(tag.substr(3));
+            auto kd = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+            auto ke = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(ek, ek));
+            cv::dilate(out, out, kd);   // shrink dark (remove noise)
+            cv::erode(out, out, ke);    // expand dark (fill rings)
         } else if (tag == "blur15") {
             cv::GaussianBlur(out, out, cv::Size(15, 15), 0);
-            // Re-threshold at mean to re-binarize.
             cv::Scalar mean, sd; cv::meanStdDev(out, mean, sd);
             cv::threshold(out, out, mean[0], 255, cv::THRESH_BINARY);
-        } else if (tag == "inv_raw") {
-            cv::bitwise_not(out, out);
+        } else if (tag == "blur21") {
+            cv::GaussianBlur(out, out, cv::Size(21, 21), 0);
+            cv::Scalar mean, sd; cv::meanStdDev(out, mean, sd);
+            cv::threshold(out, out, mean[0], 255, cv::THRESH_BINARY);
+        } else if (tag == "blur15_e3") {
+            cv::GaussianBlur(out, out, cv::Size(15, 15), 0);
+            cv::Scalar mean, sd; cv::meanStdDev(out, mean, sd);
+            cv::threshold(out, out, mean[0], 255, cv::THRESH_BINARY);
+            auto k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+            cv::dilate(out, out, k);
+            cv::erode(out, out, k);
         } else if (tag == "inv_blur") {
             cv::bitwise_not(out, out);
             cv::GaussianBlur(out, out, cv::Size(15, 15), 0);
@@ -118,6 +141,7 @@ int main(int argc, char** argv) {
     // findCirclesGrid asserts with a custom detector in OpenCV 4.x).
     struct BoardCfg { int cols; int rows; bool asym; };
     const std::vector<BoardCfg> cfgs = {
+        {6, 5, true}, {5, 6, true},
         {4, 11, true}, {11, 4, true},
         {4, 7, true}, {7, 4, true},
         {5, 4, true}, {4, 5, true},
@@ -126,6 +150,12 @@ int main(int argc, char** argv) {
         {5, 8, true}, {8, 5, true},
         {6, 7, true}, {7, 6, true},
         {4, 9, true}, {9, 4, true},
+        {7, 8, true}, {8, 7, true},
+        {6, 9, true}, {9, 6, true},
+        {7, 10, true}, {10, 7, true},
+        {8, 9, true}, {9, 8, true},
+        {5, 10, true}, {10, 5, true},
+        {6, 11, true}, {11, 6, true},
     };
 
     std::fprintf(stderr, "\n[analyze] === %zu preproc x %zu board configs ===\n",

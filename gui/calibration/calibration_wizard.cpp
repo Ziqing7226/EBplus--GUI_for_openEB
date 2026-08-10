@@ -60,9 +60,11 @@ constexpr int kDefaultRows = 5;
 constexpr double kDefaultSquareMm = 5.0;
 constexpr int kDefaultTargetFrames = 15;
 
-// Default concentric-ring layers (Zhou's Ring Grid). Must be odd so the
-// innermost band is white (matching the outermost). Options: 5, 7, 9.
-constexpr int kDefaultLayers = 7;
+// Default waffle dot size (Zhou's Circle Grid). 1/2/3 are the supported
+// values. Default 2: a 2×2 white-dot waffle is coarser than dot_size=1 but
+// still produces ample brightness transitions, and is less GPU/compositor
+// load than the finest 1px grid on full-screen windows.
+constexpr int kDefaultDotSize = 2;
 
 // Space-capture window: the most recent 5000 µs of CD events (polarity
 // ignored). Widened from 500 µs after field-test analysis showed 500 µs
@@ -73,6 +75,25 @@ constexpr Metavision::timestamp kCaptureWindowUs = 5000;
 // Register cross-thread metatypes used by the worker signals/slots.
 Q_DECL_UNUSED static const int kRegCvMat = qRegisterMetaType<cv::Mat>("cv::Mat");
 Q_DECL_UNUSED static const int kRegSizeT = qRegisterMetaType<std::size_t>("std::size_t");
+
+// Inset (px per side) applied to the screen workarea when sizing the wizard.
+// The window must stay BELOW the compositor's full-screen threshold: on Mutter
+// (GNOME-50, XWayland, 200% scale), a window that covers most of the output is
+// put on the unredirect / direct-scanout path, which throttles the 30 Hz camera
+// preview → stutter. A/B testing proved the trigger is size/coverage-driven,
+// NOT content-driven (solid-disc and waffle patterns stutter identically at
+// near-full-screen, both smooth when the window is dragged clearly smaller).
+//
+// A 5 px/side inset (10 px total) was NOT enough — the physical surface still
+// covered ~95% of the 2880×1920 output and still stuttered. The coverage
+// threshold is coarser than a few px, so a substantial inset is needed. 50 px
+// per side (100 px total per dimension) drops the physical coverage to ~88%,
+// clearly below the scanout threshold on this display. This is intentionally
+// generous: if it still stutters, the lever is NOT window size and the fix must
+// instead isolate the camera preview on its own small surface (see the
+// separate-window fallback noted in show_intrinsic). Tunable — reduce toward
+// the minimum that stays smooth once the threshold is empirically pinned down.
+constexpr int kFullscreenGuardInset = 50;
 
 } // namespace
 
@@ -118,14 +139,17 @@ void CalibrationCameraView::paintEvent(QPaintEvent* /*event*/) {
 // ---------------------------------------------------------------------------
 
 CalibrationWizard::CalibrationWizard(QWidget* parent) : QDialog(parent) {
-    setWindowTitle(tr("Intrinsic Calibration (based on Zhou's Ring Grid)"));
+    setWindowTitle(tr("Intrinsic Calibration (based on Zhou's Circle Grid)"));
     // Qt::Window (instead of the default Qt::Dialog) gives a full top-level
-    // window with working minimize/maximize/close buttons. The default
-    // Qt::Dialog on X11 shows a maximize button that is visually present but
-    // non-functional — switching to Qt::Window makes it actually work.
-    // WindowMinMaxButtonsHint ensures both min and max buttons are present.
+    // window with working minimize/close buttons. The maximize button is
+    // deliberately OMITTED: a maximized window covers the full workarea, which
+    // on Mutter (GNOME) triggers the unredirect / maximized compositing path
+    // and makes the 30 Hz camera preview stutter (see show_intrinsic). The
+    // changeEvent override below also blocks maximize from other paths (title-
+    // bar double-click, Super+Up, GNOME drag-to-top edge-tiling) since those
+    // bypass the button. Qt::WindowMaximizeButtonHint is intentionally absent.
     setWindowFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowSystemMenuHint |
-                   Qt::WindowMinMaxButtonsHint | Qt::WindowCloseButtonHint);
+                   Qt::WindowMinimizeButtonHint | Qt::WindowCloseButtonHint);
     setMinimumSize(900, 560);
     build_ui();
 
@@ -179,18 +203,34 @@ void CalibrationWizard::set_display(EventDisplayWidget* display) {
 }
 
 void CalibrationWizard::show_intrinsic() {
-    // Open full-screen via setGeometry() (NOT showMaximized()). changeEvent()
-    // below likewise intercepts any later maximize (button / title-bar
-    // double-click / WM shortcut) and converts it to a normal-state
-    // full-screen geometry. Keeping the window out of Qt::WindowMaximized is
-    // the key to smooth preview: on X11 compositors (Mutter/KWin) the
-    // maximized state takes a different frame-sync/scanout path that stutters
-    // with this app's render pipeline (QOpenGLWidget main display streaming +
-    // 30 Hz aim-view), while the normal state — the same path manual resize
-    // uses — stays smooth. Confirmed by the user: dragging the edges to full
-    // size is smooth, only the maximize button lagged.
+    // Size the window to (nearly) the full workarea but INSET by a few px so it
+    // does NOT exactly match the workarea. This is the root-cause fix for the
+    // calibration preview stutter.
+    //
+    // What happens without the inset: a window whose geometry matches the
+    // workarea is treated by Mutter (GNOME) as maximized — it is unredirected
+    // (direct-scanout) and/or put on the maximized compositing frame-sync path.
+    // That path throttles the 30 Hz camera preview → visible stutter. A/B
+    // testing proved the trigger is purely geometric (size/coverage-driven,
+    // NOT content-driven): solid-disc and waffle patterns stutter IDENTICALLY
+    // at near-full-workarea size, and BOTH become smooth when the window is
+    // dragged clearly smaller. The coverage threshold is coarser than a few px
+    // (a 5 px/side inset was NOT enough — see kFullscreenGuardInset). The GUI
+    // thread itself is fine (it paints at a steady 30 Hz); the stall is in the
+    // compositor's presentation of the window.
+    //
+    // Why not _NET_WM_BYPASS_COMPOSITOR=0? GNOME-50 Mutter no longer honors
+    // that X11 hint (it was tried and had zero effect). Why not showMaximized()?
+    // That sets Qt::WindowMaximized, which is exactly the state to avoid. The
+    // geometric inset is compositor-independent: a normal-state window that
+    // doesn't match the workarea gets normal compositing on Mutter, KWin, Xorg,
+    // and XWayland alike. The changeEvent below keeps it that way even if the
+    // user triggers a maximize via the keyboard or drag-to-top edge-tiling.
     if (QScreen* screen = QGuiApplication::primaryScreen()) {
-        setGeometry(screen->availableGeometry());
+        QRect g = screen->availableGeometry();
+        g.adjust(kFullscreenGuardInset, kFullscreenGuardInset,
+                 -kFullscreenGuardInset, -kFullscreenGuardInset);
+        setGeometry(g);
     }
     show();
     raise();
@@ -206,27 +246,28 @@ void CalibrationWizard::show_intrinsic() {
 
 void CalibrationWizard::changeEvent(QEvent* event) {
     QDialog::changeEvent(event);
-
-    // Intercept ANY transition into Qt::WindowMaximized (maximize button,
-    // title-bar double-click, WM keyboard shortcut, …) and replace it with a
-    // normal-state full-screen geometry. See show_intrinsic() for why the
-    // maximized state must be avoided. We can't stop the WM from applying the
-    // maximize, but we can immediately undo it and re-apply a full-screen
-    // geometry, so the window LOOKS maximized yet stays on the smooth normal
-    // compositing path (the same path manual edge-resize uses).
+    // Block ANY transition into Qt::WindowMaximized (title-bar double-click,
+    // Super+Up, GNOME drag-to-top edge-tiling — the maximize button itself is
+    // already removed via window flags, but those other paths bypass it). A
+    // maximized window covers the full workarea → Mutter unredirects it →
+    // camera preview stutters (see show_intrinsic). Immediately undo the
+    // maximize and re-apply the inset workarea geometry, so the window LOOKS
+    // maximized yet stays on the smooth normal compositing path.
     //
     // Deferred via QueuedConnection so the current state-change event finishes
-    // first — calling setWindowState re-entrantly from inside changeEvent is
-    // fragile. Our own setWindowState fires a second changeEvent in which the
-    // window is no longer maximized, so the guard below falls through (no
-    // loop). The WM processes un-maximize then our setGeometry in order; a
-    // brief transition flicker is possible but the end state is smooth.
+    // first — calling setWindowState re-entrantly inside changeEvent is fragile.
+    // Our own setWindowState fires a second changeEvent in which the window is
+    // no longer maximized, so the guard below falls through (no loop). The WM
+    // processes the un-maximize then our setGeometry in order.
     if (event->type() == QEvent::WindowStateChange &&
         (windowState() & Qt::WindowMaximized)) {
         QMetaObject::invokeMethod(this, [this] {
             setWindowState(windowState() & ~Qt::WindowMaximized);
             if (QScreen* screen = QGuiApplication::primaryScreen()) {
-                setGeometry(screen->availableGeometry());
+                QRect g = screen->availableGeometry();
+                g.adjust(kFullscreenGuardInset, kFullscreenGuardInset,
+                         -kFullscreenGuardInset, -kFullscreenGuardInset);
+                setGeometry(g);
             }
         }, Qt::QueuedConnection);
     }
@@ -431,7 +472,7 @@ void CalibrationWizard::enable_capture(bool on) {
 void CalibrationWizard::apply_pattern_to_display() {
     if (pattern_) {
         pattern_->set_pattern(cols_->value(), rows_->value());
-        pattern_->set_layers(layers_->currentData().toInt());
+        pattern_->set_dot_size(dot_size_->currentData().toInt());
         pattern_->set_square_size_mm(static_cast<float>(square_mm_->value()));
     }
 }
@@ -513,17 +554,21 @@ void CalibrationWizard::build_ui() {
     dims_lay->addStretch();
     form->addRow(tr("Grid (circles)"), dims_row);
 
-    // Zhou's Ring Grid: concentric-ring layer count (5/7/9, default 7).
-    // More layers = more ring edges = denser events, but thinner rings that
-    // may be harder to resolve on small displays.
-    layers_ = new QComboBox(params_widget);
-    layers_->addItem(QString::number(5), 5);
-    layers_->addItem(QString::number(7), 7);
-    layers_->addItem(QString::number(9), 9);
-    layers_->setCurrentIndex(1);  // default 7
-    layers_->setToolTip(tr("Number of concentric layers per circle (rings + "
-        "center). More layers produce denser events but thinner rings."));
-    form->addRow(tr("Ring layers"), layers_);
+    // Zhou's Circle Grid — waffle dot size (1/2/3, default 2). Each circle is
+    // rendered as a white edge ring (dot_size px thick) plus an interior
+    // waffle grid whose cell size and spacing are both dot_size. Smaller
+    // values give a finer, denser waffle → more brightness transitions →
+    // denser events for the event camera.
+    dot_size_ = new QComboBox(params_widget);
+    dot_size_->addItem(QString::number(1), 1);
+    dot_size_->addItem(QString::number(2), 2);
+    dot_size_->addItem(QString::number(3), 3);
+    dot_size_->setCurrentIndex(dot_size_->findData(kDefaultDotSize));
+    dot_size_->setToolTip(tr("Waffle dot size in pixels (1/2/3). Each circle "
+        "is a white edge ring (this many px thick) plus an interior grid of "
+        "white dots with this cell size and spacing. Smaller values produce a "
+        "finer, denser waffle and denser events."));
+    form->addRow(tr("Dot size"), dot_size_);
 
     square_mm_ = new QDoubleSpinBox(params_widget);
     square_mm_->setRange(0.1, 500.0);
@@ -631,7 +676,7 @@ void CalibrationWizard::build_ui() {
                 on_config_changed();
             }
         });
-    connect(layers_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+    connect(dot_size_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
         [this](int) { on_config_changed(); });
     connect(square_mm_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
         [this](double) { on_config_changed(); });

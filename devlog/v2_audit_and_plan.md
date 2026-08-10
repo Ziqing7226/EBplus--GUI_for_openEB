@@ -539,7 +539,7 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
     mm 手输不走 DPI ✓；AsymmetricCircles 物点公式已修（`test_intrinsic.AsymmetricObjectGridFormula` 验证
     `x=(2c+(r&1))·s, y=r·s`）。④ `cv::medianBlur` 兜底按 §0 协议留待现场实测决定。
   - **Phase 4 完成。** 500µs 抓拍窗口事件量经现场实测不足（见 D10），已改为 5000µs +
-    Zhou's Ring Grid 同心圆环图案。
+    Zhou's Circle Grid 图案；图案经 D10（同心圆环）→ D11（华夫饼点阵）两次演进定稿。
 
 ### Phase 4 Debug：实测 UI/UX 回归修复（标定向导现场实测）
 
@@ -714,8 +714,8 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
   `main_window.cpp` 同样无残留。**当前态已干净，无需再撤。**
 - 保留的有益改动：事件 tap batch-ring（SDK 线程 O(N)→O(1)/批）、点阵预渲染 QPixmap、`Qt::Window`
   + `WindowMinMaxButtonsHint`（使最大化按钮可见可用）、`setGeometry()` 初始满屏、6×5 默认网格 +
-  Zhou's Ring Grid 同心圆环、Circle spacing 英文 tooltip、三态相机提示、capture 串行化、worker
-  线程 `calibrateCamera`。
+  Zhou's Circle Grid 图案（D10 同心圆环 → D11 华夫饼点阵）、Circle spacing 英文 tooltip、三态相机提示、
+  capture 串行化、worker 线程 `calibrateCamera`。
 - 本轮新增仅 `changeEvent` 一处（约 15 行 + 注释），无画蛇添足。
 
 **实施状态**：编译通过；`ctest` 322/323 通过，唯一失败 `loop_flip` 为时序敏感 flaky 测试，单独重跑通过
@@ -773,6 +773,8 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
 
 **用户决策的修复方案（Zhou's Ring Grid）**
 
+> 注：本节的同心圆环图案随后在 D11 被改为华夫饼点阵（Zhou's Circle Grid）。本节保留为历史记录。
+
 不采用 blur 预处理，而是**改点阵图案本身**——把白色实心圆改为黑白相间同心圆环，从源头产生更密集的事件：
 
 1. **板型**：默认 6×5 非对称（cols+rows=11 奇数，OpenCV 合法）。UI 中若用户修改导致 cols==rows
@@ -795,6 +797,55 @@ worker 线程化、导出 mkpath、内角点约定修复、E2E 测试思路）�
 诊断工具 `calib_capture_probe.cpp` + `analyze_calib_png.cpp` + `CMakeLists.txt` 一并提交。
 
 **实施状态**：编译通过；`ctest` 323/323 全绿。
+
+#### D11 Zhou's Circle Grid——同心圆环改为华夫饼（waffle）点阵
+
+> 触发：用户提出新方案，用"华夫饼"点阵替代 D10 的同心圆环，从源头产生更密集、更均匀的亮度跃变。
+
+**用户决策的修复方案（华夫饼点阵）**
+
+仍基于黑底白圆的标定板，但每个圆不再是同心圆环，而是**华夫饼点阵**：
+
+1. **边缘环**：圆仅保留最外 `dot_size` px 厚度的边缘为全白。
+2. **内部点阵（全局 widget 坐标）**：对圆内非边缘像素，取其 **widget 全局坐标** `(x, y)`
+   （非圆心相对偏移，无需对称），计算 `gx = x / dot_size`、`gy = y / dot_size`（整数除法，
+   widget 坐标恒非负故无符号问题）；当 `gx` **或** `gy` 为偶数时该像素为**黑色**（与背景同色），
+   否则为白色——即白色点仅出现在 `(奇, 奇)` 网格单元，形成黑底上的稀疏白色点阵。
+   - `dot_size=1`：每隔 1px 一个 1×1 白点（最细最密、事件最密集）；
+   - `dot_size=2/3`：更粗更稀的 2×2/3×3 白点。
+   - 此规则与初版相反（初版"偶数则白"为白色网格+黑点；现版"偶数则黑"为黑色网格+白点），
+     现版视觉上为黑底白点阵，圆内大部分与背景同色、仅白点处发亮。
+3. **dot_size 默认 1**；GUI 下拉框选择 1 / 2 / 3（替换 D10 的 "Ring layers" 5/7/9 下拉框）。
+4. **标题**：`"Intrinsic Calibration (based on Zhou's Ring Grid)"` →
+   `"Intrinsic Calibration (based on Zhou's Circle Grid)"`（Ring Grid → Circle Grid，与图案语义一致）。
+
+**原理**：华夫饼点阵每个圆内部有大量黑白跃变边界（白点边缘），事件密度远高于同心圆环
+（仅 N 条环边界）与实心圆（仅 1 条外边缘）。用户手持相机微动时，窗口内每个圆位置都能产生
+足以被 `findCirclesGrid` 检测的事件结构。
+
+**实现要点**
+- `CircleGridDisplay`：`layers_` → `dot_size_`，`set_layers()` → `set_dot_size()`（clamp 1..3）。
+- **渲染路径（D11 性能修复）**：`recompute_layout()` 直接画入 `QPixmap`（`QPainter` 原生绘制，
+  X11 服务端），不经过 `QImage`。内部点阵用一个 `2*dot_size × 2*dot_size` 的 waffle **平铺贴图**
+  （tile）作为 `QBrush` 纹理：贴图右下 `dot_size×dot_size` 象限为白、其余三象限为黑；brush 从
+  painter 原点 (0,0) 即 widget (0,0) 平铺，故相位对齐全局 widget 网格。每个圆：用该 brush
+  `drawEllipse(内圆 Rds)` 填充内部点阵盘 → `QPainterPath` 环形（外圆 R + 内圆 Rds）填白边环。
+  仅 ~2 次 QPainter 图元/圆，无逐像素循环、无全图 `QPixmap::fromImage` 上传。
+- **性能根因**：初版用逐像素 `QImage(Format_RGB32)` + `scanLine` 写入 + `QPixmap::fromImage`
+  转换。`fromImage` 是**同步全图 CPU→GPU 上传**，每次 `resizeEvent`（含 D9 `changeEvent`
+  最大化拦截 → `setGeometry` → resize 的流程）都触发，阻塞 GUI 线程、导致 30Hz 相机预览掉帧，
+  重新出现 D9 已修复的"最大化按钮卡顿"。改回 QPainter-on-QPixmap（与同心圆环时期相同的
+  渲染路径）后上传消除，resize/最大化恢复流畅。
+- `CalibrationWizard`：`layers_` 下拉框 → `dot_size_` 下拉框（1/2/3，默认 1）；标题更新；
+  `apply_pattern_to_display()` 调 `set_dot_size()`；信号连接改接 `dot_size_`。
+- 诊断工具 `calib_capture_probe.cpp`：移除未使用的 `morph_close`（消除 -Wunused-function 警告），
+  注释中 "fill rings" → "merge waffle cells"。
+
+**修改文件**：`circle_grid_display.{h,cpp}`（waffle tile-brush 渲染 + `set_dot_size()`）、
+`calibration_wizard.{h,cpp}`（dot_size 下拉框 + 标题 + 接线）、
+`algo/tests/calib_capture_probe.cpp`（清理 `morph_close` + 注释）。
+
+**实施状态**：编译通过（含 probe，无 -Wunused 警告）；`ctest` 323/323 全绿。待现场实测验证检测率。
 
 ### Phase 5：调焦工具（新代码，替换锐度计）
 

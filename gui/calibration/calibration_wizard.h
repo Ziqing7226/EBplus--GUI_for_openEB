@@ -12,10 +12,11 @@
 // capture button is serialized — disabled while a frame is being judged and
 // re-enabled once the accept/reject verdict returns.
 //
-// Zhou's Ring Grid: the on-screen pattern uses concentric rings (white/black
-// alternating) instead of solid circles, producing denser events at each
-// circle position and improving findCirclesGrid detection rate. The ring
-// layer count (5/7/9) is user-configurable via a dropdown.
+// Zhou's Circle Grid: the on-screen pattern uses a waffle texture — each
+// circle is a white edge ring (dot_size px thick) plus an interior grid of
+// white dots — instead of a solid disc, producing far more brightness
+// transitions per circle and improving findCirclesGrid detection rate. The
+// dot size (1/2/3, default 2) is user-configurable via a dropdown.
 //
 // Phase 4 bug-absorption (see devlog/v2_audit_and_plan.md §6 Phase 4):
 //  - tap attach() disconnects first (no duplicate Connection);
@@ -138,7 +139,7 @@ private:
     // Configuration.
     QSpinBox*       cols_{nullptr};
     QSpinBox*       rows_{nullptr};
-    QComboBox*      layers_{nullptr};
+    QComboBox*      dot_size_{nullptr};
     QDoubleSpinBox* square_mm_{nullptr};
     QSpinBox*       target_frames_{nullptr};
     // Last valid (non-square) cols/rows — used to revert a spinbox change

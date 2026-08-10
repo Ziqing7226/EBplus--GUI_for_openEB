@@ -6,12 +6,15 @@
 // the screen's refresh while the camera looks at the pattern; the wizard
 // captures a 5000 µs window on demand (Space key, polarity ignored).
 //
-// Zhou's Ring Grid: each grid position is drawn as a set of concentric rings
-// (white/black alternating, outermost = white) instead of a single solid
-// circle. Multiple ring edges per circle produce a denser, richer event
-// pattern that findCirclesGrid can detect more reliably than single-edge
-// solid circles. The number of layers (rings + center circle) is configurable
-// (5/7/9, default 7); all are odd so the innermost band is always white.
+// Zhou's Circle Grid: each circle is drawn as a waffle pattern — a white
+// edge ring (dot_size px thick) plus an interior grid of white dots. The
+// waffle uses GLOBAL widget coordinates (a single continuous grid, not
+// per-circle): an interior pixel at widget (x, y) is BLACK when
+// (x / dot_size) or (y / dot_size) is even, else WHITE — so white dots appear
+// only at (odd, odd) grid cells, a sparse white dot matrix on black. This
+// produces far more brightness transitions per circle than a solid disc,
+// giving the event camera denser, more detectable features. dot_size is
+// configurable (1/2/3, default 2) via a dropdown.
 //
 // The physical cell spacing (mm) is supplied by the user — we deliberately
 // do NOT derive it from QScreen::physicalDotsPerInch(), which is unreliable
@@ -40,10 +43,10 @@ public:
     /// Recomputes the pixel layout and re-renders the cached pixmap.
     void set_pattern(int cols, int rows);
 
-    /// @brief Sets the number of concentric layers per circle (rings + center
-    /// circle). Must be odd (5/7/9); the outermost band is white and bands
-    /// alternate white/black inward. Recomputes the cached pixmap.
-    void set_layers(int layers);
+    /// @brief Sets the waffle dot size (1/2/3). The circle edge ring is
+    /// dot_size px thick; interior pixels follow a waffle grid with this
+    /// spacing. Recomputes the cached pixmap.
+    void set_dot_size(int dot_size);
 
     /// @brief Sets the physical cell spacing (mm). Stored for retrieval only
     /// — it does NOT affect pixel layout (no DPI derivation), so no repaint is
@@ -53,7 +56,7 @@ public:
 
     int cols() const { return cols_; }
     int rows() const { return rows_; }
-    int layers() const { return layers_; }
+    int dot_size() const { return dot_size_; }
     float square_size_mm() const { return square_size_mm_; }
     /// @brief Current pixel spacing between adjacent grid cells.
     int spacing_px() const { return spacing_px_; }
@@ -67,7 +70,7 @@ private:
 
     int cols_{6};
     int rows_{5};
-    int layers_{7};
+    int dot_size_{2};
     int spacing_px_{0};
     int dot_radius_px_{0};
     int origin_x_{0};
@@ -78,6 +81,11 @@ private:
     /// the full grid into this pixmap; paintEvent() is a single drawPixmap —
     /// no per-paint circle drawing.
     QPixmap cache_;
+    /// True when cache_ has been re-rendered and needs to be blitted to the
+    /// backing store. Set by recompute_layout(); cleared by paintEvent(). This
+    /// prevents redundant full-screen blits when the WM sends expose events
+    /// for a static pixmap (e.g. Mutter in unredirected mode).
+    bool cache_dirty_{true};
 };
 
 } // namespace gui
