@@ -8,9 +8,9 @@
 // a per-window detection tally so we can see which capture windows succeed and
 // what the screw-head detector finds in real event data.
 //
-// Usage: calib_capture_probe <file.raw> [window_us] [dot_gap] [sample_period_us] [max_samples]
+// Usage: calib_capture_probe <file.raw> [window_us] [sample_period_us] [max_samples]
 //   window_us   default 5000 (wizard default capture window)
-//   dot_gap     default 2    (wizard default dashed-cross dot gap)
+//   dot_gap     fixed 2      (wizard default; 1/2/3 supported)
 //   sample_period_us  default 300000
 //   max_samples default 20
 
@@ -79,15 +79,15 @@ cv::Mat render_three_valued(const std::deque<EventCD>& ring, timestamp t_last,
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <file.raw> [window_us] [dot_gap] "
+        std::fprintf(stderr, "usage: %s <file.raw> [window_us] "
                      "[sample_period_us] [max_samples]\n", argv[0]);
         return 2;
     }
     const std::string path = argv[1];
     const timestamp window_us = (argc > 2) ? std::max(timestamp(200), std::atoll(argv[2])) : 5000;
-    const int dot_gap = (argc > 3) ? std::clamp(std::atoi(argv[3]), 1, 3) : 2;
-    const timestamp sample_period = (argc > 4) ? std::atoll(argv[4]) : 300000;
-    const int max_samples = (argc > 5) ? std::atoi(argv[5]) : 20;
+    constexpr int dot_gap = 2;  // wizard default; 1/2/3 supported
+    const timestamp sample_period = (argc > 3) ? std::atoll(argv[3]) : 300000;
+    const int max_samples = (argc > 4) ? std::atoi(argv[4]) : 20;
     constexpr int kCols = 6, kRows = 5;
 
     std::fprintf(stderr, "[probe] %s\n[probe] screw-head %dx%d, window=%lld us, "

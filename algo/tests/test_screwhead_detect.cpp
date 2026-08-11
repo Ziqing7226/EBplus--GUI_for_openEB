@@ -209,3 +209,52 @@ TEST(ScrewHeadDetect, AnnotateProducesImage) {
     EXPECT_FALSE(res.image.empty());
     EXPECT_EQ(res.image.type(), frame.type());
 }
+
+// --- Capture-review features: crosses and rings are reported ------------------
+
+TEST(ScrewHeadDetect, ReviewFeaturesPopulated) {
+    const int spacing = 30;
+    const cv::Point origin(60, 60);
+    const cv::Size frame_size(450, 240);
+
+    cv::Mat frame = render_screwhead_grid(spacing, origin, kDotGap, frame_size);
+    auto res = detect_screwheads(frame, kCols, kRows, kDotGap, false);
+
+    ASSERT_TRUE(res.found);
+    // Every marker yields a cross centre (the density peak); a clean synthetic
+    // grid also yields a ring for every marker (red circles in the review
+    // dialog), with a positive radius.
+    EXPECT_GE(res.cross_centers.size(), static_cast<size_t>(kCols * kRows));
+    EXPECT_GE(res.ring_centers.size(), static_cast<size_t>(kCols * kRows));
+    EXPECT_EQ(res.ring_centers.size(), res.ring_radii.size());
+    for (float rad : res.ring_radii) {
+        EXPECT_GT(rad, 0.f);
+    }
+}
+
+// --- Ring parameters are plumbed: a strict setting kills ring detection ------
+
+TEST(ScrewHeadDetect, RingParamsGateRings) {
+    const int spacing = 30;
+    const cv::Point origin(60, 60);
+    const cv::Size frame_size(450, 240);
+    cv::Mat frame = render_screwhead_grid(spacing, origin, kDotGap, frame_size);
+
+    // Default parameters find rings for every marker.
+    auto res_default = detect_screwheads(frame, kCols, kRows, kDotGap, false);
+    ASSERT_GE(res_default.ring_centers.size(), static_cast<size_t>(kCols * kRows));
+
+    // An absurd min-pixel count rejects every ring (the radial-histogram peak
+    // can never reach it) — but crosses are still detected.
+    gui_algo::RingParams strict;
+    strict.min_pixels = 1 << 20;
+    auto res_minpx = detect_screwheads(frame, kCols, kRows, kDotGap, false, strict);
+    EXPECT_TRUE(res_minpx.ring_centers.empty());
+    EXPECT_GE(res_minpx.cross_centers.size(), static_cast<size_t>(kCols * kRows));
+
+    // An impossible coverage threshold (> 1.0) rejects every ring too.
+    gui_algo::RingParams no_cover;
+    no_cover.cover_frac = 2.0f;
+    auto res_cover = detect_screwheads(frame, kCols, kRows, kDotGap, false, no_cover);
+    EXPECT_TRUE(res_cover.ring_centers.empty());
+}

@@ -22,13 +22,17 @@ const cv::Vec3b kWhite(255, 255, 255); // OFF polarity
 
 // --- Joint cross+ring localisation parameters --------------------------------
 //
-// The detector jointly localises each marker via two independent features:
+// The detector jointly localises each marker via two PEER features of equal
+// standing:
 //   * the dashed CROSS (density peak via distance transform), and
 //   * the solid RING (radial-histogram peak + angular-coverage test).
-// A candidate where both features agree (centre distance ≤ kConfirmTolPx) is a
-// CONFIRMED centre (high vote weight); a candidate with only one feature is a
-// SUSPECTED centre (low vote weight). The grid fit uses weighted voting so a
-// few confirmed centres anchor the grid while suspected centres fill gaps.
+// Detecting EITHER feature means a possible marker centre was found. Each
+// contributes an equal confidence (kCrossConfidence = kRingConfidence = 0.5)
+// to the coordinate; the 8-neighbourhood of the final centre adds a further
+// kNeighborConfidence = 0.2 (a centre surrounded by signal is more reliable
+// than one in empty space). The grid fit is a weighted RANSAC: centres with
+// both features (weight ≈ 1.0–1.2) anchor the grid, single-feature centres
+// (weight ≈ 0.5–0.7) fill gaps.
 //
 // The old half/half polarity test was removed: under camera motion the ring
 // edges fire OPPOSITE polarities at every angle (outer/inner, leading/trailing
@@ -37,58 +41,40 @@ const cv::Vec3b kWhite(255, 255, 255); // OFF polarity
 // geometric (ring signal strength + angular coverage).
 
 // Angular resolution for the ring coverage test (bins around the circle).
-// Higher = stricter (a real ring covers nearly all bins; a noise arc does not).
 constexpr int kRingAngleBins = 36;
-// Minimum fraction of angle bins that must contain a ring pixel for the ring
-// to be accepted as a detected marker (suspected). A full ring covers ~1.0;
-// a partial arc (noise or a merged blob) covers much less. 0.60 is strict
-// enough to reject most noise arcs while still accepting partial rings from
-// real markers under one-directional motion.
-constexpr float kRingCoverFrac = 0.60f;
-// Coverage fraction above which a detected marker is CONFIRMED (high vote
-// weight). Real markers under good motion produce coverage ≥ 0.85; noise arcs
-// rarely exceed 0.67. 0.70 separates the two populations cleanly.
-constexpr float kConfirmedCoverFrac = 0.70f;
-// Minimum ring pixel count for a meaningful coverage test.
-constexpr int kMinRingPixels = 6;
-// Margin added to the cross component's half-diagonal when sizing the ring
-// search radius. The ring (R ≈ 0.20·d) is often larger than the dashed cross
-// (arm length R_in−1), and sparse events shrink the cross component's bounding
-// box, so the raw half-diagonal would miss the ring entirely.
-constexpr int kRingSearchMargin = 12;
+// Local search radius (±px) around the seed centre when maximising the
+// radial-histogram peak. Corrects peak shifts caused by the cross candidate
+// being off-centre (distance-transform peak biased toward a thicker ring arc).
+constexpr int kSeedSearch = 2;
+// The ring acceptance knobs (min angular coverage kRingCoverFrac, min ring
+// pixels, ring search margin) are runtime RingParams (defaults: 0.60 / 6 / 12)
+// so the wizard's capture-review dialog can relax them and re-detect. The old
+// constexpr thresholds moved into RingParams in intrinsic.h.
 
-// --- Second-stage ring recovery (empty-slot fill) ----------------------------
-//
-// When the initial cross+ring pass misses a grid position (no cross candidate
-// within match_tol of the predicted slot), the grid fit predicts where the
-// marker SHOULD be and re-searches for a ring directly at that position with
-// RELAXED parameters. This recovers weak ring signals that were missed because:
-//   * the dashed cross was too sparse to form a connected component (no cross
-//     candidate was generated), but the solid ring still fired enough events, or
-//   * the ring coverage was below kRingCoverFrac (0.60) but above the recovery
-//     threshold — a partial arc from a real marker under sparse motion.
-//
-// The recovery uses a lower coverage threshold (kRecoverCoverFrac) and a wider
-// seed neighbourhood (kRecoverSeedSearch) to compensate for the predicted
-// position being off by a few px (grid fit d/origin estimation error, or
-// perspective distortion making the local d differ from the global estimate).
-// A ring found in recovery is a SUSPECTED marker (weight 1.0) — it has a ring
-// signal but was not confirmed by the initial pass.
-constexpr float kRecoverCoverFrac = 0.40f;   // relaxed from 0.60
-constexpr int   kRecoverMinPixels = 6;        // same as initial
-constexpr int   kRecoverSeedSearch = 5;       // ±5 px (vs ±2 in initial pass)
+// Confidence weights for grid-fit voting. Cross and ring are PEER detections:
+// each independently indicates a possible centre and contributes 50%. The
+// 8-neighbourhood of the final centre contributes 20%. A marker with both
+// cross+ring and neighbour support has weight 1.2; cross-only with support 0.7;
+// ring-only 0.5. These replace the old confirmed(2.0)/suspected(1.0) split —
+// the two features now have EQUAL standing, not a 2:1 ratio.
+constexpr float kCrossConfidence    = 0.5f;
+constexpr float kRingConfidence     = 0.5f;
+constexpr float kNeighborConfidence = 0.2f;
+
 // Match tolerance (fraction of grid spacing d) for grid fitting. 0.40 allows
 // markers that are slightly off the predicted position (due to perspective
 // distortion or d estimation error) to match, while staying well below 0.5·d
 // (the half-cell distance) so a slot cannot match a neighbouring marker.
+// Note: d is overestimated ~1.4× (radial-histogram peak shift), so the
+// effective tolerance in true-d units is ~0.56·d_true, safely below 0.707·d_true
+// (half the diagonal — the ambiguity threshold). Increasing this beyond 0.40
+// risks selecting wrong grid hypotheses (false matches inflate the score of
+// an incorrect placement, displacing predicted positions by >1 cell).
 constexpr float kMatchTolFrac = 0.40f;
 // Ring radius as a fraction of the grid half-cell spacing d (R = 0.20·d).
 // Must match circle_grid_display's kMarkerRadiusFrac. Used to estimate d from
 // the detected ring radius — more robust than nearest-neighbour distance.
 constexpr float kRingRadiusFrac = 0.20f;
-// Vote weights for grid fitting.
-constexpr float kConfirmedWeight = 2.0f;
-constexpr float kSuspectedWeight = 1.0f;
 
 // Temporary diagnostic logging (env GUI_SCREW_DEBUG=1). Removed after analysis.
 bool screw_debug() {
@@ -144,7 +130,8 @@ struct Candidate {
     int max_r;  // half the component bounding-box diagonal — limits ring search
 };
 
-std::vector<Candidate> find_cross_candidates(const cv::Mat& fg_denoised, int dot_gap) {
+std::vector<Candidate> find_cross_candidates(const cv::Mat& fg_denoised, int dot_gap,
+                                             int ring_search_margin) {
     const int r_dilate = std::max(2, dot_gap + 1);
     cv::Mat kernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(2 * r_dilate + 1, 2 * r_dilate + 1));
@@ -182,22 +169,24 @@ std::vector<Candidate> find_cross_candidates(const cv::Mat& fg_denoised, int dot
         // Limit the ring-search radius so the radial histogram does not pick up
         // NEIGHBOURING markers' rings (which would give a wrong best_r and fail
         // the coverage test). The raw half-diagonal is too tight — sparse events
-        // shrink the cross component — so add kRingSearchMargin to reach the
-        // ring (R ≈ 0.20·d, typically larger than the cross arm length).
-        const int max_r = std::max(lw, lh) / 2 + kRingSearchMargin;
+        // shrink the cross component — so add the (user-tunable) search margin
+        // to reach the ring (R ≈ 0.20·d, typically larger than the cross arm).
+        const int max_r = std::max(lw, lh) / 2 + ring_search_margin;
         cands.push_back({cv::Point2f(float(best.x), float(best.y)), max_r});
     }
     return cands;
 }
 
-// Stage 3: ring localisation. Searches a small neighbourhood (±2 px) around the
-// seed (cross candidate) for the centre that maximises the radial-histogram
-// peak, then checks the angular coverage of the ring pixels. A real solid ring
-// covers nearly all angle bins; a noise arc or a merged blob covers few.
+// Stage 3: ring localisation. Searches a small neighbourhood (±kSeedSearch px)
+// around the seed (cross candidate) for the centre that maximises the radial-
+// histogram peak, then checks the angular coverage of the ring pixels. A real
+// solid ring covers nearly all angle bins; a noise arc or a merged blob covers
+// few.
 //
 // Returns the ring centre (which may differ from the seed by a few px), the
-// ring radius, and the coverage fraction. The caller compares the ring centre
-// to the cross centre to decide confirmed vs suspected.
+// ring radius, and the coverage fraction. The caller combines this with the
+// cross centre into a weighted Marker — cross and ring are peers, each
+// contributing kCrossConfidence/kRingConfidence to the centre's confidence.
 struct RingInfo {
     bool found = false;
     cv::Point2f center;
@@ -207,23 +196,20 @@ struct RingInfo {
 };
 
 RingInfo find_ring(const cv::Mat& fg, const cv::Point2f& seed, int max_r,
-                   float min_cover = kRingCoverFrac,
-                   int min_px = kMinRingPixels,
-                   int seed_search = 2) {
+                   const RingParams& ring) {
     RingInfo info;
     if (max_r < 4) return info;
 
-    // Local search: try the seed and its ±seed_search px neighbourhood, pick
+    // Local search: try the seed and its ±kSeedSearch px neighbourhood, pick
     // the centre with the strongest radial-histogram peak. This corrects
     // radial-histogram peak shifts caused by the cross candidate being
     // off-centre (e.g. when the distance-transform peak is biased toward a
-    // thicker ring arc). The second-stage recovery pass uses a wider search
-    // (±5) because the predicted position may be off by several px.
+    // thicker ring arc).
     cv::Point2f best_center = seed;
     int best_peak = 0;
     int best_r = 0;
-    for (int dy = -seed_search; dy <= seed_search; ++dy) {
-        for (int dx = -seed_search; dx <= seed_search; ++dx) {
+    for (int dy = -kSeedSearch; dy <= kSeedSearch; ++dy) {
+        for (int dx = -kSeedSearch; dx <= kSeedSearch; ++dx) {
             const cv::Point2f c = seed + cv::Point2f(float(dx), float(dy));
             const int x0 = std::max(0, int(c.x) - max_r);
             const int x1 = std::min(fg.cols, int(c.x) + max_r + 1);
@@ -249,9 +235,9 @@ RingInfo find_ring(const cv::Mat& fg, const cv::Point2f& seed, int max_r,
             }
         }
     }
-    if (best_r < 3 || best_peak < min_px) {
+    if (best_r < 3 || best_peak < ring.min_pixels) {
         SDBG("  seed(%.1f,%.1f) max_r=%d REJECT(best_r=%d peak=%d<%d)\n",
-             seed.x, seed.y, max_r, best_r, best_peak, min_px);
+             seed.x, seed.y, max_r, best_r, best_peak, ring.min_pixels);
         return info;
     }
 
@@ -278,9 +264,9 @@ RingInfo find_ring(const cv::Mat& fg, const cv::Point2f& seed, int max_r,
             bin_hit[b] = 1;
         }
     }
-    if (ring_px < min_px) {
+    if (ring_px < ring.min_pixels) {
         SDBG("  seed(%.1f,%.1f) best_r=%d REJECT(ring_px=%d<%d)\n",
-             seed.x, seed.y, best_r, ring_px, min_px);
+             seed.x, seed.y, best_r, ring_px, ring.min_pixels);
         return info;
     }
     int covered = 0;
@@ -288,8 +274,8 @@ RingInfo find_ring(const cv::Mat& fg, const cv::Point2f& seed, int max_r,
     const float coverage = float(covered) / float(kRingAngleBins);
     SDBG("  seed(%.1f,%.1f) ring_center=(%.1f,%.1f) r=%d px=%d cover=%.2f %s\n",
          seed.x, seed.y, best_center.x, best_center.y, best_r, ring_px, coverage,
-         coverage >= min_cover ? "OK" : "REJECT(coverage)");
-    if (coverage < min_cover) return info;
+         coverage >= ring.cover_frac ? "OK" : "REJECT(coverage)");
+    if (coverage < ring.cover_frac) return info;
 
     info.found = true;
     info.center = best_center;
@@ -299,11 +285,13 @@ RingInfo find_ring(const cv::Mat& fg, const cv::Point2f& seed, int max_r,
     return info;
 }
 
-// A detected marker feature: cross centre (density peak), ring centre (local
-// Hough optimum), and the confirmed/suspected classification derived from the
-// ring's angular coverage. Confirmed markers (high coverage) anchor the grid
-// fit with a high vote weight; suspected markers (low coverage or cross-only)
-// fill gaps with a low vote weight.
+// A detected marker: cross centre (density peak) and/or ring centre (local
+// Hough optimum). Cross and ring are PEER features — detecting either one means
+// a possible centre was found. Each contributes kCrossConfidence/kRingConfidence
+// (50%) to the centre's confidence; the 8-neighbourhood of the final centre adds
+// kNeighborConfidence (20%). The grid fit is a weighted RANSAC over these
+// confidences: centres with both features (weight ≈ 1.0–1.2) anchor the grid,
+// single-feature centres (weight ≈ 0.5–0.7) fill gaps.
 struct Marker {
     cv::Point2f cross_pos;
     cv::Point2f ring_pos;
@@ -311,19 +299,22 @@ struct Marker {
     float coverage = 0.f;
     bool has_cross = false;
     bool has_ring = false;
+    // True when ≥1 foreground pixel lies in the 8-neighbourhood of best_pos —
+    // a centre surrounded by signal is more reliable than one in empty space.
+    bool has_neighbor_support = false;
 
-    bool is_confirmed() const {
-        return has_ring && coverage >= kConfirmedCoverFrac;
-    }
-
+    // Weighted confidence for grid-fit voting. Cross and ring contribute equally
+    // (peers); the 8-neighbourhood adds a small boost.
     float weight() const {
-        return is_confirmed() ? kConfirmedWeight : kSuspectedWeight;
+        return (has_cross ? kCrossConfidence : 0.f)
+             + (has_ring  ? kRingConfidence  : 0.f)
+             + (has_neighbor_support ? kNeighborConfidence : 0.f);
     }
 
     // Best estimate of the marker centre.
     // Ring centre (local Hough optimum) is more accurate than the cross centre
     // (distance-transform peak, biased by sparse events), so prefer it when
-    // available; fall back to the cross centre for cross-only suspects.
+    // available; fall back to the cross centre for cross-only markers.
     cv::Point2f best_pos() const {
         if (has_ring) return ring_pos;
         return cross_pos;
@@ -357,13 +348,13 @@ std::vector<float> nn_distances(const std::vector<cv::Point2f>& pts) {
 }
 
 // Stage 4: fit the asymmetric cols×rows grid to the detected markers using
-// weighted voting (confirmed centres weigh more than suspected). Returns true
-// only if ALL cols×rows positions have a matching marker — gaps are NOT
-// synthesised, because a synthesised position has no detected feature and
-// would corrupt the calibration. Empty slots are recovered by a second-stage
-// ring search at the predicted position (relaxed coverage, wider seed search).
-bool fit_asymmetric_grid(const cv::Mat& fg,
-                         const std::vector<Marker>& markers,
+// weighted RANSAC voting. Cross and ring are peers: a centre with both features
+// (weight ≈ 1.0–1.2) anchors the grid; a single-feature centre (weight ≈ 0.5–0.7)
+// fills gaps. Returns true only if ALL cols×rows positions have a matching
+// marker — gaps are NOT synthesised and NOT recovered by a second pass, because
+// a position with no detected feature (neither cross nor ring) would corrupt the
+// calibration. An empty slot simply fails the fit.
+bool fit_asymmetric_grid(const std::vector<Marker>& markers,
                          int cols, int rows,
                          std::vector<cv::Point2f>* ordered) {
     const int M = int(markers.size());
@@ -378,66 +369,95 @@ bool fit_asymmetric_grid(const cv::Mat& fg,
         wts[i] = markers[i].weight();
     }
 
-    // Estimate the grid half-cell spacing d from confirmed markers. The ring
-    // radius is R = 0.20·d, but the radial-histogram peak is shifted outward by
-    // the ring thickness + smoothing, so d = r/0.20 overestimates. Instead,
-    // filter confirmed points by radius consistency (removes noise with outlying
-    // radii like r=80) and use their nearest-neighbour (diagonal) distance:
-    // d = median_NN / √2. Fall back to the radius estimate if too few clean
-    // confirmed points remain.
-    std::vector<float> confirmed_radii;
-    std::vector<cv::Point2f> confirmed_pts;
+    // Estimate the grid half-cell spacing d from markers that have BOTH cross
+    // and ring (the most reliable centres). The ring radius is R = 0.20·d, but
+    // the radial-histogram peak is shifted outward by the ring thickness +
+    // smoothing, so d = r/0.20 overestimates. Instead, filter joint points by
+    // radius consistency (removes noise with outlying radii like r=80) and use
+    // their nearest-neighbour (diagonal) distance: d = median_NN / √2.
+    //
+    // When many false-positive joint markers are present (common in noisy event
+    // data), the raw NN median is corrupted — clustered false positives create
+    // small NN distances that pull the median far below the true grid diagonal.
+    // To guard against this, use the radius-based d estimate (d_radius, robust
+    // because r_med is dominated by real markers) as a band-pass filter on the
+    // NN distances: only keep NN distances within [0.5, 2.0]× the expected
+    // diagonal d_radius·√2. This rejects the clustered-false-positive distances
+    // while preserving the real-marker diagonal distances. Fall back to the
+    // unfiltered NN median, then to the radius estimate, if too few survive.
+    std::vector<float> joint_radii;
+    std::vector<cv::Point2f> joint_pts;
     for (const auto& m : markers) {
-        if (m.is_confirmed()) {
-            confirmed_radii.push_back(m.ring_radius);
-            confirmed_pts.push_back(m.best_pos());
+        if (m.has_cross && m.has_ring) {
+            joint_radii.push_back(m.ring_radius);
+            joint_pts.push_back(m.best_pos());
         }
     }
     float d = 0.f;
-    float r_med = 0.f;  // median confirmed ring radius — used for recovery max_r
-    if (confirmed_pts.size() >= 4) {
+    float r_med = 0.f;  // median joint ring radius — used for the radius fallback
+    if (joint_pts.size() >= 4) {
         // Filter by radius consistency: keep points within [0.5, 2.0]× median
         // radius. This removes gross noise (r=80 when true r≈14) while keeping
         // real markers whose radius is slightly shifted.
-        r_med = median(confirmed_radii);
+        r_med = median(joint_radii);
         std::vector<cv::Point2f> clean_pts;
-        for (size_t i = 0; i < confirmed_pts.size(); ++i) {
-            if (confirmed_radii[i] >= r_med * 0.5f &&
-                confirmed_radii[i] <= r_med * 2.0f) {
-                clean_pts.push_back(confirmed_pts[i]);
+        for (size_t i = 0; i < joint_pts.size(); ++i) {
+            if (joint_radii[i] >= r_med * 0.5f &&
+                joint_radii[i] <= r_med * 2.0f) {
+                clean_pts.push_back(joint_pts[i]);
             }
         }
-        SDBG("[screw] fit: confirmed=%zu r_med=%.1f clean=%zu\n",
-             confirmed_pts.size(), r_med, clean_pts.size());
+        SDBG("[screw] fit: joint=%zu r_med=%.1f clean=%zu\n",
+             joint_pts.size(), r_med, clean_pts.size());
         if (clean_pts.size() >= 4) {
             const std::vector<float> nn = nn_distances(clean_pts);
-            if (!nn.empty()) d = median(nn) / std::sqrt(2.0f);
+            if (!nn.empty()) {
+                // Radius-based d estimate (overestimates ~40% due to peak shift,
+                // so apply an empirical correction factor). Used as a band-pass
+                // filter on NN distances to reject clustered-false-positive
+                // distances that corrupt the raw median.
+                const float d_radius = (r_med / kRingRadiusFrac) * 0.72f;
+                const float dexp = d_radius * std::sqrt(2.0f);  // expected diagonal
+                // Band-pass: keep NN distances in [0.5, 1.5]× the expected
+                // diagonal. The lower bound rejects clustered-false-positive
+                // distances; the upper bound rejects 2-step distances (markers
+                // whose nearest grid neighbour is 2 cells away — common at grid
+                // edges) that would inflate the median. d_radius overestimates
+                // ~25%, so the true diagonal sits at ~0.8×dexp, well inside the
+                // band.
+                std::vector<float> nn_filtered;
+                nn_filtered.reserve(nn.size());
+                for (float v : nn) {
+                    if (v >= 0.5f * dexp && v <= 1.5f * dexp)
+                        nn_filtered.push_back(v);
+                }
+                SDBG("[screw] fit: nn=%zu filtered=%zu (dexp=%.1f)\n",
+                     nn.size(), nn_filtered.size(), dexp);
+                if (!nn_filtered.empty()) {
+                    d = median(nn_filtered) / std::sqrt(2.0f);
+                } else {
+                    // No NN distances in the expected band — fall back to the
+                    // raw median (may be corrupted, but better than nothing).
+                    d = median(nn) / std::sqrt(2.0f);
+                }
+            }
         }
         // Fallback: radius estimate (overestimates ~40% due to peak shift, so
         // apply an empirical correction factor).
         if (d < 3.f) d = (r_med / kRingRadiusFrac) * 0.72f;
     } else {
-        const auto& ref_pts = confirmed_pts.empty() ? pts : confirmed_pts;
+        const auto& ref_pts = joint_pts.empty() ? pts : joint_pts;
         const std::vector<float> nn = nn_distances(ref_pts);
         if (nn.empty()) return false;
         d = median(nn) / std::sqrt(2.0f);
     }
     if (d < 3.f) return false;
     const float match_tol = kMatchTolFrac * d;
-    // Recovery search radius: base on the confirmed median ring radius (more
-    // accurate than d·kRingRadiusFrac, which overestimates when d is inflated
-    // by perspective). Use r_med + margin if available; fall back to d-based
-    // estimate. The margin covers radial-histogram peak shift (+2-3 px) and
-    // radius variation due to perspective, without being so large that it
-    // picks up neighbouring markers' rings (at distance d − r ≈ 45 px).
-    const int recover_max_r = (r_med > 0.f)
-        ? static_cast<int>(r_med) + 6
-        : static_cast<int>(d * kRingRadiusFrac) + kRingSearchMargin;
-    SDBG("[screw] fit: M=%d confirmed=%zu d=%.1f match_tol=%.1f recover_max_r=%d\n",
-         M, confirmed_pts.size(), d, match_tol, recover_max_r);
+    SDBG("[screw] fit: M=%d joint=%zu d=%.1f match_tol=%.1f\n",
+         M, joint_pts.size(), d, match_tol);
 
     // Collect candidate diagonal steps (pairs at ~d·√2). Weighted by the sum of
-    // the two endpoints' weights so confirmed-confirmed steps dominate.
+    // the two endpoints' weights so high-confidence (cross+ring) pairs dominate.
     const float D_diag = d * std::sqrt(2.0f);  // expected diagonal step length
     struct Step { cv::Point2f from; cv::Point2f s; float weight; };
     std::vector<Step> steps;
@@ -530,20 +550,20 @@ bool fit_asymmetric_grid(const cv::Mat& fg,
         }
     }
 
-    // The maximum possible score is need * kConfirmedWeight (all slots
-    // confirmed). Require at least need * kSuspectedWeight (every slot has at
-    // least a suspected marker) — no slot may be empty, because an empty slot
-    // would have to be synthesised and a synthesised position has no detected
-    // feature (user requirement: "if you want to fill a gap, the guessed centre
-    // must be at least a cross or a ring centre").
-    const float min_score = float(need) * kSuspectedWeight;
+    // Every slot must have at least one detected feature (cross or ring) — the
+    // minimum weight for any real marker is min(kCrossConfidence, kRingConfidence)
+    // = 0.5. No slot may be empty: a synthesised position has no detected feature
+    // and would corrupt the calibration. There is no second-stage recovery — an
+    // empty slot simply fails the fit.
+    const float min_score = float(need) * std::min(kCrossConfidence, kRingConfidence);
     if (best_score < min_score) {
         SDBG("[screw] fit: best_score=%.1f < min_score=%.1f REJECT\n",
              best_score, min_score);
         return false;
     }
     SDBG("[screw] fit: best_score=%.1f (min=%.1f max=%.1f)\n",
-         best_score, min_score, float(need) * kConfirmedWeight);
+         best_score, min_score,
+         float(need) * (kCrossConfidence + kRingConfidence + kNeighborConfidence));
 
     // Assign each grid position its matched marker (nearest within tol). Collect
     // matched points, then sort by (y, x) for canonical row-major order. The
@@ -569,46 +589,34 @@ bool fit_asymmetric_grid(const cv::Mat& fg,
             }
             if (best_k >= 0) {
                 ordered->push_back(pts[best_k]);
-                SDBG("  (%d,%d) pred=(%.0f,%.0f) match=#%d(%.0f,%.0f) d=%.1f %s\n",
+                SDBG("  (%d,%d) pred=(%.0f,%.0f) match=#%d(%.0f,%.0f) d=%.1f w=%.1f %s%s\n",
                      c, r, p.x, p.y, best_k, pts[best_k].x, pts[best_k].y,
-                     std::sqrt(best_d2), markers[best_k].is_confirmed() ? "CONF" : "susp");
+                     std::sqrt(best_d2), markers[best_k].weight(),
+                     markers[best_k].has_cross ? "X" : "",
+                     markers[best_k].has_ring ? "O" : "");
             } else {
-                // Second-stage ring recovery: search for a ring directly at the
-                // predicted position with relaxed parameters. The initial pass
-                // may have missed this marker because the cross was too sparse
-                // to form a connected component (no cross candidate generated),
-                // or the ring coverage was below kRingCoverFrac (0.60) but a
-                // weak arc is still present. The wider seed search (±5 px)
-                // compensates for the predicted position being off by a few px.
-                const RingInfo ring = find_ring(fg, p, recover_max_r,
-                                                kRecoverCoverFrac, kRecoverMinPixels,
-                                                kRecoverSeedSearch);
-                if (ring.found) {
-                    ordered->push_back(ring.center);
-                    SDBG("  (%d,%d) pred=(%.0f,%.0f) RECOVERED ring=(%.0f,%.0f) r=%.0f cov=%.2f\n",
-                         c, r, p.x, p.y, ring.center.x, ring.center.y,
-                         ring.radius, ring.coverage);
+                // No marker within tolerance and no second-stage recovery — the
+                // slot is empty. The fit fails (see the size check below).
+                // Diagnostic: nearest marker regardless of tol, for debugging.
+                int nk = -1; float nd2 = 1e9f;
+                for (int k = 0; k < M; ++k) {
+                    const float dx = pts[k].x - p.x, dy = pts[k].y - p.y;
+                    const float d2 = dx*dx + dy*dy;
+                    if (d2 < nd2) { nd2 = d2; nk = k; }
+                }
+                SDBG("  (%d,%d) pred=(%.0f,%.0f) EMPTY", c, r, p.x, p.y);
+                if (nk >= 0) {
+                    SDBG(" nearest=#%d(%.0f,%.0f) d=%.1f %s%s\n",
+                         nk, pts[nk].x, pts[nk].y, std::sqrt(nd2),
+                         markers[nk].has_cross ? "X" : "",
+                         markers[nk].has_ring ? "O" : "");
                 } else {
-                    // Diagnostic: nearest marker regardless of tol.
-                    int nk = -1; float nd2 = 1e9f;
-                    for (int k = 0; k < M; ++k) {
-                        const float dx = pts[k].x - p.x, dy = pts[k].y - p.y;
-                        const float d2 = dx*dx + dy*dy;
-                        if (d2 < nd2) { nd2 = d2; nk = k; }
-                    }
-                    SDBG("  (%d,%d) pred=(%.0f,%.0f) EMPTY", c, r, p.x, p.y);
-                    if (nk >= 0) {
-                        SDBG(" nearest=#%d(%.0f,%.0f) d=%.1f cov=%.2f %s\n",
-                             nk, pts[nk].x, pts[nk].y, std::sqrt(nd2),
-                             markers[nk].coverage, markers[nk].has_ring ? "ring" : "cross-only");
-                    } else {
-                        SDBG("\n");
-                    }
+                    SDBG("\n");
                 }
             }
         }
     }
-    if (int(ordered->size()) < need) return false;  // unfilled slots — reject
+    if (int(ordered->size()) < need) return false;  // empty slots — reject
     std::sort(ordered->begin(), ordered->end(),
               [&](const cv::Point2f& a, const cv::Point2f& b) {
                   if (std::abs(a.y - b.y) > d * 0.5f) return a.y < b.y;
@@ -617,12 +625,31 @@ bool fit_asymmetric_grid(const cv::Mat& fg,
     return true;
 }
 
+// Returns true if any of the 8 pixels surrounding @p pos (in the foreground
+// mask @p fg) is non-zero — a centre surrounded by signal is more reliable than
+// one sitting in empty space (e.g. inside a hollow ring with no cross). This is
+// the 8-neighbourhood confidence boost (kNeighborConfidence = 0.2).
+bool has_8neighbor_signal(const cv::Mat& fg, const cv::Point2f& pos) {
+    const int cx = static_cast<int>(pos.x);
+    const int cy = static_cast<int>(pos.y);
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const int x = cx + dx, y = cy + dy;
+            if (x < 0 || x >= fg.cols || y < 0 || y >= fg.rows) continue;
+            if (fg.at<uchar>(y, x)) return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 DetectionResult detect_screwheads(const cv::Mat& color_frame,
                                   int cols, int rows,
                                   int dot_gap,
-                                  bool annotate) {
+                                  bool annotate,
+                                  const RingParams& ring) {
     DetectionResult result;
     if (color_frame.empty() || color_frame.channels() != 3) return result;
 
@@ -632,47 +659,56 @@ DetectionResult detect_screwheads(const cv::Mat& color_frame,
          color_frame.cols, color_frame.rows, cv::countNonZero(fg), cv::countNonZero(denoised));
 
     // Stage 2: cross-centre candidates.
-    std::vector<Candidate> cands = find_cross_candidates(denoised, dot_gap);
+    std::vector<Candidate> cands = find_cross_candidates(denoised, dot_gap,
+                                                         ring.search_margin);
     SDBG("[screw] stage2 candidates=%zu (need>=%d)\n", cands.size(), cols * rows);
     if (cands.size() < 9) return result;  // need at least ~a third of 30
 
-    // Stage 3: joint cross + ring localisation. Each cross candidate is paired
-    // with a ring (if one is found in its neighbourhood). A marker whose ring
-    // has high angular coverage (≥ kConfirmedCoverFrac) is confirmed; one with
-    // a low-coverage ring or cross-only is suspected. Both enter the grid fit
-    // with different weights.
+    // Stage 3: joint cross + ring localisation. Cross and ring are PEER
+    // features: each cross candidate always yields a cross centre, and a ring
+    // is searched around it (found or not). Detecting EITHER feature means a
+    // possible marker centre was found. Each contributes 50% confidence; the
+    // 8-neighbourhood of the final centre adds 20%. The combined weight drives
+    // the grid-fit RANSAC.
     //
     // NOTE: radius outliers (large merged arcs with r=40-169 when true r≈13)
     // are NOT downgraded here. At 20000µs these are often motion ghost markers
     // — their positions coincide with real grid positions (helping the grid fit
-    // anchor), but their radii are inflated by the merged arc. Downgrading them
-    // removes useful positional votes and reduces the detection rate (tested:
-    // 7/9 → 5/9 at 20000µs). The d estimation in fit_asymmetric_grid already
-    // filters by radius consistency for spacing estimation, so the grid axes
-    // are not corrupted by the outlier radii.
+    // anchor), but their radii are inflated by the merged arc. The d estimation
+    // in fit_asymmetric_grid filters by radius consistency for spacing, so the
+    // grid axes are not corrupted by the outlier radii.
+    //
+    // Every detected cross/ring feature is reported in the result (cross_centers
+    // / ring_centers / ring_radii) even if the grid fit later fails — the
+    // capture-review dialog draws them (blue crosses, red circles) so the user
+    // can see what WAS found and relax the ring parameters before re-detecting.
     std::vector<Marker> markers;
-    int n_confirmed = 0, n_suspected = 0;
+    int n_both = 0, n_cross_only = 0;
     for (const Candidate& c : cands) {
         Marker m;
         m.cross_pos = c.pos;
         m.has_cross = true;
-        const RingInfo ring = find_ring(fg, c.pos, c.max_r);
-        if (ring.found) {
-            m.ring_pos = ring.center;
-            m.ring_radius = ring.radius;
-            m.coverage = ring.coverage;
+        result.cross_centers.push_back(c.pos);
+        const RingInfo rinfo = find_ring(fg, c.pos, c.max_r, ring);
+        if (rinfo.found) {
+            m.ring_pos = rinfo.center;
+            m.ring_radius = rinfo.radius;
+            m.coverage = rinfo.coverage;
             m.has_ring = true;
+            result.ring_centers.push_back(rinfo.center);
+            result.ring_radii.push_back(rinfo.radius);
         }
-        if (m.is_confirmed()) ++n_confirmed; else ++n_suspected;
+        m.has_neighbor_support = has_8neighbor_signal(fg, m.best_pos());
+        if (m.has_ring) ++n_both; else ++n_cross_only;
         markers.push_back(m);
     }
-    SDBG("[screw] stage3 markers=%zu confirmed=%d suspected=%d (need>=%d)\n",
-         markers.size(), n_confirmed, n_suspected, cols * rows);
+    SDBG("[screw] stage3 markers=%zu cross+ring=%d cross-only=%d (need>=%d)\n",
+         markers.size(), n_both, n_cross_only, cols * rows);
     if (int(markers.size()) < cols * rows) return result;
 
-    // Stage 4: weighted grid fit + order row-major.
+    // Stage 4: weighted RANSAC grid fit + order row-major.
     std::vector<cv::Point2f> ordered;
-    const bool fit_ok = fit_asymmetric_grid(fg, markers, cols, rows, &ordered);
+    const bool fit_ok = fit_asymmetric_grid(markers, cols, rows, &ordered);
     SDBG("[screw] stage4 fit=%d\n", fit_ok ? 1 : 0);
     if (!fit_ok) return result;
 

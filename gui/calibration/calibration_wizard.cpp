@@ -1,8 +1,14 @@
 // gui/calibration/calibration_wizard.cpp — see header (Zhou's Method).
 //
 // Wires the event tap (drain_last_window) + CalibrationWorker (async screw-head
-// grid detection + duplicate/coverage rejection, on-worker cv::calibrateCamera,
-// auto-mkdir YAML export) to the Space-key capture.
+// grid detection + coverage/duplicate rejection, on-worker cv::calibrateCamera,
+// auto-mkdir YAML export) to the Space-key capture. On Space the worker detects
+// the frame and the wizard shows a modal CAPTURE-REVIEW dialog: detected rings
+// (red circles) and crosses (blue crosses) are drawn over the raw frame, the
+// ring-detection parameters are adjustable with a Re-detect button, and the
+// user commits the capture with Accept (the pipeline continues: coverage +
+// duplicate checks, accumulation, progress) or abandons it with Discard (the
+// frame is dropped entirely).
 
 #include "calibration_wizard.h"
 
@@ -14,7 +20,6 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHideEvent>
-#include <QComboBox>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMessageBox>
@@ -39,8 +44,9 @@
 #include <metavision/sdk/base/utils/timestamp.h>
 
 #include "app/camera_controller.h"
-#include "circle_grid_display.h"
 #include "calibration_worker.h"
+#include "capture_review_dialog.h"
+#include "circle_grid_display.h"
 #include "display/event_display_widget.h"
 
 namespace gui {
@@ -58,10 +64,10 @@ constexpr int kGridRows = 5;
 constexpr double kDefaultSquareMm = 5.0;
 constexpr int kDefaultTargetFrames = 15;
 
-// Dashed-cross dot gap (Zhou's screw-head grid). 1/2/3 are the supported
-// values; default 2. The cross dots are 1px, spaced (1+dot_gap) px apart, and
-// the solid ring thickness equals dot_gap.
-constexpr int kDefaultDotGap = 2;
+// Dashed-cross dot gap is fixed at 1 (1px white / 1px black alternating, 30 Hz
+// blink). Ring thickness is fixed at 2px. No user control — the pattern is
+// pre-computed as two pixmaps toggled at 30 Hz by CircleGridDisplay.
+constexpr int kDotGap = 1;
 
 // Space-capture event window (µs), user-tunable 200–20000 in 1 µs steps.
 // The screw-head detector verifies rings geometrically (radial-histogram peak +
@@ -77,6 +83,8 @@ constexpr int kDefaultCaptureWindowUs = 5000;
 // Register cross-thread metatypes used by the worker signals/slots.
 Q_DECL_UNUSED static const int kRegCvMat = qRegisterMetaType<cv::Mat>("cv::Mat");
 Q_DECL_UNUSED static const int kRegSizeT = qRegisterMetaType<std::size_t>("std::size_t");
+Q_DECL_UNUSED static const int kRegCaptureReview =
+    qRegisterMetaType<gui::CaptureReview>("gui::CaptureReview");
 
 // Inset (px per side) applied to the screen workarea when sizing the wizard.
 // The window must stay BELOW the compositor's full-screen threshold: on Mutter
@@ -168,16 +176,26 @@ CalibrationWizard::CalibrationWizard(QWidget* parent) : QDialog(parent) {
 
     connect(this, &CalibrationWizard::configure_requested,
             worker_, &CalibrationWorker::configure);
-    connect(this, &CalibrationWizard::submit_frame,
-            worker_, &CalibrationWorker::process_frame);
+    connect(this, &CalibrationWizard::review_frame_requested,
+            worker_, &CalibrationWorker::review_frame);
+    connect(this, &CalibrationWizard::re_detect_requested,
+            worker_, &CalibrationWorker::re_detect);
+    connect(this, &CalibrationWizard::accept_review_requested,
+            worker_, &CalibrationWorker::accept_review);
+    connect(this, &CalibrationWizard::delete_last_capture_requested,
+            worker_, &CalibrationWorker::delete_last_capture);
     connect(this, &CalibrationWizard::run_calibration_requested,
             worker_, &CalibrationWorker::run_calibration);
     connect(this, &CalibrationWizard::export_requested,
             worker_, &CalibrationWorker::export_to);
+    connect(worker_, &CalibrationWorker::review_ready,
+            this, &CalibrationWizard::on_review_ready);
     connect(worker_, &CalibrationWorker::frame_accepted,
             this, &CalibrationWizard::on_frame_accepted);
     connect(worker_, &CalibrationWorker::frame_rejected,
             this, &CalibrationWizard::on_frame_rejected);
+    connect(worker_, &CalibrationWorker::frame_deleted,
+            this, &CalibrationWizard::on_frame_deleted);
     connect(worker_, &CalibrationWorker::capture_complete,
             this, &CalibrationWizard::on_capture_complete);
     connect(worker_, &CalibrationWorker::calibration_done,
@@ -367,39 +385,122 @@ void CalibrationWizard::on_capture_pressed() {
     cv::Mat frame = render_event_frame(evs, sw, sh);
     capture_in_flight_ = true;
     // Serialize captures (Phase 4 Debug D7): disable the button while the
-    // worker judges this frame; on_frame_accepted/rejected re-enable it. This
-    // makes the one-at-a-time flow visible and prevents rapid clicks piling up.
+    // worker detects + the review dialog is open; on accept/discard/reject it
+    // is re-enabled. This makes the one-at-a-time flow visible and prevents
+    // rapid clicks piling up.
     capture_btn_->setEnabled(false);
+    // "Delete this capture" is also blocked while a frame is in flight — the
+    // last accepted frame's preview is still shown, but deleting it mid-judgment
+    // of the next frame would race the worker's accept/remove queue order.
+    update_delete_enabled();
+    review_dialog_active_ = true;   // gates on_review_ready (see that slot)
     set_status(tr("Detecting (%1 events)…").arg(n));
-    emit submit_frame(frame);
+    emit review_frame_requested(frame);
+}
+
+void CalibrationWizard::on_review_ready(const CaptureReview& review) {
+    // A stale review (e.g. a re-detect result that was in flight when the user
+    // already accepted/discarded) must not re-open the dialog.
+    if (!review_dialog_active_) return;
+
+    if (!review_dialog_) {
+        review_dialog_ = new CaptureReviewDialog(this);
+        connect(review_dialog_, &CaptureReviewDialog::re_detect_requested,
+                this, &CalibrationWizard::re_detect_requested);
+    }
+    review_dialog_->set_review(review);
+
+    // First detection for this capture: block on the modal dialog. Re-detect
+    // results arrive while exec() is running and only refresh the dialog (the
+    // isVisible() branch below).
+    if (!review_dialog_->isVisible()) {
+        if (review_dialog_->exec() == QDialog::Accepted) {
+            // Accepted: close the dialog and continue the pipeline — the worker
+            // runs the coverage + duplicate checks and accumulates the frame.
+            review_dialog_active_ = false;
+            set_status(tr("Committing capture…"));
+            emit accept_review_requested();
+        } else {
+            // Discarded (or closed): abandon this capture entirely — it is NOT
+            // added to the calibration set.
+            review_dialog_active_ = false;
+            capture_in_flight_ = false;
+            set_status(tr("Capture discarded."));
+            if (!capture_done_) enable_capture(camera_ && camera_->is_connected());
+            update_delete_enabled();
+        }
+    }
 }
 
 void CalibrationWizard::on_frame_accepted(QImage annotated,
                                           std::size_t accepted, std::size_t target) {
+    review_dialog_active_ = false;
     capture_in_flight_ = false;
     progress_->setRange(0, static_cast<int>(target));
     progress_->setValue(static_cast<int>(accepted));
-    if (!annotated.isNull()) {
-        preview_label_->setPixmap(QPixmap::fromImage(annotated).scaledToWidth(
-            preview_area_->viewport()->width(), Qt::SmoothTransformation));
-        preview_label_->resize(preview_label_->pixmap().size());
-    }
+    // Keep a preview stack parallel to the worker's image_points_ so a delete
+    // can revert the preview to the now-last capture. Push even when annotated
+    // is null (annotation can fail) so the stack stays in lock-step with the
+    // accepted count — show_last_preview() handles a null top gracefully.
+    captured_previews_.push_back(annotated);
+    show_last_preview();
+    // The just-accepted frame is now the deletable "last capture". capture_done_
+    // (set by on_capture_complete when the target is reached) clears this via
+    // update_delete_enabled() — so delete is only available before the final
+    // set is locked in.
+    can_delete_last_ = true;
     set_status(tr("Captured %1 / %2 frames.").arg(accepted).arg(target));
     // Judgment done — re-enable capture for the next shot (capture_complete
     // disables it for good once the target is reached).
     if (!capture_done_) enable_capture(camera_ && camera_->is_connected());
+    update_delete_enabled();
 }
 
 void CalibrationWizard::on_frame_rejected(QString reason) {
+    review_dialog_active_ = false;
     capture_in_flight_ = false;
     set_status(tr("Rejected — %1").arg(reason));
     if (!capture_done_) enable_capture(camera_ && camera_->is_connected());
+    update_delete_enabled();
+}
+
+void CalibrationWizard::on_delete_capture() {
+    // One delete per accept: drop the flag immediately so a second click (or a
+    // rapid double-click) cannot remove the prior capture. The worker's
+    // remove_last_frame is queued and will confirm via frame_deleted, at which
+    // point the progress bar and preview are rolled back to match.
+    if (!can_delete_last_) return;
+    can_delete_last_ = false;
+    update_delete_enabled();
+    set_status(tr("Discarding last capture…"));
+    emit delete_last_capture_requested();
+}
+
+void CalibrationWizard::on_frame_deleted(std::size_t remaining) {
+    // Worker confirmed the last observation was removed. Roll back the progress
+    // bar to its authoritative count and pop the parallel preview stack so the
+    // preview reverts to the now-last capture (or the placeholder if empty).
+    progress_->setValue(static_cast<int>(remaining));
+    if (!captured_previews_.empty()) captured_previews_.pop_back();
+    show_last_preview();
+    if (remaining > 0) {
+        set_status(tr("Last capture discarded. %1 frame(s) remain.").arg(remaining));
+    } else {
+        set_status(tr("Last capture discarded. No frames remain."));
+    }
+    update_delete_enabled();
 }
 
 void CalibrationWizard::on_capture_complete(std::size_t accepted) {
+    review_dialog_active_ = false;
     capture_in_flight_ = false;
     capture_done_ = true;
     enable_capture(false);
+    // Target reached → calibration is running on the worker. Deleting now would
+    // not affect the already-computed result, so block it. The user must Reset
+    // (which clears the preview stack and can_delete_last_) to start over.
+    can_delete_last_ = false;
+    update_delete_enabled();
     // Run cv::calibrateCamera on the worker thread (Phase 4-3).
     set_status(tr("Captured %1 frames. Running calibration…").arg(accepted));
     emit run_calibration_requested();
@@ -437,8 +538,11 @@ void CalibrationWizard::on_export_done(bool ok, QString message) {
 }
 
 void CalibrationWizard::on_intrinsic_reset() {
+    review_dialog_active_ = false;
     capture_in_flight_ = false;
     capture_done_ = false;
+    can_delete_last_ = false;
+    captured_previews_.clear();
     progress_->setValue(0);
     preview_label_->clear();
     preview_label_->setText(tr("No frames captured yet."));
@@ -446,6 +550,7 @@ void CalibrationWizard::on_intrinsic_reset() {
     // Reset the worker's accumulated observations (queued).
     QMetaObject::invokeMethod(worker_, "reset", Qt::QueuedConnection);
     enable_capture(camera_ && camera_->is_connected());
+    update_delete_enabled();
     set_status(tr("Point the camera at the pattern and press Space to capture."));
 }
 
@@ -453,13 +558,18 @@ void CalibrationWizard::on_config_changed() {
     apply_pattern_to_display();
     configure_worker();
     // Geometry change invalidates accumulated observations — reset the view.
+    review_dialog_active_ = false;
+    capture_in_flight_ = false;
     capture_done_ = false;
+    can_delete_last_ = false;
+    captured_previews_.clear();
     progress_->setValue(0);
     preview_label_->clear();
     preview_label_->setText(tr("No frames captured yet."));
     export_btn_->setEnabled(false);
     QMetaObject::invokeMethod(worker_, "reset", Qt::QueuedConnection);
     enable_capture(camera_ && camera_->is_connected());
+    update_delete_enabled();
 }
 
 void CalibrationWizard::set_status(const QString& text) {
@@ -472,10 +582,35 @@ void CalibrationWizard::enable_capture(bool on) {
         tr("Connect a camera first, then press Space to capture."));
 }
 
+void CalibrationWizard::update_delete_enabled() {
+    // Enabled only when the last accept has not been deleted, no capture is in
+    // flight, and the target has not been reached. This enforces the contract:
+    // one delete per capture, before the final set is locked in. A second
+    // consecutive delete (can_delete_last_ == false) is blocked here, so it can
+    // never reach the worker to drop the prior capture.
+    const bool on = can_delete_last_ && !capture_in_flight_ && !capture_done_;
+    delete_capture_btn_->setEnabled(on);
+}
+
+void CalibrationWizard::show_last_preview() {
+    // Render the top of the preview stack (the current last-accepted capture)
+    // scaled to the scroll-area width, or the placeholder when empty/null.
+    // QImage is implicitly shared, so QPixmap::fromImage makes the only deep
+    // copy needed for display.
+    if (captured_previews_.empty() || captured_previews_.back().isNull()) {
+        preview_label_->clear();
+        preview_label_->setText(tr("No frames captured yet."));
+        return;
+    }
+    const QImage& img = captured_previews_.back();
+    preview_label_->setPixmap(QPixmap::fromImage(img).scaledToWidth(
+        preview_area_->viewport()->width(), Qt::SmoothTransformation));
+    preview_label_->resize(preview_label_->pixmap().size());
+}
+
 void CalibrationWizard::apply_pattern_to_display() {
     if (pattern_) {
         pattern_->set_pattern(kGridCols, kGridRows);
-        pattern_->set_dot_gap(dot_gap_->currentData().toInt());
         pattern_->set_square_size_mm(static_cast<float>(square_mm_->value()));
     }
 }
@@ -483,7 +618,7 @@ void CalibrationWizard::apply_pattern_to_display() {
 void CalibrationWizard::configure_worker() {
     emit configure_requested(square_mm_->value(),
                              target_frames_->value(),
-                             dot_gap_->currentData().toInt());
+                             kDotGap);
 }
 
 QString CalibrationWizard::default_export_path() const {
@@ -559,19 +694,6 @@ void CalibrationWizard::build_ui() {
     auto* params_widget = new QWidget(this);
     auto* form = new QFormLayout(params_widget);
     form->setContentsMargins(0, 0, 0, 0);
-
-    // Zhou's screw-head grid — dashed-cross dot gap (1/2/3, default 2). The
-    // cross is 1px white dots spaced (1+dot_gap) px apart; the solid ring
-    // thickness equals dot_gap. Smaller gaps give a denser cross.
-    dot_gap_ = new QComboBox(params_widget);
-    dot_gap_->addItem(QString::number(1), 1);
-    dot_gap_->addItem(QString::number(2), 2);
-    dot_gap_->addItem(QString::number(3), 3);
-    dot_gap_->setCurrentIndex(dot_gap_->findData(kDefaultDotGap));
-    dot_gap_->setToolTip(tr("Dashed-cross dot gap in pixels (1/2/3). The cross "
-        "is 1px white dots spaced (1+gap) px apart; the solid ring thickness "
-        "equals the gap. Smaller gaps give a denser cross."));
-    form->addRow(tr("Dot gap"), dot_gap_);
 
     // Capture window (µs), 200–20000 in 1 µs steps. Long enough to gather a
     // dense ring signal; the detector verifies rings geometrically (not by
@@ -653,11 +775,25 @@ void CalibrationWizard::build_ui() {
     // ---- Controls row: buttons + progress ----
     auto* btns = new QHBoxLayout();
     capture_btn_ = new QPushButton(tr("Capture"), this);
+    // "Delete this capture" sits immediately right of Capture. It discards the
+    // most recently accepted frame after the user inspects its annotated
+    // preview — that frame is then excluded from the final intrinsic
+    // calculation. Gated by can_delete_last_ (one delete per accept: a second
+    // consecutive delete that would drop the prior capture is blocked) and
+    // disabled while a capture is in flight or once the target is reached.
+    delete_capture_btn_ = new QPushButton(tr("Delete this capture"), this);
+    delete_capture_btn_->setEnabled(false);
+    delete_capture_btn_->setToolTip(tr(
+        "Discard the last accepted capture (after inspecting its preview) so it "
+        "is not used in the intrinsic calculation. Only the most recent capture "
+        "can be deleted — one delete per capture; capture again to delete the "
+        "next one."));
     reset_btn_   = new QPushButton(tr("Reset"), this);
     export_btn_  = new QPushButton(tr("Export..."), this);
     enable_capture(false);
     export_btn_->setEnabled(false);
     btns->addWidget(capture_btn_);
+    btns->addWidget(delete_capture_btn_);
     btns->addWidget(reset_btn_);
     btns->addWidget(export_btn_);
     btns->addStretch();
@@ -672,10 +808,8 @@ void CalibrationWizard::build_ui() {
     outer->addWidget(status_);
 
     // Config-change handlers. The grid is fixed at 6×5 (no cols/rows spinbox),
-    // so there is no square-grid rejection. dot_gap/capture_window/square_mm/
-    // target all trigger a re-configure + display refresh.
-    connect(dot_gap_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-        [this](int) { on_config_changed(); });
+    // so there is no square-grid rejection. capture_window/square_mm/target all
+    // trigger a re-configure + display refresh. dot_gap is fixed at 1.
     connect(capture_window_, QOverload<int>::of(&QSpinBox::valueChanged), this,
         [this](int) { on_config_changed(); });
     connect(square_mm_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -683,6 +817,7 @@ void CalibrationWizard::build_ui() {
     connect(target_frames_, QOverload<int>::of(&QSpinBox::valueChanged), this,
         [this](int v) { progress_->setRange(0, v); on_config_changed(); });
     connect(capture_btn_, &QPushButton::clicked, this, &CalibrationWizard::on_capture_pressed);
+    connect(delete_capture_btn_, &QPushButton::clicked, this, &CalibrationWizard::on_delete_capture);
     connect(reset_btn_, &QPushButton::clicked, this, &CalibrationWizard::on_intrinsic_reset);
     connect(export_btn_, &QPushButton::clicked, this, &CalibrationWizard::on_export_pressed);
 

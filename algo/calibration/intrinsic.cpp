@@ -47,6 +47,10 @@ void IntrinsicCalibration::set_dot_gap(int dot_gap) {
     dot_gap_ = std::clamp(dot_gap, 1, 3);
 }
 
+void IntrinsicCalibration::set_ring_params(const RingParams& params) {
+    ring_params_ = params;
+}
+
 std::vector<cv::Point3f> IntrinsicCalibration::make_object_grid() const {
     std::vector<cv::Point3f> pts;
     pts.reserve(static_cast<std::size_t>(board_size_.width) *
@@ -87,7 +91,7 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
     // encoded in colour); the OpenCV patterns below need grayscale.
     if (pattern_ == CalibrationPattern::ScrewHeadGrid) {
         return detect_screwheads(frame, board_size_.width, board_size_.height,
-                                 dot_gap_, annotate);
+                                 dot_gap_, annotate, ring_params_);
     }
 
     cv::Mat gray;
@@ -135,6 +139,13 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
 void IntrinsicCalibration::accept(const std::vector<cv::Point2f>& points) {
     image_points_.push_back(points);
     object_points_.push_back(make_object_grid());
+}
+
+void IntrinsicCalibration::remove_last_frame() {
+    if (!image_points_.empty()) {
+        image_points_.pop_back();
+        object_points_.pop_back();
+    }
 }
 
 DetectionResult IntrinsicCalibration::add_frame(const cv::Mat& frame, bool annotate) {

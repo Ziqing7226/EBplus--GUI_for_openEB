@@ -28,11 +28,31 @@ enum class CalibrationPattern {
                     ///< asymmetric 6×5 layout, polarity-verified detection
 };
 
+/// @brief User-adjustable ring/circle detection parameters for the
+/// ScrewHeadGrid detector. Exposed in the wizard's capture-review dialog so the
+/// user can re-detect a borderline capture (relax the coverage threshold, etc.)
+/// without re-capturing. Only the ring feature is parameterised — the cross
+/// detection has no tunables.
+struct RingParams {
+    float cover_frac{0.60f};   ///< Min angular coverage to accept a ring
+                               ///< (user requirement: coverage ≥ 0.6).
+    int min_pixels{6};         ///< Min ring pixel count for a valid ring.
+    int search_margin{12};     ///< Ring search radius margin (px) added to the
+                               ///< cross component's half-diagonal.
+};
+
 /// @brief Result of a single frame's corner detection.
 struct DetectionResult {
     bool found{false};
     cv::Mat image;                 ///< Annotated copy (for wizard preview)
     std::vector<cv::Point2f> points; ///< Detected corner coordinates
+    /// ScrewHeadGrid review info: every detected cross / ring feature,
+    /// populated even when the grid fit fails — the capture-review dialog uses
+    /// these to draw blue crosses and red circles so the user can see what WAS
+    /// detected, relax parameters, and re-detect.
+    std::vector<cv::Point2f> cross_centers;  ///< Detected cross centres (blue)
+    std::vector<cv::Point2f> ring_centers;   ///< Detected ring centres (red)
+    std::vector<float> ring_radii;           ///< Ring radii in px (parallel to ring_centers)
 };
 
 /// @brief Result of the full intrinsic calibration.
@@ -63,6 +83,11 @@ public:
     /// patterns. Stored only; does not affect object-point geometry.
     void set_dot_gap(int dot_gap);
 
+    /// @brief Sets the ring/circle detection parameters (coverage threshold,
+    /// min ring pixels, ring search margin) used by ScrewHeadGrid detection.
+    /// No-op for other patterns.
+    void set_ring_params(const RingParams& params);
+
     /// @brief Attempts to detect the calibration pattern in @p frame and, on
     /// success, accumulates the observation. Convenience wrapper around
     /// detect_only() + accept() for callers that want detect-and-keep in one
@@ -81,6 +106,11 @@ public:
     /// observation. @p points must come from a successful detect_only() on a
     /// frame of the configured geometry.
     void accept(const std::vector<cv::Point2f>& points);
+
+    /// @brief Removes the most recently accepted observation (image + object
+    /// points). Used by the wizard's "Delete this capture" button to discard a
+    /// bad frame after the user inspects the annotated preview. No-op if empty.
+    void remove_last_frame();
 
     /// @brief Returns true if @p points match (within @p threshold_px mean
     /// Euclidean distance) any already-accepted observation. Used by the
@@ -109,6 +139,7 @@ private:
     cv::Size board_size_{0, 0};    ///< Inner-corner count for chessboard (== OpenCV patternSize), (cols, rows) for circles
     float square_size_mm_{1.0f};
     int dot_gap_{2};               ///< ScrewHeadGrid dashed-cross dot gap (1/2/3)
+    RingParams ring_params_;       ///< ScrewHeadGrid ring detection parameters
     cv::Size image_size_{0, 0};
 
     std::vector<std::vector<cv::Point2f>> image_points_;

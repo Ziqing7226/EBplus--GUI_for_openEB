@@ -45,24 +45,72 @@ void CalibrationWorker::reset() {
     intrinsic_->reset();
 }
 
-void CalibrationWorker::process_frame(const cv::Mat& frame) {
-    if (frame.empty()) {
-        emit frame_rejected(tr("Empty capture frame."));
+void CalibrationWorker::delete_last_capture() {
+    intrinsic_->remove_last_frame();
+    emit frame_deleted(intrinsic_->frame_count());
+}
+
+void CalibrationWorker::review_frame(const cv::Mat& frame) {
+    review_frame_ = frame;
+    run_review_detect();
+}
+
+void CalibrationWorker::re_detect(double cover_frac, int min_pixels,
+                                  int search_margin) {
+    // Relaxed/updated ring parameters from the capture-review dialog.
+    ring_params_.cover_frac   = static_cast<float>(cover_frac);
+    ring_params_.min_pixels   = min_pixels;
+    ring_params_.search_margin = search_margin;
+    if (review_frame_.empty()) return;
+    run_review_detect();
+}
+
+void CalibrationWorker::run_review_detect() {
+    if (review_frame_.empty()) {
+        emit review_ready(CaptureReview{false, QImage(), {}, {}, {},
+                                        tr("Empty capture frame.")});
+        return;
+    }
+    intrinsic_->set_ring_params(ring_params_);
+    last_detect_ = intrinsic_->detect_only(review_frame_, true);
+
+    CaptureReview r;
+    r.found = last_detect_.found;
+    r.reason = last_detect_.found
+        ? QString()
+        : tr("Markers not fully detected — relax the ring parameters and "
+             "re-detect, or discard this capture.");
+    // Raw captured frame (BGR) → RGB QImage for the review dialog; the dialog
+    // draws its own markers (blue crosses / red circles) on top.
+    if (!review_frame_.empty()) {
+        cv::Mat rgb;
+        cv::cvtColor(review_frame_, rgb, cv::COLOR_BGR2RGB);
+        r.frame = QImage(rgb.data, rgb.cols, rgb.rows,
+                         static_cast<int>(rgb.step),
+                         QImage::Format_RGB888).copy();
+    }
+    for (const auto& p : last_detect_.cross_centers)
+        r.crosses.append(QPointF(p.x, p.y));
+    for (const auto& p : last_detect_.ring_centers)
+        r.rings.append(QPointF(p.x, p.y));
+    for (float rad : last_detect_.ring_radii)
+        r.ring_radii.append(rad);
+    emit review_ready(r);
+}
+
+void CalibrationWorker::accept_review() {
+    if (!last_detect_.found || last_detect_.points.empty()) {
+        emit frame_rejected(tr("Nothing to accept — markers were not detected."));
         return;
     }
 
-    auto res = intrinsic_->detect_only(frame, true);
-
-    if (!res.found) {
-        emit frame_rejected(tr("Markers not detected — re-aim and try again."));
-        return;
-    }
+    const cv::Mat& frame = review_frame_;
 
     // Coverage: detected grid bbox vs frame area.
-    if (!res.points.empty()) {
-        float xmin = res.points[0].x, xmax = xmin;
-        float ymin = res.points[0].y, ymax = ymin;
-        for (const auto& p : res.points) {
+    {
+        float xmin = last_detect_.points[0].x, xmax = xmin;
+        float ymin = last_detect_.points[0].y, ymax = ymin;
+        for (const auto& p : last_detect_.points) {
             xmin = std::min(xmin, p.x); xmax = std::max(xmax, p.x);
             ymin = std::min(ymin, p.y); ymax = std::max(ymax, p.y);
         }
@@ -76,20 +124,20 @@ void CalibrationWorker::process_frame(const cv::Mat& frame) {
         }
     }
 
-    if (intrinsic_->is_duplicate_pose(res.points, kDuplicateThresholdPx)) {
+    if (intrinsic_->is_duplicate_pose(last_detect_.points, kDuplicateThresholdPx)) {
         emit frame_rejected(tr("Duplicate pose — move the camera to a new angle."));
         return;
     }
 
-    intrinsic_->accept(res.points);
+    intrinsic_->accept(last_detect_.points);
     const std::size_t got = intrinsic_->frame_count();
 
     // Annotated BGR Mat → QImage (deep copy via .copy(), safe to pass across
     // threads to the GUI thread).
     QImage annotated;
-    if (!res.image.empty()) {
+    if (!last_detect_.image.empty()) {
         cv::Mat rgb;
-        cv::cvtColor(res.image, rgb, cv::COLOR_BGR2RGB);
+        cv::cvtColor(last_detect_.image, rgb, cv::COLOR_BGR2RGB);
         annotated = QImage(rgb.data, rgb.cols, rgb.rows,
                            static_cast<int>(rgb.step),
                            QImage::Format_RGB888).copy();

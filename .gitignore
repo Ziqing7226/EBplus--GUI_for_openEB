@@ -3,6 +3,9 @@ build/
 cmake-build-*/
 out/
 
+# ---- CTest runtime artifacts (regenerated on every run) ----
+Testing/
+
 # ---- CMake generated (in case build/ is not used) ----
 CMakeCache.txt
 CMakeFiles/
@@ -62,3 +65,8 @@ models/*.bin
 # to third_party/onnxruntime/ following devlog/design.md §4.4.2. Only the
 # directory contents are ignored; the directory itself is kept via .gitkeep.
 third_party/onnxruntime/
+
+# ---- Local project memory (personal, not shared) ----
+# AGENTS.md holds local memory migrated from Trae/Kimi; it is loaded by
+# ZCode as workspace instructions but must NOT be committed/shared.
+/AGENTS.md
