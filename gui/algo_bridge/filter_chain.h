@@ -43,7 +43,7 @@ class FilterChain {
 public:
     FilterChain();
 
-    /// @brief Sets the sensor geometry (needed by flip/rotate stages).
+    /// @brief Sets the sensor geometry (needed by flip/rotate/transpose stages).
     void set_geometry(int width, int height);
 
     /// @brief Returns the named stage. The pointer is returned WITHOUT the

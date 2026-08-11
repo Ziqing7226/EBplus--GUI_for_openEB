@@ -11,7 +11,6 @@
 #include <metavision/sdk/core/algorithms/polarity_filter_algorithm.h>
 #include <metavision/sdk/core/algorithms/polarity_inverter_algorithm.h>
 #include <metavision/sdk/core/algorithms/rotate_events_algorithm.h>
-#include <metavision/sdk/core/algorithms/transpose_events_algorithm.h>
 
 namespace gui {
 
@@ -216,12 +215,45 @@ public:
     void process(const Metavision::EventCD* b, const Metavision::EventCD* e,
                  std::vector<Metavision::EventCD>& out) override {
         if (!enabled_) return;
-        algo_.process_events(b, e, std::back_inserter(out));
+        // Transpose swaps x/y, turning a W×H stream into an H×W one. All
+        // downstream buffers (display frame generator, algorithm frames) are
+        // sized W×H, so events that land outside the frame after the swap
+        // (original x >= height_) must be dropped — the same policy as
+        // RotateStage for 90°/270° on non-square sensors. Without this guard
+        // the live display path writes out of bounds into
+        // PeriodicFrameGenerationAlgorithm::time_surface_ (heap corruption →
+        // delayed segfault); the other consumers (file display, TimeSurface,
+        // E2VID voxel grid) already bounds-check, but the stage-level guard
+        // keeps every downstream path consistent.
+        const int W = width_;
+        const int H = height_;
+        for (auto it = b; it != e; ++it) {
+            Metavision::EventCD ev = *it;
+            std::swap(ev.x, ev.y);
+            if (W > 0 && H > 0 && (ev.x >= W || ev.y >= H)) continue;
+            out.push_back(ev);
+        }
     }
-    bool set_param(const std::string&, const std::string&) override { return false; }
+    bool set_param(const std::string& k, const std::string& v) override {
+        if (k == "width_minus_one") {
+            std::int16_t w = 0;
+            if (!parse(v, w)) return false;
+            width_ = w + 1;
+            return true;
+        }
+        if (k == "height_minus_one") {
+            std::int16_t h = 0;
+            if (!parse(v, h)) return false;
+            height_ = h + 1;
+            return true;
+        }
+        return false;
+    }
     std::string name() const override { return "transpose"; }
 private:
-    Metavision::TransposeEventsAlgorithm algo_;
+    // Frame dims: post-transpose events must fit [0,width_)x[0,height_).
+    int width_{0};
+    int height_{0};
 };
 
 class RescaleStage : public FilterStage {
@@ -272,8 +304,9 @@ void FilterChain::set_geometry(int width, int height) {
     std::lock_guard<std::mutex> lk(chain_mutex());
     width_ = width;
     height_ = height;
-    // Rebuild geometry-dependent stages. RotateStage needs both dimensions
-    // (it bounds-checks rotated coordinates against width/height-1).
+    // Rebuild geometry-dependent stages. RotateStage and TransposeStage both
+    // need both dimensions (they bounds-check transformed coordinates against
+    // the W×H frame and drop events that cannot fit).
     auto apply = [this](const std::string& name, const std::string& key, const std::string& val) {
         auto it = stages_.find(name);
         if (it != stages_.end()) it->second->set_param(key, val);
@@ -282,6 +315,8 @@ void FilterChain::set_geometry(int width, int height) {
     apply("flip_y", "height_minus_one", std::to_string(height - 1));
     apply("rotate", "width_minus_one", std::to_string(width - 1));
     apply("rotate", "height_minus_one", std::to_string(height - 1));
+    apply("transpose", "width_minus_one", std::to_string(width - 1));
+    apply("transpose", "height_minus_one", std::to_string(height - 1));
 }
 
 FilterStage* FilterChain::stage(const std::string& name) {
