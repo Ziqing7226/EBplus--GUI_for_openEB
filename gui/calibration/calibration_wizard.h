@@ -25,7 +25,7 @@
 // orientation disambiguation (no missing corners). dot_gap is fixed at 1
 // (1px white / 1px black alternating); ring thickness is fixed at 2px.
 //
-// Bug-absorption (see devlog/v2_audit_and_plan.md §6 Phase 4):
+// Bug-absorption notes:
 //  - tap attach() disconnects first (no duplicate Connection);
 //  - no QScreen::physicalDotsPerInch() — marker spacing mm is user-input;
 //  - no raw QScreen* held (the pattern is embedded; no screen tracking, so

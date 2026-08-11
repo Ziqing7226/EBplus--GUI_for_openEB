@@ -5,7 +5,7 @@
 // event frame: background black, ON polarity = gold, OFF polarity = white, and
 // a pixel hit by both polarities takes the simple average of gold and white.
 //
-// Four-stage pipeline (see devlog/calibration_chessboard_redesign.md):
+// Four-stage pipeline:
 //   1. The frame is already accumulated by the caller (CalibrationWizard).
 //   2. Cross-centre candidates: 8-neighbour denoise → isotropic dilate (bridges
 //      intra-cross dot gaps) → connected components + area filter → density peak

@@ -104,7 +104,6 @@ GUI-for-openEB/
 ├── openeb/                # openEB SDK (Apache 2.0, v5.2.0)
 ├── models/                # E2VID PyTorch → ONNX conversion (convert_to_onnx.py)
 ├── third_party/           # ONNX Runtime (user-installed, git-ignored)
-├── devlog/                # design spec + compile guide + diagnostic reports
 ├── wiki/                  # this wiki
 ├── pic/                   # screenshots
 ├── run.sh                 # launcher (env vars)

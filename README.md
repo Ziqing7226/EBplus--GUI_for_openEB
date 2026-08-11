@@ -45,7 +45,7 @@ cmake --build build -- -j$(nproc)
 
 That's it. The launcher handles Wayland compatibility, HAL plugin paths, and OpenGL backend selection automatically.
 
-> **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [devlog/compile.md](devlog/compile.md) for details.
+> **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [wiki/compile.md](wiki/compile.md) for details.
 
 ---
 
@@ -129,7 +129,7 @@ After setup, launch EB plus and enable **Algorithm → Event → Video** — it 
 
 > **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps modes work without any setup — BardowVariational jointly estimates optical flow and intensity via Chambolle-Pock primal-dual optimization (all six λ terms), and InteractingMaps uses six interconnected maps (I/G/V/F/C/R) with rotation estimation via least squares.
 
-See [devlog/design.md §4.4.2](devlog/design.md) for full algorithm specifications.
+Algorithm specifications (all event-to-video modes): **E2VID** — event voxel grid → ONNX Runtime inference (UNetRecurrent, ConvLSTM state) → unsharp mask → auto-HDR rescaling → bilateral filter; **BardowVariational** — sliding window `[t−window_ms, t]` (events outside are dropped) → Chambolle–Pock primal–dual joint estimation of optical flow `u` and log-intensity `L` (λ1–λ6, with the λ6 prior applied only to pixels with no new events); **InteractingMaps** — same sliding window → six-map alternating relaxation (I/G/V/F/C/R) with Poisson gradient integration and V clamped to `[−1, 1]`. The two non-DL modes expose `window_ms` and an optional `decay_tau_ms`; GUI parameters are filtered by mode.
 
 ### Theming
 - **5 background colors**: Gray, Green, Yellow, Pink, Blue (default)
@@ -163,7 +163,7 @@ GUI-for-openEB/
 ├── openeb/            # openEB SDK (Apache 2.0, v5.2.0)
 ├── models/            # E2VID PyTorch → ONNX conversion
 ├── run.sh             # Launcher (sets env vars)
-├── devlog/               # Design spec + build guide + wiki
+├── wiki/              # Docs: compile guide, algorithms, architecture
 └── pic/               # Screenshots
 ```
 
