@@ -1057,6 +1057,14 @@ void MainWindow::wire_signals() {
             [this](int limit) {
                 camera_.frame_pipeline()->set_fps_limit(static_cast<std::uint16_t>(limit));
             });
+    connect(settings_->display_panel(), &DisplayPanel::frame_mode_changed, this,
+            [this](FrameMode mode) {
+                camera_.frame_pipeline()->set_frame_mode(mode);
+            });
+    connect(settings_->display_panel(), &DisplayPanel::decay_time_changed_us, this,
+            [this](int us) {
+                camera_.frame_pipeline()->set_frame_decay_time_us(us);
+            });
 
     // FramePipeline -> both UIs (DisplayPanel + PlaybackControls).
     // When the pipeline's params change (from either UI or programmatically),

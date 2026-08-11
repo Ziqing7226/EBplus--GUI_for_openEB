@@ -43,6 +43,7 @@
 namespace gui {
 
 class FilterChain;  ///< Forward decl — applied at render time for file mode.
+class FrameModeRenderer;  ///< Forward decl — non-integration display frame modes.
 
 class FileFrameGenerator : public QObject {
     Q_OBJECT
@@ -86,6 +87,13 @@ public:
     /// events_window_ready, so that flip/rotate/etc. take effect immediately
     /// and algorithm output is also transformed. nullptr = no filtering.
     void set_filter_chain(FilterChain* fc) { filter_chain_ = fc; }
+
+    /// @brief Sets the shared frame-mode renderer (non-integration display
+    /// modes). render_frame() feeds each window's (filtered) events to it and
+    /// uses its generated frame for display. nullptr keeps the palette render.
+    void set_frame_mode_renderer(FrameModeRenderer* renderer) {
+        frame_mode_renderer_ = renderer;
+    }
 
     // --- Playback control (GUI thread only) ---
 
@@ -211,6 +219,11 @@ private:
     // rendered pixels and the events emitted via events_window_ready, so
     // algorithm output matches the display orientation.
     FilterChain* filter_chain_{nullptr};
+
+    // Frame-mode rendering (non-integration modes). Shared with FramePipeline;
+    // render_frame feeds each window's filtered events and uses the generated
+    // frame for display when the renderer is active.
+    FrameModeRenderer* frame_mode_renderer_{nullptr};
 
     // Display-path preprocessing (Phase 2.5). Applied in render_frame() to
     // the RENDERED pixels only — events_window_ready keeps the un-noise-

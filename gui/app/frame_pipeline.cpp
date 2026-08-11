@@ -22,6 +22,22 @@ FramePipeline::FramePipeline(QObject* parent) : QObject(parent) {
             this, &FramePipeline::events_window_ready);
     connect(&file_generator_, &FileFrameGenerator::buffer_truncated,
             this, &FramePipeline::file_buffer_truncated);
+
+    // File-path frame-mode rendering: render_frame feeds the shared renderer.
+    file_generator_.set_frame_mode_renderer(&frame_mode_renderer_);
+    // Stateful frame modes (TimeDecay / EventsIntegration) must not span a
+    // backward time jump: reset on seek and loop.
+    connect(this, &FramePipeline::file_seeked, this,
+            [this](Metavision::timestamp) { frame_mode_renderer_.reset(); });
+    connect(this, &FramePipeline::file_looped, this,
+            [this] { frame_mode_renderer_.reset(); });
+
+    // Live-mode tick for non-integration frame modes: generate the current
+    // mode's frame at fps from the accumulated events.
+    frame_mode_timer_ = new QTimer(this);
+    frame_mode_timer_->setTimerType(Qt::PreciseTimer);
+    connect(frame_mode_timer_, &QTimer::timeout,
+            this, &FramePipeline::on_frame_mode_tick);
 }
 
 FramePipeline::~FramePipeline() {
@@ -57,6 +73,11 @@ bool FramePipeline::start(long width, long height,
     }
     generator_ = std::make_unique<gui_algo::FrameGenerator>(width_, height_);
     recreate_window();
+    frame_mode_renderer_.set_geometry(static_cast<int>(width_),
+                                      static_cast<int>(height_));
+    frame_mode_renderer_.set_mode(frame_mode_);
+    frame_mode_renderer_.reset();
+    update_frame_mode_timer();
     return window_id_ >= 0;
 }
 
@@ -78,6 +99,10 @@ bool FramePipeline::start_file(long width, long height,
     file_generator_.set_geometry(width_, height_);
     file_generator_.set_fps(fps_);
     file_generator_.set_accumulation_time_us(accumulation_us_);
+    frame_mode_renderer_.set_geometry(static_cast<int>(width_),
+                                      static_cast<int>(height_));
+    frame_mode_renderer_.set_mode(frame_mode_);
+    frame_mode_renderer_.reset();
     return true;
 }
 
@@ -98,6 +123,10 @@ void FramePipeline::recreate_window() {
     window_id_ = generator_->add_window(
         "main", params,
         [this](Metavision::timestamp ts, cv::Mat& frame) {
+            // Non-integration frame modes emit via the mode tick instead.
+            if (frame_mode_ != FrameMode::Integration) {
+                return;
+            }
             if (frame.empty()) {
                 return;
             }
@@ -119,6 +148,7 @@ void FramePipeline::recreate_window() {
 }
 
 void FramePipeline::stop() {
+    if (frame_mode_timer_) frame_mode_timer_->stop();
     if (file_mode_) {
         file_generator_.pause();
         file_generator_.clear();
@@ -129,6 +159,7 @@ void FramePipeline::stop() {
         generator_.reset();
     }
     window_id_ = -1;
+    frame_mode_renderer_.reset();
 }
 
 void FramePipeline::add_events(const Metavision::EventCD* begin,
@@ -154,7 +185,16 @@ void FramePipeline::add_events(const Metavision::EventCD* begin,
         // the same span the display sees (raw when all stages are off, so
         // the recording stays continuous across preproc toggles).
         if (processed_listener_) processed_listener_(out_b, out_e);
-        generator_->add_events(out_b, out_e);
+        // Non-integration frame modes feed the frame-mode renderer (their
+        // tick emits frame_ready); the CDFrameGenerator path is bypassed.
+        if (frame_mode_ != FrameMode::Integration) {
+            frame_mode_renderer_.add_events(out_b, out_e);
+            if (out_e > out_b) {
+                last_ev_ts_.store((out_e - 1)->t, std::memory_order_relaxed);
+            }
+        } else {
+            generator_->add_events(out_b, out_e);
+        }
     }
 }
 
@@ -195,6 +235,7 @@ void FramePipeline::set_fps(std::uint16_t fps) {
     } else if (generator_) {
         recreate_window();
     }
+    update_frame_mode_timer();
     emit fps_changed(fps_);
 }
 
@@ -209,12 +250,58 @@ void FramePipeline::set_fps_limit(std::uint16_t limit) {
 }
 
 void FramePipeline::set_color_palette(Metavision::ColorPalette palette) {
+    palette_ = palette;
+    frame_mode_renderer_.set_palette(palette);
     if (generator_) {
         generator_->set_color_palette(palette);
     }
     // File mode: forward to FileFrameGenerator so render_frame() uses the
     // palette selected in DisplayPanel (matches CDFrameGenerator behavior).
     file_generator_.set_color_palette(palette);
+}
+
+void FramePipeline::set_frame_mode(FrameMode mode) {
+    if (frame_mode_ == mode) return;
+    frame_mode_ = mode;
+    frame_mode_renderer_.set_mode(mode);
+    frame_mode_renderer_.set_geometry(static_cast<int>(width_),
+                                      static_cast<int>(height_));
+    frame_mode_renderer_.reset();
+    update_frame_mode_timer();
+    emit frame_mode_changed(mode);
+}
+
+void FramePipeline::set_frame_decay_time_us(Metavision::timestamp us) {
+    frame_mode_renderer_.set_decay_time_us(us);
+}
+
+void FramePipeline::update_frame_mode_timer() {
+    if (!frame_mode_timer_) return;
+    frame_mode_timer_->stop();
+    // Live mode + non-integration frame modes: generate at fps on a timer.
+    if (!file_mode_ && frame_mode_ != FrameMode::Integration && width_ > 0) {
+        frame_mode_timer_->start(std::max(1, 1000 / static_cast<int>(fps_)));
+    }
+}
+
+void FramePipeline::on_frame_mode_tick() {
+    cv::Mat frame = frame_mode_renderer_.generate();
+    if (frame.empty() || frame.channels() == 0) {
+        return;
+    }
+    try {
+        cv::Mat rgb;
+        if (frame.channels() == 1) {
+            cv::cvtColor(frame, rgb, cv::COLOR_GRAY2RGB);
+        } else {
+            cv::cvtColor(frame, rgb, cv::COLOR_BGR2RGB);
+        }
+        QImage img(rgb.data, rgb.cols, rgb.rows,
+                   static_cast<int>(rgb.step), QImage::Format_RGB888);
+        emit frame_ready(img.copy(), last_ev_ts_.load(std::memory_order_relaxed));
+    } catch (const std::exception&) {
+        // Swallow — the tick must not propagate exceptions
+    } catch (...) {}
 }
 
 void FramePipeline::set_file_filter_chain(FilterChain* fc) {

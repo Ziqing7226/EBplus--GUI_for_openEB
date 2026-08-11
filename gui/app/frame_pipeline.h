@@ -23,6 +23,8 @@
 
 #include <QObject>
 #include <QImage>
+#include <QTimer>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -34,6 +36,7 @@
 #include "algo/common/frame_generator.h"
 #include "algo_bridge/backends/backend_common.h"
 #include "file_frame_generator.h"
+#include "frame_mode_renderer.h"
 
 namespace gui {
 
@@ -65,6 +68,15 @@ public:
     void set_fps(std::uint16_t fps);
     void set_fps_limit(std::uint16_t limit);
     void set_color_palette(Metavision::ColorPalette palette);
+
+    /// @brief Selects the display frame mode (DisplayPanel "Frame mode").
+    /// Integration keeps the existing CDFrameGenerator / palette-render paths;
+    /// the other modes route events through FrameModeRenderer (live: a timer
+    /// at fps; file: per-window inside render_frame).
+    void set_frame_mode(FrameMode mode);
+    FrameMode frame_mode() const { return frame_mode_; }
+    /// @brief Decay time (µs) for the TimeDecay / EventsIntegration modes.
+    void set_frame_decay_time_us(Metavision::timestamp us);
 
     /// @brief Sets the FilterChain for file-mode display filtering. Applied
     /// per-frame in FileFrameGenerator::render_frame() so flip/rotate/etc.
@@ -140,6 +152,8 @@ signals:
     void fps_changed(std::uint16_t fps);
     void accumulation_time_changed(Metavision::timestamp us);
     void fps_limit_changed(std::uint16_t limit);
+    /// Emitted when the display frame mode changes (DisplayPanel selector).
+    void frame_mode_changed(FrameMode mode);
     /// File mode: emitted after each frame with cursor position + duration.
     void file_position_changed(Metavision::timestamp pos, Metavision::timestamp dur);
     /// File mode: emitted when playback reaches the end of the buffer.
@@ -169,7 +183,16 @@ signals:
 private:
     void recreate_window();
     std::uint16_t clamp_fps(std::uint16_t fps) const;
+    /// @brief Starts/stops the live-mode frame-mode tick based on the current
+    /// mode + fps. No-op in file mode (render_frame drives generation there).
+    void update_frame_mode_timer();
 
+private slots:
+    /// @brief Live-mode tick for non-integration frame modes: generate the
+    /// current mode's frame from the accumulated events and emit frame_ready.
+    void on_frame_mode_tick();
+
+private:
     // Live mode backend
     std::unique_ptr<gui_algo::FrameGenerator> generator_;
     int window_id_{-1};
@@ -183,6 +206,16 @@ private:
     std::uint16_t fps_{30};
     Metavision::timestamp accumulation_us_{33000};
     std::uint16_t fps_limit_{60};
+
+    // Frame-mode rendering (non-integration modes).
+    FrameMode frame_mode_{FrameMode::Integration};
+    FrameModeRenderer frame_mode_renderer_;
+    QTimer* frame_mode_timer_{nullptr};
+    /// Color palette forwarded to the TimeDecay visualization.
+    Metavision::ColorPalette palette_{Metavision::ColorPalette::Dark};
+    /// Timestamp of the last event fed to the renderer (SDK thread) — used as
+    /// the frame timestamp by the live mode tick (GUI thread).
+    std::atomic<Metavision::timestamp> last_ev_ts_{0};
 
     // Display-path preprocessing (Phase 2.5). The live-mode instance is used
     // in add_events() on the SDK thread (mutex-guarded); the file-mode

@@ -7,6 +7,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "algo_bridge/filter_chain.h"
+#include "frame_mode_renderer.h"
 
 namespace gui {
 
@@ -354,9 +355,23 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
             reinterpret_cast<const Metavision::EventCD*>(p) + m);
         draw_events = &display_filtered;
     }
-    for (const auto& ev : *draw_events) {
-        if (ev.x < 0 || ev.x >= w || ev.y < 0 || ev.y >= h) continue;
-        frame_.ptr<cv::Vec3b>(static_cast<int>(ev.y))[ev.x] = ev.p ? on : off;
+    // Non-integration frame modes: feed the window events to the shared
+    // frame-mode renderer and use its generated frame for display. Otherwise
+    // keep the palette event render (Integration mode).
+    if (frame_mode_renderer_ && frame_mode_renderer_->active()) {
+        frame_mode_renderer_->add_events(draw_events->data(),
+                                         draw_events->data() + draw_events->size());
+        cv::Mat mode_frame = frame_mode_renderer_->generate();
+        if (!mode_frame.empty() && mode_frame.size() == frame_.size()) {
+            frame_ = mode_frame;
+        } else {
+            frame_.setTo(cv::Scalar(bg[0], bg[1], bg[2]));
+        }
+    } else {
+        for (const auto& ev : *draw_events) {
+            if (ev.x < 0 || ev.x >= w || ev.y < 0 || ev.y >= h) continue;
+            frame_.ptr<cv::Vec3b>(static_cast<int>(ev.y))[ev.x] = ev.p ? on : off;
+        }
     }
 
     // Emit the (filtered) events in this window so algorithm instances can
