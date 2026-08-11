@@ -97,6 +97,12 @@ public:
         for (int i = 1; i < n_labels; ++i) {
             const int area = stats.at<int>(i, cv::CC_STAT_AREA);
             if (area < min_cc_area_) continue;
+            // Defensive cap: compute_frequency() scans the whole event buffer
+            // per cluster (O(buffer)), so on busy scenes with many clusters the
+            // analyze() would block the calling thread (SDK thread → GUI
+            // freeze) for seconds. Report at most the kMaxSources largest
+            // clusters.
+            if (out.size() >= kMaxSources) break;
             const int u = static_cast<int>(centroids.at<double>(i, 0));
             const int v = static_cast<int>(centroids.at<double>(i, 1));
             LightSource src;
@@ -198,6 +204,9 @@ public:
     int height() const { return height_; }
 
 private:
+    /// Max clusters reported per analyze() (defensive cost cap, see the
+    /// cluster loop in analyze()).
+    static constexpr std::size_t kMaxSources = 32;
     static float clamp_fmin(float f) {
         if (f < 10.0f) return 10.0f;
         if (f > 1000.0f) return 1000.0f;

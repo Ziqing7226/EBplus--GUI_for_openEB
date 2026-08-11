@@ -4,6 +4,7 @@
 #include "algo_bridge/algo_backend.h"
 #include "algo_bridge/backends/backend_common.h"
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,7 @@
 #include "algo/analytics/freq_detector.h"
 #include "algo/analytics/active_marker.h"
 #include "algo/cv/trigger_synced_filter.h"
+#include "algo/cv/frequency_map.h"
 
 using namespace gui::backend_detail;
 
@@ -202,12 +204,21 @@ class FreqDetectorBackend final : public AlgoBackend {
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
     std::vector<gui_algo::LightSource> last_;
+    // Persisted so set_sensor_dimensions() rebuilds (unified-ROI automation)
+    // keep the user's settings instead of reverting to ctor defaults.
+    float update_interval_s_{1.0f};
+    int min_events_{3};
 public:
     FreqDetectorBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
-        if (k == "update_interval_s") algo_.set_update_interval_s(static_cast<float>(to_d(v)));
-        else if (k == "min_events") algo_.set_min_cc_area(to_i(v));
+        if (k == "update_interval_s") {
+            update_interval_s_ = static_cast<float>(to_d(v));
+            algo_.set_update_interval_s(update_interval_s_);
+        } else if (k == "min_events") {
+            min_events_ = to_i(v);
+            algo_.set_min_cc_area(min_events_);
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -241,10 +252,12 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        // The algo keeps sensor-sized internal buffers (audit §五-D2) —
-        // rebuild at the new dimensions (params revert to ctor defaults;
-        // MainWindow resets instances on source change anyway).
+        // The algo keeps sensor-sized internal buffers — rebuild at the new
+        // dimensions and re-apply the persisted settings.
         algo_ = gui_algo::FreqDetector(w, h);
+        algo_.set_update_interval_s(update_interval_s_);
+        algo_.set_min_cc_area(min_events_);
+        last_.clear();
     }
 };
 
@@ -312,6 +325,110 @@ public:
 };
 
 
+/// FrequencyMapBackend — per-pixel flicker frequency map (Standalone frame:
+/// Jet colormap) + clustered light sources (circles + Hz labels).
+/// analyze() (a full-sensor BFS cluster sweep) is throttled to ~4 Hz so the
+/// GUI thread is not starved; between runs the last frame + sources are reused.
+class FrequencyMapBackend final : public AlgoBackend {
+    gui_algo::FrequencyMap algo_;
+    gui_algo::FrequencyMapParams params_;  ///< Persisted across set_sensor_dimensions() rebuilds.
+    std::vector<Metavision::EventCD> passthrough_;
+    RoiFilter roi_;
+    std::vector<gui_algo::Event> roi_buf_;
+    /// Minimum interval between analyze() runs (ms).
+    int update_interval_ms_{250};
+    std::chrono::steady_clock::time_point last_analyze_{};
+    cv::Mat cached_frame_;
+    std::vector<gui_algo::FlickerSource> cached_sources_;
+public:
+    FrequencyMapBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (roi_.set_param(k, v)) return;
+        if (k == "update_interval_ms") update_interval_ms_ = std::max(50, to_i(v));
+        else if (k == "filter_length") params_.frequency_filter_length = to_i(v);
+        else if (k == "period_diff_thresh_us") params_.period_diff_thresh_us = to_i(v);
+        else if (k == "min_freq_hz") params_.min_freq_hz = static_cast<float>(to_d(v));
+        else if (k == "max_freq_hz") params_.max_freq_hz = static_cast<float>(to_d(v));
+        else if (k == "max_freq_diff") params_.max_cluster_frequency_diff = static_cast<float>(to_d(v));
+        else if (k == "min_cluster_size") params_.min_cluster_size = to_i(v);
+        else return;
+        algo_.set_params(params_);
+    }
+    std::string get_param(const std::string& k) const override {
+        auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "update_interval_ms") return from_i(update_interval_ms_);
+        if (k == "filter_length") return from_i(params_.frequency_filter_length);
+        if (k == "period_diff_thresh_us") return from_i(static_cast<int>(params_.period_diff_thresh_us));
+        if (k == "min_freq_hz") return from_d(params_.min_freq_hz);
+        if (k == "max_freq_hz") return from_d(params_.max_freq_hz);
+        if (k == "max_freq_diff") return from_d(params_.max_cluster_frequency_diff);
+        if (k == "min_cluster_size") return from_i(params_.min_cluster_size);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
+                                   passthrough_.size(), roi_buf_);
+        algo_.process(ev, ev + n);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_analyze_).count();
+        if (cached_frame_.empty() || elapsed_ms >= update_interval_ms_) {
+            algo_.analyze();
+            last_analyze_ = now;
+            // Frequency map → Jet colormap frame (Standalone display).
+            const cv::Mat f = algo_.frequency_hz();
+            double mn = 0, mx = 0;
+            cv::minMaxLoc(f, &mn, &mx);
+            cv::Mat u8;
+            if (mx > 0.0) {
+                f.convertTo(u8, CV_8UC1, 255.0 / mx, 0.0);
+            } else {
+                u8 = cv::Mat::zeros(f.size(), CV_8UC1);
+            }
+            cached_frame_.create(u8.rows, u8.cols, CV_8UC3);
+            cv::applyColorMap(u8, cached_frame_, cv::COLORMAP_JET);
+            cached_sources_ = algo_.sources();
+        }
+        r.frame = cached_frame_;
+        r.has_frame = true;
+        for (const auto& src : cached_sources_) {
+            OverlayCircle c;
+            c.cx = static_cast<int>(std::lround(src.x));
+            c.cy = static_cast<int>(std::lround(src.y));
+            c.r = std::max(3, static_cast<int>(std::lround(src.radius_px)));
+            r.circles.push_back(c);
+            OverlayText t;
+            t.x = static_cast<int>(std::lround(src.x)) + c.r + 4;
+            t.y = static_cast<int>(std::lround(src.y));
+            t.text = std::to_string(static_cast<int>(src.frequency_hz)) + " Hz";
+            r.texts.push_back(t);
+        }
+        r.status = "freq map: " + std::to_string(cached_sources_.size()) +
+                   " sources" + std::string(roi_.region.enabled ? " (ROI)" : "");
+        return r;
+    }
+    void reset() override {
+        algo_.reset();
+        passthrough_.clear();
+        roi_buf_.clear();
+        cached_frame_ = cv::Mat();
+        cached_sources_.clear();
+        last_analyze_ = {};
+    }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::FrequencyMap(w, h);
+        algo_.set_params(params_);
+        reset();
+    }
+};
+
+
 // --- Per-category factory (called by create_algo_backend in backend_factory.cpp)
 std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& name,
                                           int width, int height) {
@@ -320,6 +437,7 @@ std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& n
     if (name == "particle_counter")            return std::make_unique<ParticleCounterBackend>(width, height);
     if (name == "auto_bias")                   return std::make_unique<AutoBiasBackend>(width, height);
     if (name == "trigger_synced")              return std::make_unique<TriggerSyncedBackend>(width, height);
+    if (name == "frequency_map")               return std::make_unique<FrequencyMapBackend>(width, height);
     return nullptr;
 }
 

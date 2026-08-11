@@ -25,6 +25,8 @@
 #include "algo/cv/optical_gyro.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
+#include "algo/cv/dense_optical_flow.h"
+#include "algo/cv/frequency_map.h"
 #include "algo/analytics/active_marker.h"
 #include "algo/analytics/event_to_video.h"
 #include "algo/analytics/e2vid/event_voxel_grid.h"
@@ -52,6 +54,9 @@ using gui_algo::BandpassFilter;
 using gui_algo::OpticalGyro;
 using gui_algo::XYTVisualizer;
 using gui_algo::TimeSurface;
+using gui_algo::DenseOpticalFlow;
+using gui_algo::FrequencyMap;
+using gui_algo::FrequencyMapParams;
 using gui_algo::ActiveMarker;
 using gui_algo::EventToVideo;
 using gui_algo::FlowStatistics;
@@ -1007,4 +1012,269 @@ TEST(SensorSelfTestTest, MultiplePixelsStats) {
     // Sorted intervals: [100, 200]. median = intervals[1] = 200.
     EXPECT_EQ(stats.median_us, 200.0);
     EXPECT_EQ(stats.bad_pixels, 14u);  // 16 - 2 triggered
+}
+
+// ---------------------------------------------------------------------------
+// DenseOpticalFlow (design §4.3.9b) — synthetic moving-line / moving-point
+// scenes verify the three dense flow modes recover the known velocity.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A vertical line (height h) moving right at vx px/s: one event per pixel of
+// the line every step_us µs, for n_steps steps. Returns sorted-by-t events.
+std::vector<gui_algo::Event> make_moving_line(int start_x, int h,
+                                              double vx_px_s,
+                                              int n_steps, double step_us) {
+    std::vector<gui_algo::Event> evs;
+    const double vx_us = vx_px_s * 1e-6;  // px/µs
+    for (int k = 0; k < n_steps; ++k) {
+        const Metavision::timestamp t = static_cast<Metavision::timestamp>(
+            std::llround(k * step_us));
+        const int x = static_cast<int>(std::lround(start_x + vx_us * t));
+        for (int y = 0; y < h; ++y) {
+            gui_algo::Event e;
+            e.x = x; e.y = y; e.p = 1; e.t = t;
+            evs.push_back(e);
+        }
+    }
+    return evs;
+}
+
+// A single point moving at (vx, vy) px/s: one event every step_us µs.
+std::vector<gui_algo::Event> make_moving_point(double start_x, double start_y,
+                                               double vx_px_s, double vy_px_s,
+                                               int n_steps, double step_us) {
+    std::vector<gui_algo::Event> evs;
+    const double vx_us = vx_px_s * 1e-6, vy_us = vy_px_s * 1e-6;
+    for (int k = 0; k < n_steps; ++k) {
+        const Metavision::timestamp t = static_cast<Metavision::timestamp>(
+            std::llround(k * step_us));
+        gui_algo::Event e;
+        e.x = static_cast<int>(std::lround(start_x + vx_us * t));
+        e.y = static_cast<int>(std::lround(start_y + vy_us * t));
+        e.p = 1; e.t = t;
+        evs.push_back(e);
+    }
+    return evs;
+}
+
+} // namespace
+
+TEST(DenseOpticalFlowTest, Construction) {
+    gui_algo::DenseOpticalFlow f(64, 48);
+    EXPECT_EQ(f.mode(), gui_algo::DenseOpticalFlow::Mode::PlaneFitting);
+    EXPECT_EQ(f.width(), 64);
+    EXPECT_EQ(f.height(), 48);
+    f.set_mode(gui_algo::DenseOpticalFlow::Mode::TripletMatching);
+    EXPECT_EQ(f.mode(), gui_algo::DenseOpticalFlow::Mode::TripletMatching);
+}
+
+TEST(DenseOpticalFlowTest, NoEventsProducesEmptyFlow) {
+    gui_algo::DenseOpticalFlow f(32, 32);
+    cv::Mat flow, conf;
+    f.get_flow(flow, conf);
+    EXPECT_EQ(flow.rows, 32);
+    EXPECT_EQ(flow.cols, 32);
+    EXPECT_EQ(cv::countNonZero(conf), 0);
+}
+
+TEST(DenseOpticalFlowTest, PlaneFittingRecoversHorizontalMotion) {
+    constexpr int W = 64, H = 32;
+    gui_algo::DenseOpticalFlow f(W, H, gui_algo::DenseOpticalFlow::Mode::PlaneFitting);
+    f.set_time_window_us(10000);
+    f.set_max_events(200000);
+    f.set_max_velocity_px_s(10000);
+    // Vertical line at x=8 → 28 over 10 ms, 2000 px/s.
+    auto evs = make_moving_line(8, H - 4, 2000.0, 2000, 5.0);
+    f.process(evs.data(), evs.data() + evs.size());
+
+    cv::Mat flow, conf;
+    f.get_flow(flow, conf);
+    // Interior cell of the trajectory (x=18, y=16).
+    const cv::Vec2f v = flow.at<cv::Vec2f>(16, 18);
+    EXPECT_GT(conf.at<float>(16, 18), 0.0f);
+    EXPECT_NEAR(v[0], 2000.0, 400.0) << "normal flow should recover vx";
+    EXPECT_NEAR(v[1], 0.0, 200.0) << "no vertical motion expected";
+}
+
+TEST(DenseOpticalFlowTest, TimeGradientRecoversHorizontalMotion) {
+    constexpr int W = 64, H = 32;
+    gui_algo::DenseOpticalFlow f(W, H, gui_algo::DenseOpticalFlow::Mode::TimeGradient);
+    f.set_time_window_us(10000);
+    f.set_max_events(200000);
+    f.set_max_velocity_px_s(10000);
+    auto evs = make_moving_line(8, H - 4, 2000.0, 2000, 5.0);
+    f.process(evs.data(), evs.data() + evs.size());
+
+    cv::Mat flow, conf;
+    f.get_flow(flow, conf);
+    const cv::Vec2f v = flow.at<cv::Vec2f>(16, 18);
+    EXPECT_GT(conf.at<float>(16, 18), 0.0f);
+    EXPECT_NEAR(v[0], 2000.0, 600.0);
+    EXPECT_NEAR(v[1], 0.0, 300.0);
+}
+
+TEST(DenseOpticalFlowTest, TripletMatchingRecoversDiagonalMotion) {
+    constexpr int W = 128, H = 64;
+    gui_algo::DenseOpticalFlow f(W, H, gui_algo::DenseOpticalFlow::Mode::TripletMatching);
+    f.set_time_window_us(10000);
+    f.set_max_velocity_px_s(20000);
+    // Point from (30,20) moving (5000, 3000) px/s, event every 100 µs (100
+    // events over 10 ms → well-separated triplets, exact velocity).
+    auto evs = make_moving_point(30.0, 20.0, 5000.0, 3000.0, 100, 100.0);
+    f.process(evs.data(), evs.data() + evs.size());
+
+    cv::Mat flow, conf;
+    f.get_flow(flow, conf);
+    // A cell on the trajectory (near the middle).
+    const cv::Vec2f v = flow.at<cv::Vec2f>(35, 55);
+    EXPECT_GT(conf.at<float>(35, 55), 0.0f);
+    EXPECT_NEAR(v[0], 5000.0, 1500.0) << "triplet flow should recover vx";
+    EXPECT_NEAR(v[1], 3000.0, 1200.0) << "triplet flow should recover vy";
+}
+
+TEST(DenseOpticalFlowTest, ResetClearsState) {
+    gui_algo::DenseOpticalFlow f(32, 32);
+    auto evs = make_moving_line(4, 8, 1000.0, 200, 5.0);
+    f.process(evs.data(), evs.data() + evs.size());
+    f.reset();
+    cv::Mat flow, conf;
+    f.get_flow(flow, conf);
+    EXPECT_EQ(cv::countNonZero(conf), 0);
+}
+
+// ---------------------------------------------------------------------------
+// FrequencyMap (design §4.3.x) — synthetic blinking blobs verify per-pixel
+// frequency estimation and frequency clustering.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Appends `n_cycles` ON/OFF pairs for an (x0,y0)-(x0+sw-1,y0+sh-1) blob that
+// blinks at `freq_hz` (full period = 1/freq, half period between polarities).
+// Events are emitted in non-decreasing timestamp order.
+void add_blinking_blob(std::vector<gui_algo::Event>& evs,
+                       int x0, int y0, int sw, int sh,
+                       double freq_hz, int n_cycles) {
+    const double half_us = 0.5e6 / freq_hz;
+    for (int k = 0; k < n_cycles; ++k) {
+        const Metavision::timestamp t_on = static_cast<Metavision::timestamp>(
+            std::llround(k * 2.0 * half_us));
+        const Metavision::timestamp t_off = static_cast<Metavision::timestamp>(
+            std::llround(t_on + half_us));
+        for (int dy = 0; dy < sh; ++dy) {
+            for (int dx = 0; dx < sw; ++dx) {
+                gui_algo::Event on;
+                on.x = x0 + dx; on.y = y0 + dy; on.p = 1; on.t = t_on;
+                evs.push_back(on);
+                gui_algo::Event off;
+                off.x = x0 + dx; off.y = y0 + dy; off.p = 0; off.t = t_off;
+                evs.push_back(off);
+            }
+        }
+    }
+}
+
+} // namespace
+
+TEST(FrequencyMapTest, Construction) {
+    gui_algo::FrequencyMap fm(32, 32);
+    EXPECT_EQ(fm.width(), 32);
+    EXPECT_EQ(fm.height(), 32);
+    EXPECT_TRUE(fm.sources().empty());
+}
+
+TEST(FrequencyMapTest, DetectsSingleBlinkingBlob) {
+    constexpr int W = 64, H = 64;
+    gui_algo::FrequencyMap fm(W, H);
+    gui_algo::FrequencyMapParams p;
+    p.frequency_filter_length = 7;
+    p.min_cluster_size = 20;
+    fm.set_params(p);
+
+    std::vector<gui_algo::Event> evs;
+    add_blinking_blob(evs, 20, 20, 5, 5, 100.0, 20);  // 5×5 @ 100 Hz
+    fm.process(evs.data(), evs.data() + evs.size());
+    fm.analyze();
+
+    // Per-pixel frequency at the blob centre ≈ 100 Hz.
+    EXPECT_NEAR(fm.frequency_hz().at<float>(22, 22), 100.0f, 5.0f);
+    // One clustered source with the expected centroid / frequency / area.
+    ASSERT_EQ(fm.sources().size(), 1u);
+    EXPECT_NEAR(fm.sources()[0].x, 22.0f, 1.0f);
+    EXPECT_NEAR(fm.sources()[0].y, 22.0f, 1.0f);
+    EXPECT_NEAR(fm.sources()[0].frequency_hz, 100.0f, 5.0f);
+    EXPECT_EQ(fm.sources()[0].area, 25);
+}
+
+TEST(FrequencyMapTest, ClustersTwoDistinctFrequencies) {
+    constexpr int W = 128, H = 64;
+    gui_algo::FrequencyMap fm(W, H);
+    gui_algo::FrequencyMapParams p;
+    p.frequency_filter_length = 7;
+    p.min_cluster_size = 10;
+    p.max_cluster_frequency_diff = 10.0f;
+    fm.set_params(p);
+
+    std::vector<gui_algo::Event> evs;
+    add_blinking_blob(evs, 20, 20, 4, 4, 80.0, 20);   // 80 Hz
+    add_blinking_blob(evs, 40, 20, 4, 4, 100.0, 20);  // 100 Hz (gap ≥ 2 px)
+    fm.process(evs.data(), evs.data() + evs.size());
+    fm.analyze();
+
+    ASSERT_EQ(fm.sources().size(), 2u);
+    // 80 Hz source first (lower x), 100 Hz second.
+    EXPECT_NEAR(fm.sources()[0].frequency_hz, 80.0f, 5.0f);
+    EXPECT_NEAR(fm.sources()[1].frequency_hz, 100.0f, 5.0f);
+}
+
+TEST(FrequencyMapTest, NoiseProducesNoSource) {
+    constexpr int W = 64, H = 64;
+    gui_algo::FrequencyMap fm(W, H);
+    gui_algo::FrequencyMapParams p;
+    p.frequency_filter_length = 7;
+    fm.set_params(p);
+
+    // Random single events: no pixel repeats at a stable period.
+    std::vector<gui_algo::Event> evs;
+    unsigned seed = 7;
+    for (int k = 0; k < 2000; ++k) {
+        seed = seed * 1103515245u + 12345u;
+        gui_algo::Event e;
+        e.x = static_cast<int>((seed >> 16) % W);
+        seed = seed * 1103515245u + 12345u;
+        e.y = static_cast<int>((seed >> 16) % H);
+        e.p = static_cast<short>((seed >> 16) & 1);
+        e.t = k * 100;  // 100 µs apart, random pixel/polarity
+        evs.push_back(e);
+    }
+    fm.process(evs.data(), evs.data() + evs.size());
+    fm.analyze();
+    EXPECT_TRUE(fm.sources().empty());
+}
+
+TEST(FrequencyMapTest, StaleFrequenciesAreDropped) {
+    constexpr int W = 64, H = 64;
+    gui_algo::FrequencyMap fm(W, H);
+    gui_algo::FrequencyMapParams p;
+    p.frequency_filter_length = 7;
+    p.min_cluster_size = 20;
+    p.stale_us = 100000;  // 100 ms
+    fm.set_params(p);
+
+    std::vector<gui_algo::Event> evs;
+    add_blinking_blob(evs, 20, 20, 5, 5, 100.0, 10);  // 100 ms of blinking
+    fm.process(evs.data(), evs.data() + evs.size());
+    fm.analyze();
+    EXPECT_NEAR(fm.frequency_hz().at<float>(22, 22), 100.0f, 5.0f);
+
+    // Advance the stream past the stale threshold with events elsewhere.
+    const Metavision::timestamp later = evs.back().t + p.stale_us + 1000;
+    gui_algo::Event far;
+    far.x = 0; far.y = 0; far.p = 1; far.t = later;
+    fm.process(&far, &far + 1);
+    fm.analyze();
+    EXPECT_EQ(fm.frequency_hz().at<float>(22, 22), 0.0f);
+    EXPECT_TRUE(fm.sources().empty());
 }

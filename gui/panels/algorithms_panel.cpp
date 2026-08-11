@@ -368,12 +368,16 @@ bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
     // Phase 2.6 debug D-7 default list: compute-heavy algorithms that would
     // stall at full sensor auto-enable the unified ROI at the default center
     // 256×144 (and restore the prior state on disable). XYT deliberately
-    // excluded (user decision — it never used ROI).
+    // excluded (user decision — it never used ROI). freq_detector and
+    // frequency_map were added because their full-sensor analyze() sweeps
+    // froze the GUI at high event rates.
     return algo_name == "event_to_video" ||
            algo_name == "isi_analyzer" ||
            algo_name == "time_surface" ||
            algo_name == "hough_line" ||
-           algo_name == "hough_circle";
+           algo_name == "hough_circle" ||
+           algo_name == "freq_detector" ||
+           algo_name == "frequency_map";
 }
 
 void AlgorithmsPanel::set_algo_status(const std::string& name, const QString& text) {

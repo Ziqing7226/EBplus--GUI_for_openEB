@@ -736,6 +736,15 @@ void AlgoBridge::register_self_cv() {
           pint("time_window_us", "Time window (us)", "20000", "1000", "100000"),
           pfloat("cluster_ema_alpha", "Cluster EMA alpha", "0.05", "0.001", "1.0")}});
 
+    // §4.3.9b Dense Optical Flow (3 modes, from published methods)
+    add({"dense_optical_flow", "Dense Optical Flow", "cv", "self",
+         AlgoDisplayMode::Overlay,
+         {penum("mode", "Mode", "0", {"0=PlaneFitting", "1=TimeGradient",
+           "2=TripletMatching"}),
+          pint("time_window_us", "Time window (us)", "10000", "1000", "500000"),
+          pint("spatial_radius", "Spatial radius (px)", "3", "1", "16"),
+          pfloat("max_velocity_px_s", "Max velocity (px/s)", "20000", "100", "100000")}});
+
     // §4.3.10 Blob Detector
     add({"blob_detector", "Blob Detector", "cv", "self",
          AlgoDisplayMode::Overlay,
@@ -984,6 +993,18 @@ void AlgoBridge::register_self_analytics() {
          AlgoDisplayMode::Standalone,
          {pfloat("update_interval_s", "Update interval (s)", "1.0", "0.1", "10"),
           pint("min_events", "Min events", "3", "1", "1000")}});
+
+    // §4.3.x Per-pixel frequency/period map + frequency clustering + modulated-
+    // light source detection (vibration/flicker analysis).
+    add({"frequency_map", "Frequency Map", "analytics", "self",
+         AlgoDisplayMode::Standalone,
+         {pint("update_interval_ms", "Update interval (ms)", "250", "50", "5000"),
+          pint("filter_length", "Period confirm count", "7", "2", "8"),
+          pint("period_diff_thresh_us", "Period jitter (us)", "1600", "100", "100000"),
+          pfloat("min_freq_hz", "Min frequency (Hz)", "8", "0.5", "1000"),
+          pfloat("max_freq_hz", "Max frequency (Hz)", "120", "10", "5000"),
+          pfloat("max_freq_diff", "Cluster freq diff (Hz)", "6", "1", "500"),
+          pint("min_cluster_size", "Min cluster size (px)", "20", "3", "1000")}});
 
     // §4.4.8 Sensor Self-Test — per-pixel refractory-period heatmap + bad-pixel
     // detection. Registered WITHOUT roi_params/preproc_params (the self-test

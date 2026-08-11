@@ -55,19 +55,19 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 // Replace-display promise, no downstream consumer). sensor_self_test is
 // intentionally NOT registered (it is a Devices-panel diagnostic, not an
 // algorithm — its instance is created via create_with_info).
-// Live registry: 26 self-developed + 7 OpenEB = 33.
+// Live registry: 28 self-developed + 7 OpenEB = 35.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 33u);
+    EXPECT_EQ(algos.size(), 35u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
         if (a.source == "self") ++self_count;
         else if (a.source == "openeb") ++openeb_count;
     }
-    EXPECT_EQ(self_count, 26u);
+    EXPECT_EQ(self_count, 28u);
     EXPECT_EQ(openeb_count, 7u);
 }
 

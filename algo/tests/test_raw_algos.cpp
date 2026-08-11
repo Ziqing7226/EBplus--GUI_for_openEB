@@ -31,6 +31,8 @@
 #include "algo/cv/orientation_filter.h"
 #include "algo/cv/direction_selective_filter.h"
 #include "algo/cv/sparse_optical_flow.h"
+#include "algo/cv/dense_optical_flow.h"
+#include "algo/cv/frequency_map.h"
 #include "algo/cv/blob_detector.h"
 #include "algo/cv/object_tracker.h"
 #include "algo/cv/corner_detector.h"
@@ -58,6 +60,8 @@ using gui_algo::HotPixelFilter;
 using gui_algo::OrientationFilter;
 using gui_algo::DirectionSelectiveFilter;
 using gui_algo::SparseOpticalFlow;
+using gui_algo::DenseOpticalFlow;
+using gui_algo::FrequencyMap;
 using gui_algo::BlobDetector;
 using gui_algo::ObjectTracker;
 using gui_algo::CornerDetector;
@@ -320,6 +324,62 @@ INSTANTIATE_TEST_SUITE_P(AllModes, SparseOpticalFlowRawTest,
     ::testing::Values(
         SparseOpticalFlow::Mode::LocalPlanes,
         SparseOpticalFlow::Mode::LucasKanade));
+
+// =========================================================================
+// 6b. DenseOpticalFlow — per-pixel flow map stays finite on real motion.
+// =========================================================================
+class DenseOpticalFlowRawTest :
+    public RawAlgoTest, public ::testing::WithParamInterface<DenseOpticalFlow::Mode> {};
+TEST_P(DenseOpticalFlowRawTest, ProducesFiniteFlowMap) {
+    const auto mode = GetParam();
+    const auto& s = stream();
+    DenseOpticalFlow of(s.width(), s.height(), mode);
+    of.set_max_events(20000);
+    cv::Mat flow, conf;
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        of.process(batch.data(), batch.data() + batch.size());
+        of.get_flow(flow, conf);
+        ASSERT_EQ(flow.rows, s.height());
+        ASSERT_EQ(flow.cols, s.width());
+        for (int y = 0; y < flow.rows; ++y) {
+            const cv::Vec2f* row = flow.ptr<cv::Vec2f>(y);
+            for (int x = 0; x < flow.cols; ++x) {
+                EXPECT_TRUE(is_finite(row[x][0])) << "NaN vx (mode " << static_cast<int>(mode) << ")";
+                EXPECT_TRUE(is_finite(row[x][1])) << "NaN vy (mode " << static_cast<int>(mode) << ")";
+            }
+        }
+    }
+    EXPECT_NO_FATAL_FAILURE();
+}
+INSTANTIATE_TEST_SUITE_P(AllModes, DenseOpticalFlowRawTest,
+    ::testing::Values(
+        DenseOpticalFlow::Mode::PlaneFitting,
+        DenseOpticalFlow::Mode::TimeGradient,
+        DenseOpticalFlow::Mode::TripletMatching));
+
+// =========================================================================
+// 6c. FrequencyMap — per-pixel frequency map stays finite on real data.
+// =========================================================================
+class FrequencyMapRawTest : public RawAlgoTest {};
+TEST_F(FrequencyMapRawTest, ProducesFiniteFrequencyMap) {
+    const auto& s = stream();
+    gui_algo::FrequencyMap fm(s.width(), s.height());
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        fm.process(batch.data(), batch.data() + batch.size());
+        fm.analyze();
+        const cv::Mat f = fm.frequency_hz();
+        ASSERT_EQ(f.rows, s.height());
+        ASSERT_EQ(f.cols, s.width());
+        for (int y = 0; y < f.rows; ++y) {
+            const float* row = f.ptr<float>(y);
+            for (int x = 0; x < f.cols; ++x) {
+                EXPECT_TRUE(is_finite(row[x])) << "non-finite frequency";
+                EXPECT_GE(row[x], 0.0f);
+            }
+        }
+    }
+    EXPECT_NO_FATAL_FAILURE();
+}
 
 // =========================================================================
 // 7. BlobDetector — emits valid blobs with in-bounds bounding boxes.
