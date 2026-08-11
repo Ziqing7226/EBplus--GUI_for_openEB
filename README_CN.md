@@ -4,16 +4,26 @@
 
 基于 [openEB](https://github.com/prophesee-ai/openeb) v5.2.0 的开源 Qt 6 事件相机桌面应用。
 
-实时可视化 · 相机控制 · 录制回放 · 标定 · 59 个算法 · 可定制主题
+实时可视化 · 相机控制 · 录制回放 · 标定 · 35 个算法 · 可定制主题
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-1.9.0-blue)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
 
 ![主界面](pic/1.9.0.png)
 
 </div>
+
+---
+
+## v2.0.0 新增内容
+
+- 优化了标定程序（闪烁棋盘标定向导）
+- 新增显示帧模式（Contrast Map / Histogram / Diff / Time Decay / Events Integration）
+- 新增算法：稠密光流、闪烁频率图、Arc\* 角点、KNoise、传感器自检、调焦助手
+- 统一 ROI 与显示链路预处理
+- 性能与稳定性改进
 
 ---
 
@@ -79,8 +89,8 @@ cmake --build build -- -j$(nproc)
 ### 事件预处理滤波链
 8 级可叠加阶段，线程安全管线：Polarity Filter、Polarity Invert、Flip X、Flip Y、Rotate、Transpose、Rescale、ROI Filter。从侧栏切换。
 
-### 算法（共 59 项）
-EB plus 内置 **29 个自研算法** + **30 项 openEB 封装能力**，全部注册在统一的 `AlgoBridge` 注册表中。
+### 算法（共 35 项）
+EB plus 内置 **28 个自研算法** + **7 项 openEB 封装能力**，全部注册在统一的 `AlgoBridge` 注册表中。
 
 | 类别 | 示例 |
 |------|------|

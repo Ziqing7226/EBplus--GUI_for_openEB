@@ -4,16 +4,26 @@
 
 A polished, open-source Qt 6 desktop app for event cameras — built on [openEB](https://github.com/prophesee-ai/openeb) v5.2.0.
 
-Real-time visualization · camera control · recording & playback · calibration · 59 algorithms · customizable themes
+Real-time visualization · camera control · recording & playback · calibration · 35 algorithms · customizable themes
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-1.9.0-blue)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
 
 ![Main Window](pic/1.9.0.png)
 
 </div>
+
+---
+
+## What's New in v2.0.0
+
+- Optimized calibration program (blinking-chessboard wizard)
+- New display frame modes (Contrast Map / Histogram / Diff / Time Decay / Events Integration)
+- New algorithms: dense optical flow, flicker frequency map, Arc\* corners, KNoise, sensor self-test, focus assistant
+- Unified ROI + display-path preprocessing
+- Performance and stability improvements
 
 ---
 
@@ -77,8 +87,8 @@ All panels degrade gracefully when the device lacks the corresponding HAL facili
 ### Preprocessing Filter Chain
 8 stackable stages applied in a thread-safe pipeline: Polarity Filter, Polarity Invert, Flip X, Flip Y, Rotate, Transpose, Rescale, ROI Filter. Toggled from the sidebar.
 
-### Algorithms (59 total)
-EB plus ships **29 self-developed algorithms** plus **30 OpenEB-wrapped capabilities**, all registered in a single `AlgoBridge` registry.
+### Algorithms (35 total)
+EB plus ships **28 self-developed algorithms** plus **7 OpenEB-wrapped capabilities**, all registered in a single `AlgoBridge` registry.
 
 | Category | Examples |
 |----------|----------|

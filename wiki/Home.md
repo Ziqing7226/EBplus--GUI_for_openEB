@@ -2,7 +2,7 @@
 
 Welcome to the wiki for **EB plus** — a polished, open-source Qt 6 desktop GUI for event cameras, built on [openEB](https://github.com/prophesee-ai/openeb) v5.2.0.
 
-EB plus gives you a complete desktop workflow for event-camera data: real-time visualization, camera control, recording & playback, 59 algorithms (29 self-developed + 30 OpenEB-wrapped), calibration, and data export.
+EB plus gives you a complete desktop workflow for event-camera data: real-time visualization, camera control, recording & playback, 35 algorithms (28 self-developed + 7 OpenEB-wrapped), calibration, and data export.
 
 ---
 

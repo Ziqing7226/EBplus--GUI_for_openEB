@@ -54,7 +54,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("GUI for openEB");
     QApplication::setOrganizationName("GUI-for-openEB");
-    QApplication::setApplicationVersion("1.9.0");
+    QApplication::setApplicationVersion("2.0.0");
 
     // Global UI font — Inter (design §3.9.1) with platform fallbacks so the
     // typeface stays consistent on systems without Inter installed.
