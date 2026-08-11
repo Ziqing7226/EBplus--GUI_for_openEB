@@ -76,6 +76,11 @@ private:
     int height_{0};
     std::unordered_map<std::string, std::unique_ptr<FilterStage>> stages_;
     std::vector<std::string> order_;
+    /// @brief Reused scratch buffers for process(). All callers serialize on
+    /// chain_mutex() (process takes it), so the buffers stay single-threaded
+    /// — steady-state zero-allocation even with many enabled stages.
+    std::vector<Metavision::EventCD> scratch_in_;
+    std::vector<Metavision::EventCD> scratch_out_;
 };
 
 } // namespace gui

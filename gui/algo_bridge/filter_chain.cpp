@@ -349,18 +349,22 @@ void FilterChain::process(const Metavision::EventCD* begin,
                           std::vector<Metavision::EventCD>& out) {
     std::lock_guard<std::mutex> lk(chain_mutex());
     out.clear();
-    // Start from the input; if no stage is enabled, just copy.
-    std::vector<Metavision::EventCD> cur(begin, end);
-    std::vector<Metavision::EventCD> next;
-    next.reserve(cur.size());
+    // Reuse the scratch buffers (safe under chain_mutex_) instead of
+    // allocating cur/next per call and per stage — steady-state zero
+    // allocation on the hot SDK-thread path.
+    scratch_in_.clear();
+    scratch_in_.insert(scratch_in_.end(), begin, end);
+    scratch_out_.clear();
+    scratch_out_.reserve(std::max(scratch_out_.capacity(), scratch_in_.size()));
     for (const auto& name : order_) {
         auto* s = stages_[name].get();
         if (!s || !s->enabled()) continue;
-        next.clear();
-        s->process(cur.data(), cur.data() + cur.size(), next);
-        cur.swap(next);
+        scratch_out_.clear();
+        s->process(scratch_in_.data(), scratch_in_.data() + scratch_in_.size(),
+                   scratch_out_);
+        scratch_in_.swap(scratch_out_);
     }
-    out = std::move(cur);
+    out.assign(scratch_in_.begin(), scratch_in_.end());
 }
 
 bool FilterChain::has_enabled() const {

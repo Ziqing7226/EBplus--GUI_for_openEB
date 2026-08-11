@@ -24,6 +24,7 @@
 #include <metavision/hal/facilities/i_trigger_in.h>
 #include <metavision/hal/facilities/i_trigger_out.h>
 #include <metavision/sdk/base/utils/callback_id.h>
+#include <metavision/sdk/base/utils/object_pool.h>
 #include <metavision/sdk/stream/camera.h>
 
 #include "frame_pipeline.h"
@@ -187,6 +188,10 @@ private:
     /// @brief When true, the CD callback emits cd_events_ready() with a copy
     /// of every batch. Off by default so non-calibration usage pays nothing.
     std::atomic<bool> cd_broadcast_{false};
+    /// @brief Reusable event-buffer pool for the CD broadcast: buffers are
+    /// returned to the pool when the last consumer (calibration tap / worker)
+    /// drops its shared_ptr, so steady-state broadcasting allocates nothing.
+    Metavision::ObjectPool<std::vector<Metavision::EventCD>, true> broadcast_pool_;
 };
 
 } // namespace gui

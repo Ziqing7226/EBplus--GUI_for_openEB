@@ -389,12 +389,14 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
                     frame_pipeline_.add_events(b, e);
                 }
                 // Optional CD broadcast for calibration tools. The atomic
-                // check is cheap; the copy only happens when a listener has
-                // explicitly opted in via set_cd_broadcast(true). The emit
-                // crosses to the GUI thread via Qt's queued-connection
+                // check is cheap; the buffer comes from the reusable pool
+                // (no allocation in steady state) and only happens when a
+                // listener has explicitly opted in via set_cd_broadcast(true).
+                // The emit crosses to the GUI thread via Qt's queued-connection
                 // machinery (the shared_ptr is captured by value).
                 if (cd_broadcast_.load(std::memory_order_relaxed) && b != e) {
-                    auto batch = std::make_shared<std::vector<Metavision::EventCD>>(b, e);
+                    auto batch = broadcast_pool_.acquire();
+                    batch->assign(b, e);
                     emit cd_events_ready(batch);
                 }
             } catch (const std::exception& ex) {
