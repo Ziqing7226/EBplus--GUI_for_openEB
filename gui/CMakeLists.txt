@@ -7,6 +7,7 @@ set(GUI_LIB_SOURCES
     app/camera_controller.cpp
     app/file_converter.cpp
     app/file_frame_generator.cpp
+    app/frame_mode_renderer.cpp
     app/frame_pipeline.cpp
     app/icon_provider.cpp
     app/statistics_controller.cpp
@@ -51,8 +52,7 @@ set(GUI_LIB_SOURCES
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_wizard.cpp")
     list(APPEND GUI_LIB_SOURCES
         calibration/calibration_wizard.cpp
-        calibration/capture_review_dialog.cpp
-        calibration/circle_grid_display.cpp
+        calibration/blinking_chessboard_display.cpp
         calibration/calibration_event_tap.cpp
         calibration/calibration_worker.cpp
         calibration/focus_dialog.cpp

@@ -1,13 +1,20 @@
 // algo/calibration/intrinsic.h — intrinsic camera calibration (Zhang method).
 //
-// Phase 9 (design §4.5.1): detects chessboard / circle-grid corners in
-// accumulated event frames, accumulates multi-pose observations, and runs
-// cv::calibrateCamera to produce K, distCoeffs and an RMS reprojection error.
+// Detection: a BLINKING CHESSBOARD is displayed on screen (alternating with a
+// blank frame at 10 ms). Pixels on black squares toggle dark↔light every cycle
+// and fire both polarities; over a capture window covering ≥ one blink cycle
+// they form a filled checkerboard in the binary "blink frame"
+// (see blinking_detect.h), which is fed to cv::findChessboardCorners.
 //
-// The algorithm is frame-driven: the GUI wizard feeds accumulated grayscale
-// frames via add_frame(). Detection runs synchronously on the caller's thread
-// (cheap relative to calibration itself). Once enough poses are collected,
-// run() performs the bundle adjustment.
+// Solving: TWO-PASS calibration. Pass 1 fixes K3 + aspect ratio for a stable
+// initial fit and computes per-view reprojection errors; views whose error
+// exceeds mean + outlier_ths·std are removed; pass 2 re-runs calibrateCamera
+// on the kept views with K3 free. An optional fronto-parallel refinement pass
+// (undistort → homography → re-detect subpix) is planned as a later phase.
+//
+// The algorithm is frame-driven: the GUI wizard feeds accumulated binary blink
+// frames via add_frame()/detect_only()+accept(). Detection runs synchronously
+// on the caller's thread; run() performs the (two-pass) bundle adjustment.
 
 #ifndef GUI_ALGO_CALIBRATION_INTRINSIC_H
 #define GUI_ALGO_CALIBRATION_INTRINSIC_H
@@ -22,49 +29,31 @@ namespace gui_algo {
 
 /// @brief Pattern type for calibration board detection.
 enum class CalibrationPattern {
-    Chessboard,     ///< Standard chessboard (inner corners)
-    CircleGrid,     ///< Regular circle grid
-    ScrewHeadGrid   ///< Zhou's screw-head grid (dashed cross + solid ring),
-                    ///< asymmetric 6×5 layout, polarity-verified detection
-};
-
-/// @brief User-adjustable ring/circle detection parameters for the
-/// ScrewHeadGrid detector. Exposed in the wizard's capture-review dialog so the
-/// user can re-detect a borderline capture (relax the coverage threshold, etc.)
-/// without re-capturing. Only the ring feature is parameterised — the cross
-/// detection has no tunables.
-struct RingParams {
-    float cover_frac{0.60f};   ///< Min angular coverage to accept a ring
-                               ///< (user requirement: coverage ≥ 0.6).
-    int min_pixels{6};         ///< Min ring pixel count for a valid ring.
-    int search_margin{12};     ///< Ring search radius margin (px) added to the
-                               ///< cross component's half-diagonal.
+    Chessboard,     ///< Blinking chessboard (inner corners); the wizard's default.
+    CircleGrid      ///< Regular circle grid (static detection, kept for reuse).
 };
 
 /// @brief Result of a single frame's corner detection.
 struct DetectionResult {
     bool found{false};
-    cv::Mat image;                 ///< Annotated copy (for wizard preview)
-    std::vector<cv::Point2f> points; ///< Detected corner coordinates
-    /// ScrewHeadGrid review info: every detected cross / ring feature,
-    /// populated even when the grid fit fails — the capture-review dialog uses
-    /// these to draw blue crosses and red circles so the user can see what WAS
-    /// detected, relax parameters, and re-detect.
-    std::vector<cv::Point2f> cross_centers;  ///< Detected cross centres (blue)
-    std::vector<cv::Point2f> ring_centers;   ///< Detected ring centres (red)
-    std::vector<float> ring_radii;           ///< Ring radii in px (parallel to ring_centers)
+    cv::Mat image;                    ///< Annotated copy (for wizard preview)
+    std::vector<cv::Point2f> points;  ///< Detected corner coordinates
 };
 
-/// @brief Result of the full intrinsic calibration.
+/// @brief Result of the full intrinsic calibration (two-pass).
 struct IntrinsicResult {
     bool ok{false};
-    double rms{0.0};               ///< Reprojection RMS (pixels)
-    cv::Mat K;                     ///< 3x3 camera matrix
-    cv::Mat dist_coeffs;           ///< 1x5 distortion [k1,k2,p1,p2,k3]
-    std::vector<cv::Mat> rvecs;    ///< Per-frame rotation vectors
-    std::vector<cv::Mat> tvecs;    ///< Per-frame translation vectors
-    std::size_t frames_used{0};
-    std::string error;             ///< Empty when ok==true
+    double rms{0.0};                   ///< Overall RMS reprojection error (kept views)
+    cv::Mat K;                         ///< 3x3 camera matrix
+    cv::Mat dist_coeffs;               ///< 1x5 distortion [k1,k2,p1,p2,k3]
+    std::vector<cv::Mat> rvecs;        ///< Per-KEPT-view rotation vectors
+    std::vector<cv::Mat> tvecs;        ///< Per-KEPT-view translation vectors
+    std::size_t frames_used{0};        ///< == kept_frames
+    std::size_t kept_frames{0};        ///< Views surviving outlier rejection
+    std::size_t removed_frames{0};     ///< Views rejected by outlier rule
+    std::vector<bool> selected_views;  ///< Per ORIGINAL input view (survived?)
+    std::vector<double> per_view_rms;  ///< RMS per KEPT view (parallel to rvecs)
+    std::string error;                 ///< Empty when ok==true
 };
 
 /// @brief Intrinsic calibration accumulator.
@@ -74,27 +63,20 @@ public:
     ~IntrinsicCalibration();
 
     /// @brief Configures the board geometry. Must be called before add_frame().
+    /// Changing geometry clears accumulated observations (they would feed
+    /// cv::calibrateCamera inconsistent point sets otherwise).
     void set_pattern(CalibrationPattern pattern,
                      int cols, int rows,
                      float square_size_mm);
 
-    /// @brief Sets the dashed-cross dot-gap parameter (1/2/3) used by
-    /// ScrewHeadGrid detection (dilate radius = dot_gap+1). No-op for other
-    /// patterns. Stored only; does not affect object-point geometry.
-    void set_dot_gap(int dot_gap);
-
-    /// @brief Sets the ring/circle detection parameters (coverage threshold,
-    /// min ring pixels, ring search margin) used by ScrewHeadGrid detection.
-    /// No-op for other patterns.
-    void set_ring_params(const RingParams& params);
+    /// @brief Sets the outlier-rejection threshold: views with per-view RMS
+    /// reprojection error above mean + ths·std are dropped before pass 2.
+    /// ths <= 0 keeps all views. Default 2.0.
+    void set_outlier_threshold(double ths);
 
     /// @brief Attempts to detect the calibration pattern in @p frame and, on
     /// success, accumulates the observation. Convenience wrapper around
-    /// detect_only() + accept() for callers that want detect-and-keep in one
-    /// call (preserves the original Phase 9 contract).
-    /// @param frame Grayscale or BGR accumulated event frame.
-    /// @param annotate If true, @p result.image contains a drawn preview.
-    /// @return DetectionResult with found state and corner points.
+    /// detect_only() + accept().
     DetectionResult add_frame(const cv::Mat& frame, bool annotate = true);
 
     /// @brief Runs pattern detection only — does NOT accumulate. Lets the
@@ -108,19 +90,15 @@ public:
     void accept(const std::vector<cv::Point2f>& points);
 
     /// @brief Removes the most recently accepted observation (image + object
-    /// points). Used by the wizard's "Delete this capture" button to discard a
-    /// bad frame after the user inspects the annotated preview. No-op if empty.
+    /// points). Used by the wizard's "Delete this capture" button. No-op if empty.
     void remove_last_frame();
 
     /// @brief Returns true if @p points match (within @p threshold_px mean
-    /// Euclidean distance) any already-accepted observation. Used by the
-    /// Phase 4 wizard to reject duplicate-pose captures. Element-wise
-    /// comparison assumes findCirclesGrid returns points in a consistent
-    /// order for a given board pose.
+    /// Euclidean distance) any already-accepted observation.
     bool is_duplicate_pose(const std::vector<cv::Point2f>& points,
                            double threshold_px) const;
 
-    /// @brief Runs cv::calibrateCamera on all collected observations.
+    /// @brief Runs the two-pass calibration (see header comment).
     IntrinsicResult run();
 
     /// @brief Discards all collected observations.
@@ -138,8 +116,7 @@ private:
     CalibrationPattern pattern_{CalibrationPattern::Chessboard};
     cv::Size board_size_{0, 0};    ///< Inner-corner count for chessboard (== OpenCV patternSize), (cols, rows) for circles
     float square_size_mm_{1.0f};
-    int dot_gap_{2};               ///< ScrewHeadGrid dashed-cross dot gap (1/2/3)
-    RingParams ring_params_;       ///< ScrewHeadGrid ring detection parameters
+    double outlier_ths_{2.0};
     cv::Size image_size_{0, 0};
 
     std::vector<std::vector<cv::Point2f>> image_points_;

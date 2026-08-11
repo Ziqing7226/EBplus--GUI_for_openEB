@@ -10,9 +10,47 @@
 
 #include <opencv2/core/persistence.hpp>
 
-#include "screwhead_detect.h"
+#include "blinking_detect.h"
 
 namespace gui_algo {
+
+namespace {
+// Radial-distortion-friendly grid validation: every row and column must stay
+// approximately straight — the cosine of the angle between two consecutive
+// vectors of three consecutive points must stay above cos_max_angle (standard
+// points-on-grid radial check; perspective keeps lines straight, so this only
+// rejects genuinely mis-fit point sets). cos(π/9) ≈ 0.94 (~20° bend) is enough
+// once the corners come from the raw FILTER_QUADS pass (subpixel refinement
+// on the binary blink frame is what previously bent the rows out of shape).
+bool points_on_grid_radial(const std::vector<cv::Point2f>& pts, int cols, int rows,
+                           float cos_max_angle) {
+    if (static_cast<int>(pts.size()) != cols * rows || cols < 3 || rows < 3) return false;
+    const auto angle_ok = [cos_max_angle](const cv::Point2f& a, const cv::Point2f& b,
+                                          const cv::Point2f& c) {
+        const cv::Point2f v1 = b - a;
+        const cv::Point2f v2 = c - b;
+        const double n1 = cv::norm(v1), n2 = cv::norm(v2);
+        if (n1 < 1e-6 || n2 < 1e-6) return true;  // degenerate segment — skip
+        const double dot = v1.x * v2.x + v1.y * v2.y;
+        return dot / (n1 * n2) >= static_cast<double>(cos_max_angle);
+    };
+    // Rows (row-major layout: point r*cols+c).
+    for (int r = 0; r < rows; ++r) {
+        for (int c = 1; c < cols - 1; ++c) {
+            if (!angle_ok(pts[r * cols + c - 1], pts[r * cols + c], pts[r * cols + c + 1]))
+                return false;
+        }
+    }
+    // Columns.
+    for (int c = 0; c < cols; ++c) {
+        for (int r = 1; r < rows - 1; ++r) {
+            if (!angle_ok(pts[(r - 1) * cols + c], pts[r * cols + c], pts[(r + 1) * cols + c]))
+                return false;
+        }
+    }
+    return true;
+}
+} // namespace
 
 IntrinsicCalibration::IntrinsicCalibration() = default;
 IntrinsicCalibration::~IntrinsicCalibration() = default;
@@ -22,9 +60,7 @@ void IntrinsicCalibration::set_pattern(CalibrationPattern pattern,
                                        float square_size_mm) {
     // For chessboard, (cols, rows) IS the OpenCV inner-corner count — the same
     // convention as cv::findChessboardCorners' patternSize, the wizard's UI
-    // ("Inner corners") and ChessboardDisplay (which draws (cols+1)×(rows+1)
-    // squares). (Previously this subtracted 1 here, so a 9×6 board on screen
-    // was searched as 8×5 and detection always failed.)
+    // and BlinkingChessboardDisplay (which draws (cols+1)×(rows+1) squares).
     // For circle grids, the count is the number of circles per row/column.
     cv::Size new_bs = cv::Size(std::max(cols, 1), std::max(rows, 1));
     // The wizard refreshes set_pattern on every capture/run so the user can
@@ -43,35 +79,19 @@ void IntrinsicCalibration::set_pattern(CalibrationPattern pattern,
     square_size_mm_ = square_size_mm;
 }
 
-void IntrinsicCalibration::set_dot_gap(int dot_gap) {
-    dot_gap_ = std::clamp(dot_gap, 1, 3);
-}
-
-void IntrinsicCalibration::set_ring_params(const RingParams& params) {
-    ring_params_ = params;
+void IntrinsicCalibration::set_outlier_threshold(double ths) {
+    outlier_ths_ = ths;
 }
 
 std::vector<cv::Point3f> IntrinsicCalibration::make_object_grid() const {
     std::vector<cv::Point3f> pts;
     pts.reserve(static_cast<std::size_t>(board_size_.width) *
                 static_cast<std::size_t>(board_size_.height));
-    if (pattern_ == CalibrationPattern::ScrewHeadGrid) {
-        // Asymmetric grid: positions (2c+(r&1), r)·d, where d is the half-cell.
-        // The user measures the same-row (or same-column) adjacent marker
-        // distance = 2d, so d = square_size_mm / 2. No √2: same-row and
-        // same-column neighbours are both 2d; the diagonal (d·√2) is closer but
-        // is NOT what the user measures.
-        const float d = square_size_mm_ / 2.0f;
-        for (int r = 0; r < board_size_.height; ++r) {
-            for (int c = 0; c < board_size_.width; ++c) {
-                pts.emplace_back((2 * c + (r & 1)) * d, r * d, 0.0f);
-            }
-        }
-    } else {
-        for (int r = 0; r < board_size_.height; ++r) {
-            for (int c = 0; c < board_size_.width; ++c) {
-                pts.emplace_back(c * square_size_mm_, r * square_size_mm_, 0.0f);
-            }
+    // Both supported patterns are rectangular grids with the user-entered
+    // square (or circle-spacing) size as the cell edge.
+    for (int r = 0; r < board_size_.height; ++r) {
+        for (int c = 0; c < board_size_.width; ++c) {
+            pts.emplace_back(c * square_size_mm_, r * square_size_mm_, 0.0f);
         }
     }
     return pts;
@@ -87,13 +107,6 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
         image_size_ = frame.size();
     }
 
-    // ScrewHeadGrid takes the three-valued colour frame directly (polarity is
-    // encoded in colour); the OpenCV patterns below need grayscale.
-    if (pattern_ == CalibrationPattern::ScrewHeadGrid) {
-        return detect_screwheads(frame, board_size_.width, board_size_.height,
-                                 dot_gap_, annotate, ring_params_);
-    }
-
     cv::Mat gray;
     if (frame.channels() == 1) {
         gray = frame;
@@ -106,19 +119,28 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
 
     switch (pattern_) {
         case CalibrationPattern::Chessboard:
+            // The blink frame is already a clean binary chessboard, so a plain
+            // FILTER_QUADS search suffices — adaptive thresholding a binary
+            // frame can distort square sizes and break detection on real
+            // noisy blink frames. cornerSubPix is intentionally NOT applied:
+            // on a binary frame its 11×11 gradient window drags corners off
+            // the grid lines (the radial straightness check then rejects
+            // valid detections on real recordings).
             found = cv::findChessboardCorners(gray, board_size_, corners,
-                cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
+                                              cv::CALIB_CB_FILTER_QUADS);
             if (found) {
-                cv::cornerSubPix(gray, corners, cv::Size(5, 5), cv::Size(-1, -1),
-                    cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT,
-                                      30, 0.01));
+                // Reject mis-fit point sets (straight rows/columns check).
+                if (!points_on_grid_radial(corners, board_size_.width,
+                                           board_size_.height,
+                                           static_cast<float>(std::cos(3.14159 / 9)))) {
+                    found = false;
+                    corners.clear();
+                }
             }
             break;
         case CalibrationPattern::CircleGrid:
             found = cv::findCirclesGrid(gray, board_size_, corners);
             break;
-        case CalibrationPattern::ScrewHeadGrid:
-            break;  // handled above
     }
 
     result.found = found;
@@ -185,23 +207,102 @@ IntrinsicResult IntrinsicCalibration::run() {
         return result;
     }
 
-    cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
-    cv::Mat dist = cv::Mat::zeros(1, 5, CV_64F);
-    std::vector<cv::Mat> rvecs, tvecs;
-
     try {
-        double rms = cv::calibrateCamera(object_points_, image_points_,
-            image_size_, K, dist, rvecs, tvecs);
-        result.rms = rms;
-        result.K = K;
-        result.dist_coeffs = dist;
-        result.rvecs = std::move(rvecs);
-        result.tvecs = std::move(tvecs);
-        result.frames_used = image_points_.size();
-        // Set ok only after every potentially-throwing operation succeeded
-        // (§四-低11): previously ok was set before the LUT precompute, so a
-        // throwing step left ok==true together with an error message.
-        result.ok = true;
+        const std::size_t n_views = image_points_.size();
+
+        // ---- Pass 1: coarse fit. K3 + aspect ratio fixed for a stable initial
+        // estimate and reliable per-view poses (standard Zhang two-pass practice).
+        cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
+        cv::Mat dist = cv::Mat::zeros(1, 5, CV_64F);
+        std::vector<cv::Mat> rvecs, tvecs;
+        cv::calibrateCamera(object_points_, image_points_, image_size_, K, dist,
+                            rvecs, tvecs,
+                            cv::CALIB_FIX_ASPECT_RATIO | cv::CALIB_FIX_K3);
+
+        // ---- Per-view RMS reprojection errors (pass-1 parameters). ----
+        std::vector<double> per_view_rms(n_views, 0.0);
+        for (std::size_t i = 0; i < n_views; ++i) {
+            std::vector<cv::Point2f> proj;
+            cv::projectPoints(object_points_[i], rvecs[i], tvecs[i], K, dist, proj);
+            double e2 = 0.0;
+            const std::size_t n = image_points_[i].size();
+            for (std::size_t k = 0; k < n; ++k) {
+                const double dx = proj[k].x - image_points_[i][k].x;
+                const double dy = proj[k].y - image_points_[i][k].y;
+                e2 += dx * dx + dy * dy;
+            }
+            per_view_rms[i] = std::sqrt(e2 / static_cast<double>(std::max<std::size_t>(1, n)));
+        }
+
+        // ---- Outlier rejection: drop views with error > mean + ths·std. ----
+        std::vector<bool> selected(n_views, true);
+        if (outlier_ths_ > 0.0) {
+            double sum = 0.0, sumsq = 0.0;
+            for (double e : per_view_rms) { sum += e; sumsq += e * e; }
+            const double mean = sum / static_cast<double>(n_views);
+            const double var = std::max(0.0, sumsq / static_cast<double>(n_views) - mean * mean);
+            const double ths = mean + outlier_ths_ * std::sqrt(var);
+            for (std::size_t i = 0; i < n_views; ++i) {
+                if (per_view_rms[i] > ths) selected[i] = false;
+            }
+        }
+        result.kept_frames = static_cast<std::size_t>(
+            std::count(selected.begin(), selected.end(), true));
+        result.removed_frames = n_views - result.kept_frames;
+        if (result.kept_frames < 3) {
+            result.error = "Outlier rejection removed too many views (" +
+                           std::to_string(result.removed_frames) +
+                           " of " + std::to_string(n_views) +
+                           "); at least 3 must remain. Capture more frames.";
+            return result;  // ok stays false
+        }
+
+        // ---- Pass 2: refit on kept views with K3 free. ----
+        {
+            std::vector<std::vector<cv::Point2f>> kept_pts;
+            std::vector<std::vector<cv::Point3f>> kept_obj;
+            kept_pts.reserve(result.kept_frames);
+            kept_obj.reserve(result.kept_frames);
+            for (std::size_t i = 0; i < n_views; ++i) {
+                if (!selected[i]) continue;
+                kept_pts.push_back(image_points_[i]);
+                kept_obj.push_back(object_points_[i]);
+            }
+            std::vector<cv::Mat> kept_rvecs, kept_tvecs;
+            cv::calibrateCamera(kept_obj, kept_pts, image_size_, K, dist,
+                                kept_rvecs, kept_tvecs, cv::CALIB_FIX_ASPECT_RATIO);
+
+            // Per-view RMS with the FINAL parameters (kept views only).
+            std::vector<double> final_rms;
+            final_rms.reserve(result.kept_frames);
+            for (std::size_t i = 0; i < result.kept_frames; ++i) {
+                std::vector<cv::Point2f> proj;
+                cv::projectPoints(kept_obj[i], kept_rvecs[i], kept_tvecs[i], K, dist, proj);
+                double e2 = 0.0;
+                const std::size_t n = kept_pts[i].size();
+                for (std::size_t k = 0; k < n; ++k) {
+                    const double dx = proj[k].x - kept_pts[i][k].x;
+                    const double dy = proj[k].y - kept_pts[i][k].y;
+                    e2 += dx * dx + dy * dy;
+                }
+                final_rms.push_back(std::sqrt(e2 / static_cast<double>(std::max<std::size_t>(1, n))));
+            }
+
+            double rms = 0.0;
+            for (double e : final_rms) rms += e * e;
+            rms = std::sqrt(rms / static_cast<double>(result.kept_frames));
+
+            result.rms = rms;
+            result.K = K;
+            result.dist_coeffs = dist;
+            result.rvecs = std::move(kept_rvecs);
+            result.tvecs = std::move(kept_tvecs);
+            result.frames_used = result.kept_frames;
+            result.per_view_rms = std::move(final_rms);
+            result.selected_views = std::move(selected);
+            // Set ok only after every potentially-throwing operation succeeded.
+            result.ok = true;
+        }
     } catch (const cv::Exception& e) {
         result.error = e.what();
     } catch (const std::exception& e) {

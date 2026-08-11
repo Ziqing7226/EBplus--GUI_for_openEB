@@ -58,7 +58,8 @@ target_compile_options(test_phase8_10 PRIVATE -Wall -Wextra -Werror)
 gtest_discover_tests(test_phase8_10)
 
 # Test executable for Phase 4 (algo/calibration/) — IntrinsicCalibration
-# ScrewHeadGrid object-grid formula, detect_only/accept split, duplicate-pose check.
+# chessboard object-grid formula, two-pass calibration + outlier rejection,
+# detect_only/accept split, duplicate-pose check.
 add_executable(test_intrinsic
     test_intrinsic.cpp
 )
@@ -71,20 +72,21 @@ target_link_libraries(test_intrinsic PRIVATE
 target_compile_options(test_intrinsic PRIVATE -Wall -Wextra -Werror)
 gtest_discover_tests(test_intrinsic)
 
-# Test executable for the Zhou's Screw-Head Grid detector
-# (algo/calibration/screwhead_detect.cpp). Renders synthetic three-valued colour
-# frames and exercises the full four-stage detection pipeline.
-add_executable(test_screwhead_detect
-    test_screwhead_detect.cpp
+# Test executable for the blinking chessboard calibration support
+# (algo/calibration/blinking_detect.h): blink-frame construction, the
+# min-blink-pixels / single-polarity-ratio validity gate, and chessboard
+# detection on synthetic blink frames.
+add_executable(test_blinking_detect
+    test_blinking_detect.cpp
 )
-target_link_libraries(test_screwhead_detect PRIVATE
+target_link_libraries(test_blinking_detect PRIVATE
     gui_algo
     GTest::GTest
     GTest::Main
     ${OpenCV_LIBS}
 )
-target_compile_options(test_screwhead_detect PRIVATE -Wall -Wextra -Werror)
-gtest_discover_tests(test_screwhead_detect)
+target_compile_options(test_blinking_detect PRIVATE -Wall -Wextra -Werror)
+gtest_discover_tests(test_blinking_detect)
 
 # Raw-event integration tests: exercises every streaming algorithm against a
 # real Metavision .raw recording (algo/tests/sparklers.raw, committed). Unlike
@@ -167,6 +169,7 @@ add_test(NAME playback_e2v COMMAND test_playback_e2v ${CMAKE_CURRENT_SOURCE_DIR}
 add_executable(test_file_frame_generator
     test_file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
@@ -190,10 +193,10 @@ add_test(NAME file_frame_generator COMMAND test_file_frame_generator ${CMAKE_CUR
 add_executable(test_filter_in_render
     test_filter_in_render.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
     ${CMAKE_SOURCE_DIR}/algo/calibration/intrinsic.cpp
-    ${CMAKE_SOURCE_DIR}/algo/calibration/screwhead_detect.cpp
 )
 target_include_directories(test_filter_in_render PRIVATE
     ${CMAKE_SOURCE_DIR}/gui
@@ -213,6 +216,7 @@ add_test(NAME filter_in_render COMMAND test_filter_in_render)
 add_executable(test_filter_integration
     test_filter_integration.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
@@ -235,6 +239,7 @@ add_test(NAME filter_integration COMMAND test_filter_integration ${CMAKE_CURRENT
 add_executable(test_loop_flip
     test_loop_flip.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
@@ -252,10 +257,11 @@ target_link_libraries(test_loop_flip PRIVATE
 )
 add_test(NAME loop_flip COMMAND test_loop_flip ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
-# Diagnostic (Zhou's Method): reproduce calibration capture on a .raw recording.
-# Renders the last W us of CD events as a three-valued colour frame (matching
-# CalibrationWizard::render_event_frame) and runs detect_screwheads on it,
-# saving annotated PNGs + a tally so we can see which windows succeed.
+# Diagnostic: reproduce calibration capture on a .raw recording.
+# Accumulates the last W us of CD events into per-polarity masks, builds the
+# binary blink frame (matching CalibrationWizard + CalibrationWorker) and runs
+# chessboard detection on it, saving annotated PNGs + a tally so we can see
+# which windows succeed.
 # Not registered with CTest (needs a user-supplied .raw with a calibration board).
 add_executable(calib_capture_probe
     calib_capture_probe.cpp

@@ -1,4 +1,4 @@
-// gui/calibration/calibration_worker.cpp — see header (Phase 4-2).
+// gui/calibration/calibration_worker.cpp — see header.
 
 #include "calibration_worker.h"
 
@@ -16,28 +16,30 @@ namespace gui {
 namespace {
 // A capture is rejected if the detected grid's bounding box covers less than
 // this fraction of the frame area — the camera is too far for the grid to
-// condition cv::calibrateCamera well ("coverage insufficient", Phase 4).
+// condition cv::calibrateCamera well ("coverage insufficient").
 constexpr double kMinCoverageRatio = 0.10;
 // Two poses whose detected points differ by less than this mean Euclidean
-// distance (px) are treated as the same pose (duplicate, Phase 4).
+// distance (px) are treated as the same pose (duplicate).
 constexpr double kDuplicateThresholdPx = 10.0;
 } // namespace
 
 CalibrationWorker::CalibrationWorker(QObject* parent)
     : QObject(parent),
       intrinsic_(std::make_unique<gui_algo::IntrinsicCalibration>()) {
-    intrinsic_->set_pattern(gui_algo::CalibrationPattern::ScrewHeadGrid,
-                            6, 5, 5.0f);
-    intrinsic_->set_dot_gap(2);
+    intrinsic_->set_pattern(gui_algo::CalibrationPattern::Chessboard,
+                            9, 6, 20.0f);
+    // Permissive polarity ratios: a real blink frame carries plenty of
+    // single-polarity noise (screen backlight, edges); the board fill — not
+    // the gate — decides.
+    blink_params_.ratio_on = 1.0;
+    blink_params_.ratio_off = 1.0;
 }
 
 CalibrationWorker::~CalibrationWorker() = default;
 
-void CalibrationWorker::configure(double square_size_mm,
-                                  int target_frames, int dot_gap) {
-    intrinsic_->set_pattern(gui_algo::CalibrationPattern::ScrewHeadGrid,
-                            6, 5, static_cast<float>(square_size_mm));
-    intrinsic_->set_dot_gap(dot_gap);
+void CalibrationWorker::configure(double square_size_mm, int target_frames) {
+    intrinsic_->set_pattern(gui_algo::CalibrationPattern::Chessboard,
+                            9, 6, static_cast<float>(square_size_mm));
     target_ = static_cast<std::size_t>(std::max(1, target_frames));
 }
 
@@ -50,61 +52,29 @@ void CalibrationWorker::delete_last_capture() {
     emit frame_deleted(intrinsic_->frame_count());
 }
 
-void CalibrationWorker::review_frame(const cv::Mat& frame) {
-    review_frame_ = frame;
-    run_review_detect();
-}
-
-void CalibrationWorker::re_detect(double cover_frac, int min_pixels,
-                                  int search_margin) {
-    // Relaxed/updated ring parameters from the capture-review dialog.
-    ring_params_.cover_frac   = static_cast<float>(cover_frac);
-    ring_params_.min_pixels   = min_pixels;
-    ring_params_.search_margin = search_margin;
-    if (review_frame_.empty()) return;
-    run_review_detect();
-}
-
-void CalibrationWorker::run_review_detect() {
-    if (review_frame_.empty()) {
-        emit review_ready(CaptureReview{false, QImage(), {}, {}, {},
-                                        tr("Empty capture frame.")});
+void CalibrationWorker::process_capture(const BlinkCapture& capture) {
+    if (capture.on_cnt.empty() || capture.off_cnt.empty()) {
+        emit frame_rejected(tr("Empty capture frame."));
         return;
     }
-    intrinsic_->set_ring_params(ring_params_);
-    last_detect_ = intrinsic_->detect_only(review_frame_, true);
 
-    CaptureReview r;
-    r.found = last_detect_.found;
-    r.reason = last_detect_.found
-        ? QString()
-        : tr("Markers not fully detected — relax the ring parameters and "
-             "re-detect, or discard this capture.");
-    // Raw captured frame (BGR) → RGB QImage for the review dialog; the dialog
-    // draws its own markers (blue crosses / red circles) on top.
-    if (!review_frame_.empty()) {
-        cv::Mat rgb;
-        cv::cvtColor(review_frame_, rgb, cv::COLOR_BGR2RGB);
-        r.frame = QImage(rgb.data, rgb.cols, rgb.rows,
-                         static_cast<int>(rgb.step),
-                         QImage::Format_RGB888).copy();
+    const gui_algo::BlinkFrame bf = gui_algo::build_blink_frame_from_counts(
+        capture.on_cnt, capture.off_cnt, blink_params_);
+    if (!bf.valid) {
+        emit frame_rejected(tr("Not enough blinking pixels (board area: %1, "
+                               "min %2) — ensure the chessboard fills the view "
+                               "and is steady.").arg(bf.both)
+                                .arg(blink_params_.min_blink_pixels));
+        return;
     }
-    for (const auto& p : last_detect_.cross_centers)
-        r.crosses.append(QPointF(p.x, p.y));
-    for (const auto& p : last_detect_.ring_centers)
-        r.rings.append(QPointF(p.x, p.y));
-    for (float rad : last_detect_.ring_radii)
-        r.ring_radii.append(rad);
-    emit review_ready(r);
-}
 
-void CalibrationWorker::accept_review() {
+    last_detect_ = intrinsic_->detect_only(bf.frame, true);
     if (!last_detect_.found || last_detect_.points.empty()) {
-        emit frame_rejected(tr("Nothing to accept — markers were not detected."));
+        emit frame_rejected(tr("Chessboard not detected — ensure the blinking "
+                               "chessboard fills a large part of the view and "
+                               "is in focus."));
         return;
     }
-
-    const cv::Mat& frame = review_frame_;
 
     // Coverage: detected grid bbox vs frame area.
     {
@@ -117,7 +87,7 @@ void CalibrationWorker::accept_review() {
         const double bbox_area =
             static_cast<double>(xmax - xmin) * static_cast<double>(ymax - ymin);
         const double frame_area =
-            static_cast<double>(frame.cols) * static_cast<double>(frame.rows);
+            static_cast<double>(bf.frame.cols) * static_cast<double>(bf.frame.rows);
         if (frame_area > 0.0 && bbox_area / frame_area < kMinCoverageRatio) {
             emit frame_rejected(tr("Coverage too low — move the camera closer."));
             return;
@@ -149,11 +119,12 @@ void CalibrationWorker::accept_review() {
 }
 
 void CalibrationWorker::run_calibration() {
-    // cv::calibrateCamera (bundle adjustment) runs on the worker thread so the
-    // GUI stays responsive. The result is cached for export_to().
+    // Two-pass cv::calibrateCamera (bundle adjustment) runs on the worker
+    // thread so the GUI stays responsive. The result is cached for export_to().
     last_result_ = intrinsic_->run();
     emit calibration_done(last_result_.ok, last_result_.rms,
                           static_cast<int>(last_result_.frames_used),
+                          static_cast<int>(last_result_.removed_frames),
                           QString::fromStdString(last_result_.error));
 }
 
@@ -166,7 +137,7 @@ void CalibrationWorker::export_to(const QString& path) {
         emit export_done(false, tr("No successful calibration to export."));
         return;
     }
-    // Phase 4: auto-mkdir the parent directory so export to a fresh path
+    // Auto-mkdir the parent directory so export to a fresh path
     // (e.g. ~/Documents/EBplus/calibration/intrinsic.yml) does not fail.
     const QFileInfo fi(path);
     const QDir dir = fi.dir();
@@ -185,6 +156,9 @@ void CalibrationWorker::export_to(const QString& path) {
         fs << "camera_matrix"           << last_result_.K;
         fs << "distortion_coefficients" << last_result_.dist_coeffs;
         fs << "rms" << last_result_.rms;
+        fs << "kept_frames" << static_cast<int>(last_result_.kept_frames);
+        fs << "removed_frames" << static_cast<int>(last_result_.removed_frames);
+        fs << "per_view_rms_reprojection_errors" << last_result_.per_view_rms;
         fs.release();
         emit export_done(true, path);
     } catch (const std::exception& e) {
