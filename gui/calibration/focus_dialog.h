@@ -19,7 +19,9 @@
 #include <QPixmap>
 #include <vector>
 
+class QEvent;
 class QLabel;
+class QShowEvent;
 class QTimer;
 
 namespace gui {
@@ -74,6 +76,19 @@ public:
 
     /// @brief Sets the display to poll for camera frames. Safe with nullptr.
     void set_display(EventDisplayWidget* display);
+
+protected:
+    /// @brief Re-sizes the window to the workarea inset by
+    /// kFullscreenGuardInset on every show — same near-full-workarea geometry
+    /// as the calibration wizard, so the window never exactly matches the
+    /// workarea (which would trip Mutter's unredirect path and stutter the
+    /// 30 Hz camera poll).
+    void showEvent(QShowEvent* event) override;
+    /// @brief Blocks ANY transition into Qt::WindowMaximized (title-bar
+    /// double-click, Super+Up, drag-to-top edge-tiling) — same guard as the
+    /// calibration wizard. The maximize button itself is already omitted via
+    /// the window flags.
+    void changeEvent(QEvent* event) override;
 
 private slots:
     void on_tick();

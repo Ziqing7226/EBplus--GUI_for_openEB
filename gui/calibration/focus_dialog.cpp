@@ -2,11 +2,15 @@
 
 #include "focus_dialog.h"
 
+#include <QEvent>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
+#include <QScreen>
+#include <QShowEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -27,6 +31,32 @@ namespace {
 constexpr int kSectors = 72;
 constexpr int kPhases = 72;
 constexpr int kTickMs = 33;  // ~30 Hz phase advance + camera poll
+
+// Same value and rationale as CalibrationWizard::kFullscreenGuardInset: a
+// window whose geometry matches the workarea is treated by Mutter (GNOME) as
+// maximized — unredirected / put on the maximized frame-sync path — which
+// throttles the 30 Hz camera poll into visible stutter. Insetting by 50 px
+// per side keeps the window on the smooth normal compositing path.
+constexpr int kFullscreenGuardInset = 50;
+
+// The focus assistant pairs a square-ish Siemens star with a square-ish camera
+// view side by side (plus a hint line below), so the natural window shape is
+// width ≈ 1.95 × height. fit_focus_geometry() scales the inset workarea to
+// that ratio, keeping the window as large as possible inside it: fit by
+// height when the workarea is wider than the ratio, otherwise fit by width.
+constexpr double kFocusAspectRatio = 1.95;
+
+QRect fit_focus_geometry(const QRect& base) {
+    QRect g = base;
+    if (g.height() * kFocusAspectRatio <= g.width()) {
+        // Inset workarea wider than the target ratio → height-limited.
+        g.setWidth(static_cast<int>(std::lround(g.height() * kFocusAspectRatio)));
+    } else {
+        // Inset workarea taller/narrower than the target ratio → width-limited.
+        g.setHeight(static_cast<int>(std::lround(g.width() / kFocusAspectRatio)));
+    }
+    return g;
+}
 
 } // namespace
 
@@ -124,6 +154,18 @@ void FocusCameraView::paintEvent(QPaintEvent* /*event*/) {
 
 FocusDialog::FocusDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Focus Assistant"));
+    // Mirror the calibration wizard's window flags: Qt::Window (instead of the
+    // default Qt::Dialog) gives a full top-level window with working
+    // minimize/close buttons. The maximize button is deliberately OMITTED: a
+    // maximized window covers the full workarea, which on Mutter (GNOME)
+    // triggers the unredirect / maximized compositing path and makes the 30 Hz
+    // camera poll stutter (see showEvent). The changeEvent override below also
+    // blocks maximize from other paths (title-bar double-click, Super+Up,
+    // drag-to-top edge-tiling) since those bypass the button.
+    // Qt::WindowMaximizeButtonHint is intentionally absent.
+    setWindowFlags(Qt::Window | Qt::WindowTitleHint | Qt::WindowSystemMenuHint |
+                   Qt::WindowMinimizeButtonHint | Qt::WindowCloseButtonHint);
+    setMinimumSize(900, 560);
     auto* layout = new QVBoxLayout(this);
 
     auto* row = new QHBoxLayout();
@@ -145,13 +187,59 @@ FocusDialog::FocusDialog(QWidget* parent) : QDialog(parent) {
     timer_ = new QTimer(this);
     connect(timer_, &QTimer::timeout, this, &FocusDialog::on_tick);
     timer_->start(kTickMs);
-    resize(900, 420);
 }
 
 FocusDialog::~FocusDialog() = default;
 
 void FocusDialog::set_display(EventDisplayWidget* display) {
     display_ = display;
+}
+
+void FocusDialog::showEvent(QShowEvent* event) {
+    QDialog::showEvent(event);
+    // Size the window to (nearly) the full workarea but INSET by a few px so
+    // it does NOT exactly match the workarea — identical to the calibration
+    // wizard's show_intrinsic(). Without the inset, a window whose geometry
+    // matches the workarea is treated by Mutter (GNOME) as maximized: it is
+    // unredirected (direct-scanout) and/or put on the maximized compositing
+    // frame-sync path, which throttles the 30 Hz camera poll → visible
+    // stutter. Applied on every show so the geometry is re-guaranteed after
+    // any hide→show cycle.
+    if (QScreen* screen = QGuiApplication::primaryScreen()) {
+        QRect g = screen->availableGeometry();
+        g.adjust(kFullscreenGuardInset, kFullscreenGuardInset,
+                 -kFullscreenGuardInset, -kFullscreenGuardInset);
+        setGeometry(fit_focus_geometry(g));
+    }
+}
+
+void FocusDialog::changeEvent(QEvent* event) {
+    QDialog::changeEvent(event);
+    // Block ANY transition into Qt::WindowMaximized (title-bar double-click,
+    // Super+Up, GNOME drag-to-top edge-tiling — the maximize button itself is
+    // already removed via the window flags, but those other paths bypass it).
+    // A maximized window covers the full workarea → Mutter unredirects it →
+    // camera poll stutters (see showEvent). Immediately undo the maximize and
+    // re-apply the inset workarea geometry, so the window LOOKS maximized yet
+    // stays on the smooth normal compositing path.
+    //
+    // Deferred via QueuedConnection so the current state-change event finishes
+    // first — calling setWindowState re-entrantly inside changeEvent is
+    // fragile. Our own setWindowState fires a second changeEvent in which the
+    // window is no longer maximized, so the guard below falls through (no
+    // loop). The WM processes the un-maximize then our setGeometry in order.
+    if (event->type() == QEvent::WindowStateChange &&
+        (windowState() & Qt::WindowMaximized)) {
+        QMetaObject::invokeMethod(this, [this] {
+            setWindowState(windowState() & ~Qt::WindowMaximized);
+            if (QScreen* screen = QGuiApplication::primaryScreen()) {
+                QRect g = screen->availableGeometry();
+                g.adjust(kFullscreenGuardInset, kFullscreenGuardInset,
+                         -kFullscreenGuardInset, -kFullscreenGuardInset);
+                setGeometry(fit_focus_geometry(g));
+            }
+        }, Qt::QueuedConnection);
+    }
 }
 
 void FocusDialog::on_tick() {
