@@ -15,6 +15,7 @@
 #include "algo/cv/corner_detector.h"
 #include "algo/cv/blob_detector.h"
 #include "algo/cv/sparse_optical_flow.h"
+#include "algo/cv/dense_optical_flow.h"
 
 using namespace gui::backend_detail;
 
@@ -448,6 +449,102 @@ private:
 };
 
 
+/// DenseOpticalFlow backend — per-pixel flow map rendered as HSV-colored
+/// points (hue = direction, brightness = magnitude, scaled by confidence).
+class DenseOpticalFlowBackend final : public AlgoBackend {
+    gui_algo::DenseOpticalFlow algo_;
+    std::vector<Metavision::EventCD> passthrough_;
+    RoiFilter roi_;
+    std::vector<gui_algo::Event> roi_buf_;
+public:
+    DenseOpticalFlowBackend(int w, int h)
+        : algo_(w, h, gui_algo::DenseOpticalFlow::Mode::PlaneFitting) { roi_.init(w, h); }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (roi_.set_param(k, v)) return;
+        if (k == "mode") {
+            const int m = to_i(v);
+            if (m >= 0 && m <= 2)
+                algo_.set_mode(static_cast<gui_algo::DenseOpticalFlow::Mode>(m));
+        } else if (k == "time_window_us") algo_.set_time_window_us(to_i(v));
+        else if (k == "spatial_radius")  algo_.set_spatial_radius_px(to_i(v));
+        else if (k == "max_velocity_px_s") algo_.set_max_velocity_px_s(static_cast<float>(to_d(v)));
+    }
+    std::string get_param(const std::string& k) const override {
+        auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "mode") return from_i(static_cast<int>(algo_.mode()));
+        if (k == "time_window_us") return from_i(algo_.time_window_us());
+        if (k == "spatial_radius") return from_i(algo_.spatial_radius_px());
+        if (k == "max_velocity_px_s") return from_d(algo_.max_velocity_px_s());
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        auto [ev, n] = roi_.apply(as_events(passthrough_.data()), passthrough_.size(), roi_buf_);
+        algo_.process(ev, ev + n);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        cv::Mat flow, conf;
+        algo_.get_flow(flow, conf);
+        // Brightness reference: fraction of the max-velocity clamp.
+        const float val_ref = std::max(1.0f, algo_.max_velocity_px_s() * 0.2f);
+        static constexpr float kInv2Pi = 1.0F / (2.0F * static_cast<float>(M_PI));
+        int count = 0;
+        r.colored_points.reserve(4096);
+        for (int y = 0; y < algo_.height(); ++y) {
+            const cv::Vec2f* frow = flow.ptr<cv::Vec2f>(y);
+            const float* crow = conf.ptr<float>(y);
+            for (int x = 0; x < algo_.width(); ++x) {
+                if (crow[x] <= 0.0f) continue;
+                const float vx = frow[x][0], vy = frow[x][1];
+                if (vx == 0.0f && vy == 0.0f) continue;
+                const float angle_rad = std::atan2(vy, vx);
+                float hue = (angle_rad + static_cast<float>(M_PI)) * kInv2Pi;
+                if (hue < 0.0f) hue = 0.0f;
+                if (hue > 1.0f) hue = 1.0f;
+                const float mag = std::sqrt(vx * vx + vy * vy);
+                const float val = std::min(1.0f, mag / val_ref) * crow[x];
+                OverlayColoredPoint cp;
+                cp.x = x;
+                cp.y = y;
+                hsv_to_rgb(hue, 1.0f, val, cp.r, cp.g, cp.b);
+                r.colored_points.push_back(cp);
+                ++count;
+            }
+        }
+        r.status = "dense flow: " + std::to_string(count) + " cells" +
+                   std::string(roi_.region.enabled ? " (ROI)" : "");
+        return r;
+    }
+    void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::DenseOpticalFlow(w, h, algo_.mode());
+    }
+private:
+    /// HSV (h,s,v in [0,1]) -> RGB (r,g,b in [0,255]). Mirrors the sparse-flow
+    /// backend's helper (kept local to avoid cross-backend coupling).
+    static void hsv_to_rgb(float h, float s, float v,
+                           std::uint8_t& r, std::uint8_t& g, std::uint8_t& b) {
+        const float c = v * s;
+        const float hp = h * 6.0f;
+        const float x = c * (1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f));
+        float rf = 0.0f, gf = 0.0f, bf = 0.0f;
+        if (hp < 1.0f)      { rf = c; gf = x; bf = 0.0f; }
+        else if (hp < 2.0f) { rf = x; gf = c; bf = 0.0f; }
+        else if (hp < 3.0f) { rf = 0.0f; gf = c; bf = x; }
+        else if (hp < 4.0f) { rf = 0.0f; gf = x; bf = c; }
+        else if (hp < 5.0f) { rf = x; gf = 0.0f; bf = c; }
+        else                { rf = c; gf = 0.0f; bf = x; }
+        const float m = v - c;
+        r = static_cast<std::uint8_t>((rf + m) * 255.0f + 0.5f);
+        g = static_cast<std::uint8_t>((gf + m) * 255.0f + 0.5f);
+        b = static_cast<std::uint8_t>((bf + m) * 255.0f + 0.5f);
+    }
+};
+
+
 // --- Per-category factory (called by create_algo_backend in backend_factory.cpp)
 std::unique_ptr<AlgoBackend> create_cv_backend(const std::string& name,
                                           int width, int height) {
@@ -457,6 +554,7 @@ std::unique_ptr<AlgoBackend> create_cv_backend(const std::string& name,
     if (name == "corner_detector")             return std::make_unique<CornerDetectorBackend>(width, height);
     if (name == "blob_detector")               return std::make_unique<BlobDetectorBackend>(width, height);
     if (name == "sparse_optical_flow")         return std::make_unique<SparseOpticalFlowBackend>(width, height);
+    if (name == "dense_optical_flow")          return std::make_unique<DenseOpticalFlowBackend>(width, height);
     return nullptr;
 }
 
