@@ -72,8 +72,8 @@ UnifiedRoiDialog::UnifiedRoiDialog(QWidget* parent) : QDialog(parent) {
 
     draw_btn_ = new QPushButton(tr("Draw on Display..."), this);
     draw_btn_->setToolTip(
-        tr("Close this dialog, drag the ROI rectangle on the main display, "
-           "then confirm here."));
+        tr("Close this dialog, drag the ROI rectangle on the main display — "
+           "the ROI takes effect immediately after the drag."));
     grid->addWidget(draw_btn_, row, 1, 1, 4);
     connect(draw_btn_, &QPushButton::clicked, this,
             [this]() { done(kDrawRequest); });
@@ -119,14 +119,6 @@ void UnifiedRoiDialog::set_state(int x0, int y0, int x1, int y1,
     }
 
     mode_combo_->setCurrentIndex(roni ? 1 : 0);
-    x_sp_->setValue(x);
-    y_sp_->setValue(y);
-    w_sp_->setValue(w);
-    h_sp_->setValue(h);
-    validate_inputs();
-}
-
-void UnifiedRoiDialog::set_rect(int x, int y, int w, int h) {
     x_sp_->setValue(x);
     y_sp_->setValue(y);
     w_sp_->setValue(w);

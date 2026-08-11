@@ -31,10 +31,6 @@ public:
     void set_state(int x0, int y0, int x1, int y1, bool roni,
                    int sensor_w, int sensor_h);
 
-    /// @brief Fills the rect fields after a display drag (the dialog is
-    /// re-shown for confirmation — the rect is NOT applied until OK).
-    void set_rect(int x, int y, int w, int h);
-
     bool roni() const;
     /// Rectangle in the set_unified_roi convention: x/y = -1 = auto-center.
     int x() const;
@@ -45,8 +41,8 @@ public:
     /// exec() return code emitted by the "Draw on Display..." button. The
     /// modal exec ENDS (so the main display becomes interactive — a hidden
     /// modal dialog still blocks mouse input); MainWindow enables drag
-    /// mode and re-opens the dialog with the drawn rect (Phase 2.6 debug
-    /// D-6 follow-up).
+    /// mode and applies the drawn rect directly when the drag completes
+    /// (Phase 2.6 debug D-6 follow-up).
     static constexpr int kDrawRequest = 2;
 
 private slots:
