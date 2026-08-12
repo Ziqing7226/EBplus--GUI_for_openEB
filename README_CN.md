@@ -9,21 +9,11 @@
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.1.0-blue)
 
 ![主界面](pic/1.9.0.png)
 
 </div>
-
----
-
-## v2.0.0 新增内容
-
-- 优化了标定程序（闪烁棋盘标定向导）
-- 新增显示帧模式（Contrast Map / Histogram / Diff / Time Decay / Events Integration）
-- 新增算法：稠密光流、闪烁频率图、Arc\* 角点、KNoise、传感器自检、调焦助手
-- 统一 ROI 与显示链路预处理
-- 性能与稳定性改进
 
 ---
 

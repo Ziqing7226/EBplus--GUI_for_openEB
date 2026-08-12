@@ -9,21 +9,11 @@ Real-time visualization · camera control · recording & playback · calibration
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.1.0-blue)
 
 ![Main Window](pic/1.9.0.png)
 
 </div>
-
----
-
-## What's New in v2.0.0
-
-- Optimized calibration program (blinking-chessboard wizard)
-- New display frame modes (Contrast Map / Histogram / Diff / Time Decay / Events Integration)
-- New algorithms: dense optical flow, flicker frequency map, Arc\* corners, KNoise, sensor self-test, focus assistant
-- Unified ROI + display-path preprocessing
-- Performance and stability improvements
 
 ---
 
