@@ -975,13 +975,19 @@ void AlgoBridge::register_self_analytics() {
          {pfloat("min_isi_ms", "Min ISI (ms)", "0", "0", "999"),
           pfloat("max_isi_ms", "Max ISI (ms)", "100", "1", "1000")}});
 
-    // §4.4.5 Particle Counter. line_y default -1 = auto (algo uses the
-    // sensor-height midpoint); a hardcoded 360 breaks on non-720p sensors
-    // (§五-B4).
+    // §4.4.5 Particle Counter. line_y default 0 = auto: the counting line
+    // sits at the sensor-height midpoint until the user sets an explicit row.
+    // The backend resolves auto to the actual y (get_param reports the drawn
+    // row), so the panel's spinbox shows the real position, never a magic -1
+    // that contradicts what is drawn (§五-B4). reset_on_reenable: the
+    // cumulative count / tracks are session state — re-enabling starts a
+    // fresh count (same policy as background_mask).
     add({"particle_counter", "Particle Counter", "analytics", "self",
          AlgoDisplayMode::Overlay,
-         {pint("line_y", "Line Y (-1=auto)", "-1", "-1", ""),
-          pint("min_area", "Min area (px)", "10", "1", "10000")}});
+         {pint("line_y", "Line Y (0=auto center)", "0", "0", ""),
+          pint("min_area", "Min area (px)", "10", "1", "10000")},
+         /*description=*/"", /*uses_algo_roi=*/true,
+         /*reset_on_reenable=*/true});
 
     // §4.4.6 Auto Bias Controller
     add({"auto_bias", "Auto Bias Controller", "analytics", "self",
