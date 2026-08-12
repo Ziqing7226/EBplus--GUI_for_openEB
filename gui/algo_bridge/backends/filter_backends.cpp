@@ -293,7 +293,29 @@ public:
         AlgoResult r;
         r.filtered_events = passthrough_;
         r.has_frame = true;
-        r.frame = algo_.mask().clone();
+        cv::Mat frame = algo_.mask().clone();
+        if (algo_.collect()) {
+            // Still inside the learning window: the mask is all-zero by design
+            // (jAER leaves the bitmap null while collecting). Tell the user to
+            // hold still — the foreground mask appears once the window elapses.
+            cv::Mat bgr;
+            cv::cvtColor(frame, bgr, cv::COLOR_GRAY2BGR);
+            std::string msg = "Learning background, please keep the camera "
+                              "still (" +
+                              std::to_string(static_cast<int>(algo_.learning_window_s())) +
+                              " s)...";
+            int baseline = 0;
+            const double font_scale = 0.8;
+            const cv::Size ts = cv::getTextSize(msg, cv::FONT_HERSHEY_SIMPLEX,
+                                                font_scale, 2, &baseline);
+            const cv::Point org(std::max(10, (bgr.cols - ts.width) / 2),
+                                std::max(30, (bgr.rows + ts.height) / 2));
+            cv::putText(bgr, msg, org, cv::FONT_HERSHEY_SIMPLEX, font_scale,
+                        cv::Scalar(0, 255, 0), 2);
+            r.frame = bgr;
+        } else {
+            r.frame = frame;
+        }
         r.status = "bg_mask: active" +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;

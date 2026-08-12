@@ -81,6 +81,11 @@ struct AlgoInfo {
     /// ROI-cropped. Kept last (with default) so aggregate initialisers
     /// are unaffected.
     bool uses_algo_roi{true};
+    /// Learning-window algorithms (e.g. Background Mask) must restart their
+    /// learning session when re-enabled — their frozen state is meaningless
+    /// after the gap. Kept last (with default) so aggregate initialisers are
+    /// unaffected.
+    bool reset_on_reenable{false};
 };
 
 /// A live algorithm instance. Holds a real AlgoBackend that wraps an algo/ class.

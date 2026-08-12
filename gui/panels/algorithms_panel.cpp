@@ -297,7 +297,12 @@ void AlgorithmsPanel::build_ui() {
                         // algorithms no longer open one (Phase 2.6 debug
                         // D-1): the main display draws their overlay and the
                         // Zoom-to-ROI mode covers the old window zoom view.
-                        if (a->display_mode != AlgoDisplayMode::Overlay) {
+                        // Replace algorithms (background_mask) likewise show
+                        // their output in the MAIN display — the extra
+                        // AlgoWindow was redundant (just a "Waiting for
+                        // events..." status), so they no longer open one.
+                        if (a->display_mode != AlgoDisplayMode::Overlay &&
+                            a->display_mode != AlgoDisplayMode::Replace) {
                             emit open_algo_window_requested(algo_name);
                         }
                         emit algorithm_toggled(QString::fromStdString(a->name), true);

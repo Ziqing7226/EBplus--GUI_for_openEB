@@ -113,6 +113,12 @@ void AlgoInstance::set_enabled(bool e) {
         // session (e.g. MainWindow::on_camera_connected calls inst->reset()
         // for every live instance). Drop-rate counters are also reset so
         // the InformationPanel shows fresh telemetry for the new session.
+        // Exception: algorithms flagged reset_on_reenable (learning-window
+        // algos like Background Mask) must start from a clean state when
+        // re-enabled — their frozen result is stale after the disabled gap.
+        if (info_.reset_on_reenable && backend_) {
+            backend_->reset();
+        }
         overloaded_ = false;
         flood_strikes_ = 0;
         rate_window_events_ = 0;
@@ -843,7 +849,9 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Replace,
          {pfloat("learning_window_s", "Learning window (s)", "5.0", "0.1", "60.0"),
           pfloat("threshold", "Threshold", "10", "1", "100"),
-          pint("erosion_size", "Erosion size", "0", "0", "20")}});
+          pint("erosion_size", "Erosion size", "0", "0", "20")},
+         /*description=*/"", /*uses_algo_roi=*/true,
+         /*reset_on_reenable=*/true});
 
     // §4.3.20 Perspective Undistort — removed (§三-B8): the backend never
     // wired calibration into the algo (always a no-op) and the shared
