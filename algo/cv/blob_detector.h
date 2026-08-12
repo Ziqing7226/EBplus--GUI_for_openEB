@@ -163,7 +163,7 @@ private:
     int width_;
     int height_;
     double accumulation_ms_{33.3};
-    int threshold_{50};
+    int threshold_{5};
     int min_area_{10};
     double learning_rate_{0.05};
 

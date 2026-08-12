@@ -751,10 +751,13 @@ void AlgoBridge::register_self_cv() {
           pint("spatial_radius", "Spatial radius (px)", "3", "1", "16"),
           pfloat("max_velocity_px_s", "Max velocity (px/s)", "20000", "100", "100000")}});
 
-    // §4.3.10 Blob Detector
+    // §4.3.10 Blob Detector. Default threshold 5: the foreground is the
+    // per-pixel event count above the EMA background over a 33 ms window, so
+    // a default of 50 demanded ~50 events/pixel and small/moving blobs never
+    // produced a box.
     add({"blob_detector", "Blob Detector", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pfloat("threshold", "Threshold", "50", "1", "254"),
+         {pfloat("threshold", "Threshold", "5", "1", "254"),
           pfloat("learning_rate", "Learning rate", "0.05", "0.001", "1.0")}});
 
     // §4.3.11 Object Tracker (4 modes, jAER RectangularClusterTracker)
