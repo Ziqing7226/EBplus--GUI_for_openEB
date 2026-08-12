@@ -1,17 +1,21 @@
 // gui/calibration/blinking_chessboard_display.h — on-screen blinking chessboard
 // pattern for event-camera intrinsic calibration.
 //
-// The board BLINKS to generate events without camera motion: the chessboard
-// pattern (black squares on white) alternates with a fully white blank frame at
-// a 10 ms period. Pixels on black squares toggle dark↔light every cycle and
-// fire both ON and OFF events; over a capture window covering ≥ one cycle they
+// The board BLINKS to generate events without camera motion: the BLACK squares
+// of the chessboard flip black ↔ white at a 10 ms period while the white
+// squares of the board stay white. Pixels on the black squares fire both ON
+// and OFF events every cycle; over a capture window covering ≥ one cycle they
 // form a filled checkerboard in the binary "blink frame" that the detector
 // feeds to cv::findChessboardCorners (see algo/calibration/blinking_detect.h).
+// The area OUTSIDE the board is a constant dark gray (it fires no events) — a
+// bright all-white screen produces glare / backlight-PWM noise in the event
+// camera.
 //
-// Two pre-computed pixmaps (frame A: chessboard; frame B: blank white) are
-// toggled at 10 ms — paintEvent is a single drawPixmap blit, no per-frame
-// rendering. Same pre-rendered-pixmap blit architecture as the previous
-// pattern display (avoids the maximize-button preview stutter).
+// Two pre-computed pixmaps (frame A: black squares on white; frame B: all
+// white board — both on the dark-gray margin) are toggled at 10 ms —
+// paintEvent is a single drawPixmap blit, no per-frame rendering. Same
+// pre-rendered-pixmap blit architecture as the previous pattern display (avoids
+// the maximize-button preview stutter).
 
 #ifndef GUI_CALIBRATION_BLINKING_CHESSBOARD_DISPLAY_H
 #define GUI_CALIBRATION_BLINKING_CHESSBOARD_DISPLAY_H
@@ -64,10 +68,13 @@ private:
     float square_size_mm_{20.0f};
 
     /// Two pre-rendered frames for the 10 ms blink. Frame A is the chessboard
-    /// (black squares on white); frame B is blank white. recompute_layout()
-    /// renders both; paintEvent() blits one — no per-frame drawing.
-    QPixmap pixmap_a_;  // chessboard pattern
-    QPixmap pixmap_b_;  // blank (white)
+    /// (BLACK squares on a WHITE board area), frame B is the same board area
+    /// all white — both on the constant dark-gray margin. The black squares
+    /// flip black↔white, the non-toggling squares stay white, the margin stays
+    /// dark gray. recompute_layout() renders both; paintEvent() blits one — no
+    /// per-frame drawing.
+    QPixmap pixmap_a_;  // chessboard: black squares on white board
+    QPixmap pixmap_b_;  // blank: all-white board
     /// Current blink frame (0 = A, 1 = B). Toggled by the blink timer.
     int blink_frame_{0};
     /// Last frame blitted to the backing store. When blink_frame_ differs,

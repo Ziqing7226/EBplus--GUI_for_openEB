@@ -65,7 +65,7 @@ constexpr int kDefaultTargetFrames = 15;
 
 // Space-capture event window (µs), user-tunable 200–200000 in 1 µs steps.
 // The chessboard blinks at 10 ms (pattern ↔ blank, a 20 ms full cycle); the
-// window must cover at least one full cycle so every black square fires both
+// window must cover at least one full cycle so every toggling square fires both
 // polarities. The 100000 µs default covers ~5 blink cycles.
 constexpr int kCaptureWindowMinUs = 200;
 constexpr int kCaptureWindowMaxUs = 200000;
