@@ -55,15 +55,19 @@ void CalibrationEventTap::on_events_ready(
     if (!events || events->empty()) return;
     std::lock_guard<std::mutex> lk(mutex_);
     batches_.push_back(events);  // shared_ptr copy — refcount only
+    total_events_ += events->size();
 
-    // Trim: drop batches whose last event is older than the keep window.
+    // Trim by TIME: drop batches whose last event is older than the keep
+    // window. Retention is deliberately not batch-count-capped — small SDK
+    // batches under a blinking-LCD noise floor need tens of thousands of
+    // batches to span kKeepWindowUs (see kMaxTotalEvents in the header).
+    // Beyond the absolute event-count valve, drop oldest batches too.
     const Metavision::timestamp t_last = events->back().t;
     const Metavision::timestamp t_cutoff = t_last - kKeepWindowUs;
-    while (!batches_.empty() && batches_.front()->back().t < t_cutoff) {
-        batches_.pop_front();
-    }
-    // Safety cap on batch count.
-    while (batches_.size() > kMaxBatches) {
+    while (!batches_.empty() &&
+           (batches_.front()->back().t < t_cutoff ||
+            total_events_ > kMaxTotalEvents)) {
+        total_events_ -= batches_.front()->size();
         batches_.pop_front();
     }
 }
@@ -78,6 +82,7 @@ std::size_t CalibrationEventTap::drain_last_window(
     {
         std::lock_guard<std::mutex> lk(mutex_);
         local.swap(batches_);
+        total_events_ = 0;
     }
     if (local.empty()) return 0;
 
@@ -107,6 +112,7 @@ std::size_t CalibrationEventTap::drain_last_window(
 void CalibrationEventTap::clear() {
     std::lock_guard<std::mutex> lk(mutex_);
     batches_.clear();
+    total_events_ = 0;
 }
 
 } // namespace gui

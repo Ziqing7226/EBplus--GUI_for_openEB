@@ -75,3 +75,16 @@ target_compile_options(test_display_strategy PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_display_strategy
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# --- test_calibration_tap: event-tap window retention (needs QCoreApplication). ---
+add_executable(test_calibration_tap
+    test_calibration_tap.cpp
+)
+target_link_libraries(test_calibration_tap PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_calibration_tap PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_calibration_tap
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)

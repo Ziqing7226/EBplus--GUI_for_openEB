@@ -73,7 +73,9 @@ public:
     /// capture session or resets the wizard).
     void clear();
 
-private slots:
+public slots:
+    /// Public for testability: the test feeds synthetic batches directly
+    /// instead of going through a CameraController signal emission.
     void on_events_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events);
 
 private:
@@ -83,6 +85,9 @@ private:
     /// Ring of recent batches (shared_ptr — no per-event copy on the SDK
     /// thread). Batches are in chronological order by arrival.
     std::deque<BatchPtr> batches_;
+    /// Total events currently held in batches_ (maintained incrementally;
+    /// backs the kMaxTotalEvents memory safety valve below).
+    std::size_t total_events_{0};
     CameraController* camera_{nullptr};
 
     /// Keep batches whose last event is within this many microseconds of the
@@ -91,11 +96,16 @@ private:
     /// window. 210000 µs gives a 10000 µs margin beyond the 200000 µs maximum window.
     static constexpr Metavision::timestamp kKeepWindowUs = 210000;
 
-    /// Safety cap on the number of batches (pathological case: tiny batches at
-    /// an extreme event rate). 256 batches × typical 1–10 K events/batch =
-    /// 256 K–2.5 M events kept — well within memory budget and always spans
-    /// > kKeepWindowUs at realistic batch rates.
-    static constexpr std::size_t kMaxBatches = 256;
+    /// Absolute memory safety valve: drop oldest batches beyond this many
+    /// buffered events. Retention is TIME-based (kKeepWindowUs) — a batch-COUNT
+    /// cap was wrong: the SDK delivers small batches under a blinking-LCD noise
+    /// floor (measured on rec_20260812: ~256 events/batch at ~104 Mev/s — a
+    /// 256-batch cap kept only ~0.64 ms of a 100 ms capture window, so the
+    /// wizard's captures never contained a full blink cycle and detection
+    /// always failed). 30 M events × 12 B ≈ 360 MB — beyond the ~22 M events
+    /// the 210 ms keep window holds at that rate, so it only trips in a
+    /// pathological runaway, never in normal operation.
+    static constexpr std::size_t kMaxTotalEvents = 30000000;
 };
 
 } // namespace gui
