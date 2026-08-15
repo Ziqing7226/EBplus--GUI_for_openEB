@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
@@ -320,6 +321,13 @@ void IntrinsicCalibration::reset() {
 bool load_intrinsics_yml(const std::string& path,
                          cv::Mat& K, cv::Mat& dist_coeffs,
                          cv::Size& image_size) {
+    // Missing file: fail WITHOUT opening a cv::FileStorage — its open failure
+    // prints an [ERROR] persistence line to stderr on every call, and the
+    // undistort path is (re)applied to every Preprocessor instance whenever
+    // the shared default is forwarded, so an uncalibrated system would spew
+    // the same error at startup. A silent false lets the caller decide
+    // whether a missing file is even noteworthy.
+    if (path.empty() || !std::filesystem::exists(path)) return false;
     cv::FileStorage fs(path, cv::FileStorage::READ);
     if (!fs.isOpened()) return false;
     cv::Mat k_in, dist_in;

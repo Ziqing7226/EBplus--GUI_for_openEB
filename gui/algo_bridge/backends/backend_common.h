@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -233,6 +234,16 @@ struct Preprocessor {
         if (k == "preproc_undistort_enabled") {
             undistort_enabled_ = to_b(v);
             undistort_lut_failed_ = false;  // re-arm on toggle
+            // Enabling without loadable intrinsics is a silent no-op in
+            // apply() (the empty-K guard skips the stage) — say so here
+            // (audit §五-F3): the checkbox is on but nothing is undistorted.
+            if (undistort_enabled_ && undistort_K_.empty()) {
+                std::fprintf(stderr,
+                             "Preprocessor: undistort enabled but no intrinsics "
+                             "loaded from '%s' — stage is a no-op until a valid "
+                             "calibration file is set\n",
+                             undistort_path_.c_str());
+            }
             return true;
         }
         if (k == "preproc_undistort_path") {
@@ -246,10 +257,17 @@ struct Preprocessor {
             } else {
                 // Surface the failure instead of silently clearing K — without
                 // this the user believes undistort is active while it is a
-                // no-op (audit §五-F3).
-                std::fprintf(stderr,
-                             "Preprocessor: failed to load intrinsics from '%s'"
-                             " — undistort disabled\n", v.c_str());
+                // no-op (audit §五-F3). EXCEPTION: a MISSING file while
+                // undistort is still disabled is the normal uncalibrated
+                // state (the shared default is forwarded to every
+                // Preprocessor at startup) — stay silent there.
+                const bool silent =
+                    !undistort_enabled_ && !v.empty() && !std::filesystem::exists(v);
+                if (!silent) {
+                    std::fprintf(stderr,
+                                 "Preprocessor: failed to load intrinsics from '%s'"
+                                 " — undistort disabled\n", v.c_str());
+                }
                 undistort_K_.release();
                 undistort_dist_.release();
                 undistort_image_size_ = cv::Size(0, 0);
