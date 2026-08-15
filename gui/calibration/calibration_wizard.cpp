@@ -9,6 +9,7 @@
 // a successful detection is committed directly (coverage + duplicate checks,
 // accumulation, progress) and a failure is reported on the status line.
 
+#include "calib_defaults.h"
 #include "calibration_wizard.h"
 
 #include <QDir>
@@ -34,7 +35,6 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QShowEvent>
-#include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -473,6 +473,13 @@ void CalibrationWizard::on_calibration_done(bool ok, double rms, int frames_used
 }
 
 void CalibrationWizard::on_export_pressed() {
+    // Create the default parent directory BEFORE opening the dialog: it does
+    // not exist until the first export (the worker auto-mkdirs on save), and
+    // QFileDialog resolves a non-existent directory to the CURRENT WORKING
+    // DIRECTORY — so the very first export would otherwise default to
+    // <launch-dir>/intrinsic.yml (e.g. the build directory) instead of the
+    // shared default, diverging from the undistort preprocessor's path.
+    QDir().mkpath(QFileInfo(default_export_path()).absolutePath());
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Save Intrinsic Calibration"),
         default_export_path(),
@@ -573,13 +580,11 @@ void CalibrationWizard::configure_worker() {
 }
 
 QString CalibrationWizard::default_export_path() const {
-    const QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    const QString base = docs.isEmpty() ? QDir::homePath() : docs;
-    // Stable filename (no timestamp) so the default matches the Preprocessor
-    // undistort path exactly — the user can rely on both defaults pointing at
-    // the same file. QFileDialog prompts for overwrite if it already exists.
-    // The parent directory is created on export (auto-mkdir).
-    return base + "/EBplus/calibration/intrinsic.yml";
+    // Single source of truth shared with the Preprocessor undistort default
+    // (see calib_defaults.h) — the user can rely on both defaults pointing at
+    // the same file. QFileDialog prompts for overwrite if it already exists;
+    // the parent directory is created on export (auto-mkdir).
+    return default_intrinsic_yml_path();
 }
 
 void CalibrationWizard::teardown_worker() {

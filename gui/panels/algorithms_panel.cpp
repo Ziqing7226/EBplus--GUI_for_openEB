@@ -3,7 +3,6 @@
 #include "algorithms_panel.h"
 
 #include <QCheckBox>
-#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGroupBox>
@@ -17,9 +16,10 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QMap>
-#include <QStandardPaths>
+#include <QTimer>
 
 #include "algo_bridge/algo_bridge.h"
+#include "calibration/calib_defaults.h"
 
 namespace gui {
 
@@ -451,9 +451,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     form->addRow(preproc_undistort_cb_);
 
     preproc_undistort_path_ = new QLineEdit(gb);
-    const QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    const QString base = docs.isEmpty() ? QDir::homePath() : docs;
-    preproc_undistort_path_->setText(base + QStringLiteral("/EBplus/calibration/intrinsic.yml"));
+    preproc_undistort_path_->setText(default_intrinsic_yml_path());
     preproc_undistort_path_->setToolTip(tr(
         "Path to the YAML written by Tools → Intrinsic Wizard. "
         "Default path is identical to the wizard's export default."));
@@ -640,6 +638,18 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
 
     // Show the rows matching the default mode (STCF=1).
     refresh_preproc_params();
+
+    // Forward the default undistort path ONCE so the default actually works:
+    // setText() above ran before the textChanged connect, so without this the
+    // backends / display path would hold an EMPTY path until the user edited
+    // the field — enabling Undistort with the defaults then failed to load any
+    // intrinsics. Deferred to the event loop because MainWindow connects
+    // preproc_display_param_changed after this panel is constructed; the
+    // bridge side (preproc_cache_) also seeds instances created later.
+    QTimer::singleShot(0, this, [this]() {
+        apply_global_preproc("preproc_undistort_path",
+                             default_intrinsic_yml_path().toStdString());
+    });
 }
 
 void AlgorithmsPanel::refresh_preproc_params() {
