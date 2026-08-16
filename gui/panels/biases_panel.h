@@ -51,6 +51,11 @@ public slots:
     /// refreshes the UI to reflect the new values.
     void load_from_file(const QString& path);
 
+    /// @brief Re-reads every bias from the hardware and updates the rows
+    /// (signal-blocked — no apply loop). Called after out-of-band changes,
+    /// e.g. the calibration wizard's diff_on/diff_off override.
+    void refresh_row_values();
+
 private:
     struct BiasRow {
         std::string name;
@@ -63,7 +68,6 @@ private:
     void clear_rows();
     void populate();
     void apply_value(BiasRow& row, int value);
-    void refresh_row_values();
 
     QVBoxLayout* rows_layout_{nullptr};
     QWidget* container_{nullptr};

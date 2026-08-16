@@ -194,6 +194,9 @@ CalibrationWizard::CalibrationWizard(QWidget* parent) : QDialog(parent) {
 
 CalibrationWizard::~CalibrationWizard() {
     if (camera_timer_) camera_timer_->stop();
+    // Safety net: hideEvent normally restores the biases, but if the app
+    // exits with the wizard still open no hideEvent fires.
+    restore_diff_bias_override();
     if (camera_) camera_->set_cd_broadcast(false);
     teardown_worker();
 }
@@ -281,6 +284,7 @@ void CalibrationWizard::changeEvent(QEvent* event) {
 
 void CalibrationWizard::hideEvent(QHideEvent* event) {
     if (camera_timer_) camera_timer_->stop();
+    restore_diff_bias_override();
     if (camera_) camera_->set_cd_broadcast(false);
     QDialog::hideEvent(event);
 }
@@ -297,9 +301,71 @@ void CalibrationWizard::showEvent(QShowEvent* event) {
     // connected, on_camera_tick reports that state on the next tick.
     if (camera_timer_) camera_timer_->start();
     if (camera_ && camera_->is_connected()) {
+        apply_diff_bias_override();
         tap_.clear();
         camera_->set_cd_broadcast(true);
     }
+}
+
+void CalibrationWizard::apply_diff_bias_override() {
+    // Blinking-LCD noise-floor suppression (field-verified 2026-08-16): the
+    // LCD backlight PWM fires both polarities on every on-screen pixel at
+    // ~104 Mev/s, saturating the USB link (HAL USB Submit Errors) and
+    // starving every downstream consumer. Raising diff_on/diff_off to their
+    // hardware MAXIMUM filters the low-contrast PWM events on-sensor; the
+    // chessboard blink is high-contrast and survives. The pre-override
+    // values are snapshotted and restored on hide/close.
+    if (!camera_ || !camera_->is_connected() || !saved_diff_biases_.empty()) {
+        return;
+    }
+    auto* biases = camera_->biases_facility();
+    if (!biases) return;
+    try {
+        const auto all = biases->get_all_biases();
+        std::map<std::string, int> snapshot;
+        for (const auto& [name, value] : all) {
+            const bool is_diff = name.find("diff_on") != std::string::npos ||
+                                 name.find("diff_off") != std::string::npos;
+            if (!is_diff) continue;
+            Metavision::LL_Bias_Info info;
+            if (!biases->get_bias_info(name, info)) continue;
+            const auto range = info.get_bias_range();
+            if (range.second <= range.first) continue;  // unknown range — skip
+            snapshot[name] = value;
+            biases->set(name, range.second);
+        }
+        saved_diff_biases_ = std::move(snapshot);
+    } catch (const std::exception& e) {
+        set_status(tr("Warning: failed to raise diff biases (%1) — the LCD "
+                      "noise floor may slow the stream.")
+                       .arg(QString::fromUtf8(e.what())));
+        saved_diff_biases_.clear();
+        return;
+    }
+    if (!saved_diff_biases_.empty()) {
+        emit biases_changed_externally();
+    }
+}
+
+void CalibrationWizard::restore_diff_bias_override() {
+    if (saved_diff_biases_.empty()) return;
+    // Take the snapshot out first: if the camera is gone or a write fails,
+    // the override is still considered finished (retrying against a
+    // disconnecting device would just throw again).
+    const auto snapshot = std::move(saved_diff_biases_);
+    saved_diff_biases_.clear();
+    if (camera_ && camera_->is_connected()) {
+        if (auto* biases = camera_->biases_facility()) {
+            try {
+                for (const auto& [name, value] : snapshot) {
+                    biases->set(name, value);
+                }
+            } catch (const std::exception&) {
+                // Best effort — the camera may be mid-disconnect.
+            }
+        }
+    }
+    emit biases_changed_externally();
 }
 
 void CalibrationWizard::keyPressEvent(QKeyEvent* event) {
