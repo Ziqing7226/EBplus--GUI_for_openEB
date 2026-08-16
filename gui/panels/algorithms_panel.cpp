@@ -420,7 +420,7 @@ void AlgorithmsPanel::apply_global_preproc(const std::string& key,
 }
 
 void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
-    auto* gb = new QGroupBox(tr("Preprocessing (ROI > filter > downsample > undistort)"), this);
+    auto* gb = new QGroupBox(tr("Preprocessing (display + algorithms)"), this);
     auto* form = new QFormLayout(gb);
     form->setContentsMargins(6, 6, 6, 6);
 

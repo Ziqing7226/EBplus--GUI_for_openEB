@@ -154,8 +154,7 @@ void BiasesPanel::populate() {
         return;
     }
 
-    hint_label_->setText(tr("%1 bias parameter(s) available. Edits apply immediately.")
-                             .arg(all.size()));
+    hint_label_->setText(tr("BIAS"));
     hint_label_->setProperty("class", "info");
     restyle(hint_label_);
 

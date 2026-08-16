@@ -27,8 +27,13 @@ class PreprocessingPanel : public AbstractPanel {
 public:
     explicit PreprocessingPanel(QWidget* parent = nullptr);
 
+    // Stable id "preprocessing" (layout/panel registry key) — do NOT rename.
     QString panel_id() const override { return QStringLiteral("preprocessing"); }
-    QString panel_title() const override { return tr("Preprocessing"); }
+    // User-visible title: "Display Transform" to distinguish these OpenEB
+    // display-only event-transform stages from the AlgorithmsPanel
+    // "Preprocessing" stages (filter/downsample/undistort), which reach BOTH
+    // the display and every algorithm instance.
+    QString panel_title() const override { return tr("Display Transform"); }
     QString panel_group() const override { return QStringLiteral("Algorithms"); }
 
 public slots:

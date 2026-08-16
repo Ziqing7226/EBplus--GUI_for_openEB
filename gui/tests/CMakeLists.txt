@@ -101,3 +101,18 @@ target_link_libraries(test_coverage_hull PRIVATE
 )
 target_compile_options(test_coverage_hull PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_coverage_hull)
+
+# --- test_preproc_routing: preproc params reach algorithm instances AND the
+# display pipeline (single panel control, two routes). ---
+add_executable(test_preproc_routing
+    test_preproc_routing.cpp
+)
+target_link_libraries(test_preproc_routing PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_preproc_routing PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_preproc_routing
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)

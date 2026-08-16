@@ -8,7 +8,6 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QLabel>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -25,11 +24,8 @@ PreprocessingPanel::PreprocessingPanel(QWidget* parent) : AbstractPanel(parent) 
 void PreprocessingPanel::build_ui() {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    group_ = new QGroupBox(tr("Preprocessing"), this);
+    group_ = new QGroupBox(tr("Display Transform (display stream only)"), this);
     auto* form = new QFormLayout(group_);
-    auto* hint = new QLabel(tr("Note: Noise/Hot-pixel filters are under the Algorithms section."), group_);
-    hint->setWordWrap(true);
-    form->addRow(hint);
 
     auto make_row = [&](const QString& stage, const QString& label) {
         auto* cb = new QCheckBox(label, group_);
