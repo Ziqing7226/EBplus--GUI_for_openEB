@@ -88,3 +88,16 @@ target_compile_options(test_calibration_tap PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_calibration_tap
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# --- test_coverage_hull: wizard coverage-overlay math (no Qt needed). ---
+add_executable(test_coverage_hull
+    test_coverage_hull.cpp
+)
+target_include_directories(test_coverage_hull PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+target_link_libraries(test_coverage_hull PRIVATE
+    ${OpenCV_LIBS}
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_coverage_hull PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_coverage_hull)

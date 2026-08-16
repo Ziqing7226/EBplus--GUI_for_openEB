@@ -18,7 +18,9 @@
 #include <cstddef>
 #include <QImage>
 #include <QObject>
+#include <QPointF>
 #include <QString>
+#include <QVector>
 #include <memory>
 
 #include <opencv2/core.hpp>
@@ -74,7 +76,10 @@ public slots:
     void export_to(const QString& path);
 
 signals:
-    void frame_accepted(QImage annotated, std::size_t accepted, std::size_t target);
+    /// @param points  the accepted view's corners (sensor px) — the wizard
+    /// stacks them for the coverage overlay (convex hull over all views).
+    void frame_accepted(QImage annotated, std::size_t accepted, std::size_t target,
+                        QVector<QPointF> points);
     void frame_rejected(QString reason);
     /// @brief Emitted after delete_last_capture() with the remaining
     /// observation count.

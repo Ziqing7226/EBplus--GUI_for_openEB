@@ -32,8 +32,10 @@
 
 #include <QDialog>
 #include <QImage>
+#include <QPointF>
 #include <QPointer>
 #include <QString>
+#include <QVector>
 #include <QWidget>
 #include <map>
 #include <string>
@@ -43,6 +45,7 @@
 #include <metavision/sdk/base/events/event_cd.h>
 
 #include "calibration_event_tap.h"
+#include "coverage_hull.h"
 
 class QDoubleSpinBox;
 class QEvent;
@@ -77,12 +80,20 @@ public:
     /// @brief Shows @p msg centered (no frame). Clears any prior frame.
     void set_message(const QString& msg);
 
+    /// @brief Sets the coverage overlay: every accepted view's corners
+    /// (sensor px, drawn as dots) and their convex hull + area coverage.
+    /// Recomputed by the wizard on accept/delete/reset — painting is cheap.
+    void set_coverage_overlay(const CoverageOverlay& overlay,
+                              const std::vector<std::vector<cv::Point2f>>& views);
+
 protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
     QImage frame_;
     QString message_;
+    CoverageOverlay overlay_;
+    std::vector<std::vector<cv::Point2f>> overlay_views_;
 };
 
 /// @brief Dialog hosting the intrinsic calibration workflow.
@@ -137,7 +148,8 @@ private slots:
     void on_intrinsic_reset();
     void on_capture_pressed();
     void on_delete_capture();
-    void on_frame_accepted(QImage annotated, std::size_t accepted, std::size_t target);
+    void on_frame_accepted(QImage annotated, std::size_t accepted, std::size_t target,
+                           QVector<QPointF> points);
     void on_frame_rejected(QString reason);
     void on_frame_deleted(std::size_t remaining);
     void on_capture_complete(std::size_t accepted);
@@ -164,6 +176,10 @@ private:
     /// stack is empty. Called after each accept and after each delete so the
     /// preview always reflects the current last-accepted frame.
     void show_last_preview();
+    /// @brief Recomputes the aim-view coverage overlay (hull + coverage %)
+    /// from captured_points_ and pushes it to the camera view. Called after
+    /// every accept / delete / reset / config change.
+    void update_coverage_overlay();
     void teardown_worker();
     QString default_export_path() const;
     /// @brief Snapshots the diff_on/diff_off biases and sets both to their
@@ -217,6 +233,10 @@ private:
     /// so the preview reverts to the now-last capture (or the placeholder when
     /// empty). Lets the user see what remains after discarding a bad frame.
     std::vector<QImage> captured_previews_;
+    /// @brief Accepted views' corners (sensor px), parallel to
+    /// captured_previews_ — feeds the aim-view coverage overlay (convex hull
+    /// of all accepted corners + area coverage %).
+    std::vector<std::vector<cv::Point2f>> captured_points_;
 
     CameraController* camera_{nullptr};
     QPointer<EventDisplayWidget> display_;

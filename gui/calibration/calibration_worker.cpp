@@ -104,6 +104,14 @@ void CalibrationWorker::process_capture(const BlinkCapture& capture) {
     intrinsic_->accept(last_detect_.points);
     const std::size_t got = intrinsic_->frame_count();
 
+    // The accepted corners (sensor px) ride along for the wizard's coverage
+    // overlay (convex hull over all accepted views).
+    QVector<QPointF> accepted_points;
+    accepted_points.reserve(static_cast<qsizetype>(last_detect_.points.size()));
+    for (const auto& p : last_detect_.points) {
+        accepted_points.append(QPointF(p.x, p.y));
+    }
+
     // Annotated BGR Mat → QImage (deep copy via .copy(), safe to pass across
     // threads to the GUI thread).
     QImage annotated;
@@ -114,7 +122,7 @@ void CalibrationWorker::process_capture(const BlinkCapture& capture) {
                            static_cast<int>(rgb.step),
                            QImage::Format_RGB888).copy();
     }
-    emit frame_accepted(annotated, got, target_);
+    emit frame_accepted(annotated, got, target_, accepted_points);
     if (got >= target_) {
         emit capture_complete(got);
     }

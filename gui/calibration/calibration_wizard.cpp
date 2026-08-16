@@ -25,6 +25,7 @@
 #include <QMessageBox>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPolygonF>
 #include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
@@ -61,7 +62,7 @@ constexpr int kCameraPollMs = 33;
 constexpr int kGridCols = 9;
 constexpr int kGridRows = 6;
 constexpr double kDefaultSquareMm = 20.0;
-constexpr int kDefaultTargetFrames = 15;
+constexpr int kDefaultTargetFrames = 20;
 
 // Space-capture event window (µs), user-tunable 200–200000 in 1 µs steps.
 // The chessboard blinks at 10 ms (pattern ↔ blank, a 20 ms full cycle); the
@@ -75,6 +76,8 @@ constexpr int kDefaultCaptureWindowUs = 100000;
 // Register cross-thread metatypes used by the worker signals/slots.
 Q_DECL_UNUSED static const int kRegCvMat = qRegisterMetaType<cv::Mat>("cv::Mat");
 Q_DECL_UNUSED static const int kRegSizeT = qRegisterMetaType<std::size_t>("std::size_t");
+Q_DECL_UNUSED static const int kRegPoints =
+    qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
 Q_DECL_UNUSED static const int kRegBlinkCapture =
     qRegisterMetaType<gui::BlinkCapture>("gui::BlinkCapture");
 
@@ -122,14 +125,59 @@ void CalibrationCameraView::set_message(const QString& msg) {
     update();
 }
 
+void CalibrationCameraView::set_coverage_overlay(
+    const CoverageOverlay& overlay,
+    const std::vector<std::vector<cv::Point2f>>& views) {
+    overlay_ = overlay;
+    overlay_views_ = views;
+    update();
+}
+
 void CalibrationCameraView::paintEvent(QPaintEvent* /*event*/) {
     QPainter p(this);
     p.fillRect(rect(), QColor(20, 20, 20));
     if (!frame_.isNull()) {
         const QImage scaled = frame_.scaled(size(), Qt::KeepAspectRatio,
                                             Qt::SmoothTransformation);
-        p.drawImage((width() - scaled.width()) / 2,
-                    (height() - scaled.height()) / 2, scaled);
+        const double s = static_cast<double>(scaled.width()) / frame_.width();
+        const double ox = (width() - scaled.width()) / 2.0;
+        const double oy = (height() - scaled.height()) / 2.0;
+        p.drawImage(static_cast<int>(ox), static_cast<int>(oy), scaled);
+
+        // Coverage overlay: accepted corners as dots + convex hull of all
+        // accepted corners + area coverage %. Sensor px → widget px uses the
+        // same scale/offset as the frame blit above.
+        if (!overlay_views_.empty()) {
+            p.setRenderHint(QPainter::Antialiasing, true);
+            const auto map = [&](const cv::Point2f& pt) {
+                return QPointF(ox + s * pt.x, oy + s * pt.y);
+            };
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(90, 170, 255, 170));
+            for (const auto& view : overlay_views_) {
+                for (const auto& pt : view) {
+                    p.drawEllipse(map(pt), 2.0, 2.0);
+                }
+            }
+            if (overlay_.hull.size() >= 3) {
+                QPolygonF poly;
+                poly.reserve(static_cast<qsizetype>(overlay_.hull.size()));
+                for (const auto& pt : overlay_.hull) poly << map(pt);
+                p.setPen(QPen(QColor(90, 170, 255, 220), 2));
+                p.setBrush(QColor(90, 170, 255, 45));
+                p.drawPolygon(poly);
+            }
+            // Coverage percentage, top-left, on a translucent backing.
+            const QString text =
+                QStringLiteral("Coverage: %1%").arg(qRound(overlay_.coverage * 100));
+            const QRect tr = p.fontMetrics().boundingRect(text);
+            const QRect box(6, 4, tr.width() + 12, tr.height() + 8);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0, 0, 0, 150));
+            p.drawRect(box);
+            p.setPen(QColor(235, 235, 235));
+            p.drawText(box, Qt::AlignCenter, text);
+        }
     } else if (!message_.isEmpty()) {
         p.setPen(QColor(160, 160, 160));
         p.drawText(rect(), Qt::AlignCenter, message_);
@@ -455,7 +503,8 @@ void CalibrationWizard::on_capture_pressed() {
 }
 
 void CalibrationWizard::on_frame_accepted(QImage annotated,
-                                          std::size_t accepted, std::size_t target) {
+                                          std::size_t accepted, std::size_t target,
+                                          QVector<QPointF> points) {
     capture_in_flight_ = false;
     progress_->setRange(0, static_cast<int>(target));
     progress_->setValue(static_cast<int>(accepted));
@@ -464,6 +513,14 @@ void CalibrationWizard::on_frame_accepted(QImage annotated,
     // is null (annotation can fail) so the stack stays in lock-step with the
     // accepted count — show_last_preview() handles a null top gracefully.
     captured_previews_.push_back(annotated);
+    // Same lock-step for the coverage overlay's point stack.
+    std::vector<cv::Point2f> view;
+    view.reserve(static_cast<std::size_t>(points.size()));
+    for (const auto& p : points) {
+        view.emplace_back(static_cast<float>(p.x()), static_cast<float>(p.y()));
+    }
+    captured_points_.push_back(std::move(view));
+    update_coverage_overlay();
     show_last_preview();
     // The just-accepted frame is now the deletable "last capture". capture_done_
     // (set by on_capture_complete when the target is reached) clears this via
@@ -502,6 +559,8 @@ void CalibrationWizard::on_frame_deleted(std::size_t remaining) {
     // preview reverts to the now-last capture (or the placeholder if empty).
     progress_->setValue(static_cast<int>(remaining));
     if (!captured_previews_.empty()) captured_previews_.pop_back();
+    if (!captured_points_.empty()) captured_points_.pop_back();
+    update_coverage_overlay();
     show_last_preview();
     if (remaining > 0) {
         set_status(tr("Last capture discarded. %1 frame(s) remain.").arg(remaining));
@@ -569,6 +628,8 @@ void CalibrationWizard::on_intrinsic_reset() {
     capture_done_ = false;
     can_delete_last_ = false;
     captured_previews_.clear();
+    captured_points_.clear();
+    update_coverage_overlay();
     progress_->setValue(0);
     preview_label_->clear();
     preview_label_->setText(tr("No frames captured yet."));
@@ -588,6 +649,8 @@ void CalibrationWizard::on_config_changed() {
     capture_done_ = false;
     can_delete_last_ = false;
     captured_previews_.clear();
+    captured_points_.clear();
+    update_coverage_overlay();
     progress_->setValue(0);
     preview_label_->clear();
     preview_label_->setText(tr("No frames captured yet."));
@@ -615,6 +678,17 @@ void CalibrationWizard::update_delete_enabled() {
     // never reach the worker to drop the prior capture.
     const bool on = can_delete_last_ && !capture_in_flight_ && !capture_done_;
     delete_capture_btn_->setEnabled(on);
+}
+
+void CalibrationWizard::update_coverage_overlay() {
+    int sw = 0, sh = 0;
+    if (camera_) {
+        const auto& info = camera_->sensor_info();
+        sw = info.width;
+        sh = info.height;
+    }
+    camera_view_->set_coverage_overlay(
+        compute_coverage_overlay(captured_points_, sw, sh), captured_points_);
 }
 
 void CalibrationWizard::show_last_preview() {
@@ -750,8 +824,10 @@ void CalibrationWizard::build_ui() {
     // ---- Capture hint ----
     hint_ = new QLabel(tr(
         "The chessboard blinks to generate events — hold the camera steady. "
-        "Press <b>Space</b> to capture. Move the camera between captures for "
-        "varied angles."), this);
+        "Press <b>Space</b> to capture. Move the camera between captures so "
+        "every pose differs, and bring the board to the center AND the "
+        "corners of the view — the coverage hull on the aim view shows where "
+        "you have already captured."), this);
     hint_->setWordWrap(true);
     hint_->setProperty("class", "hint");
     outer->addWidget(hint_);
