@@ -7,10 +7,13 @@
 // detection on it. Saves annotated PNGs and prints a per-window detection tally
 // so we can see which capture windows succeed in real event data.
 //
-// Usage: calib_capture_probe <file.raw> [window_us] [sample_period_us] [max_samples]
+// Usage: calib_capture_probe <file.raw> [window_us] [sample_period_us] [max_samples] [count_frac]
 //   window_us   default 100000 (wizard default capture window)
 //   sample_period_us  default 300000
 //   max_samples default 20
+//   count_frac  default 0.30 (production default). Board threshold as a
+//   fraction of the p99 per-pixel count — lower values erode square corners
+//   less.
 
 #include <algorithm>
 #include <chrono>
@@ -55,6 +58,7 @@ int main(int argc, char** argv) {
     const timestamp window_us = (argc > 2) ? std::max(timestamp(200), std::atoll(argv[2])) : 100000;
     const timestamp sample_period = (argc > 3) ? std::atoll(argv[3]) : 300000;
     const int max_samples = (argc > 4) ? std::atoi(argv[4]) : 20;
+    const double count_frac = (argc > 5) ? std::atof(argv[5]) : 0.30;
 
     std::fprintf(stderr, "[probe] %s\n[probe] blinking chessboard %dx%d, window=%lld us, "
                  "sample every %lld us, max %d samples\n",
@@ -136,6 +140,7 @@ int main(int argc, char** argv) {
         gui_algo::BlinkParams bp;
         bp.ratio_on = 1.0;
         bp.ratio_off = 1.0;
+        bp.count_frac = count_frac;
         const gui_algo::BlinkFrame bf = gui_algo::build_blink_frame_from_counts(
             on_cnt, off_cnt, bp);
         auto res = calib.detect_only(bf.frame, true);

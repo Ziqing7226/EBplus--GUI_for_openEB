@@ -10,11 +10,13 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdio>
 #include <random>
 #include <vector>
 
 #include <opencv2/core.hpp>
 #include <opencv2/calib3d.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "algo/calibration/intrinsic.h"
 
@@ -208,4 +210,74 @@ TEST(IntrinsicCalibration, FewerThanThreeFramesFails) {
     const auto r = cal.run();
     EXPECT_FALSE(r.ok);
     EXPECT_FALSE(r.error.empty());
+}
+
+// Corner-bridge fallback: a real thresholded blink frame carries
+// salt-and-pepper square damage whose ragged quad contours the raw
+// FILTER_QUADS pass cannot link into a board. detect_only must then dilate
+// the board regions and retry. The rescued corners are noisier than a raw
+// pass (a few px at this harsh corruption level) — acceptable, because the
+// solver's per-view outlier rejection drops views that disagree with the
+// majority. (Clean synthetic erosion does NOT reproduce the failure —
+// OpenCV links pristine quads even when their corners no longer touch.)
+TEST(IntrinsicCalibration, DilationFallbackRescuesErodedCorners) {
+    constexpr int kSq = 30;          // px per square (10×7 squares → 9×6 corners)
+    constexpr int kOx = 60, kOy = 40;
+    cv::Mat board(280, 400, CV_8UC1, cv::Scalar(255));
+    for (int r = 0; r < 7; ++r) {
+        for (int c = 0; c < 10; ++c) {
+            if (((r + c) & 1) == 0) {
+                cv::rectangle(board, {kOx + c * kSq, kOy + r * kSq},
+                              {kOx + (c + 1) * kSq - 1, kOy + (r + 1) * kSq - 1},
+                              cv::Scalar(0), cv::FILLED);
+            }
+        }
+    }
+    // Ground-truth inner corners (row-major from the top-left).
+    std::vector<cv::Point2f> gt;
+    for (int r = 0; r < 6; ++r)
+        for (int c = 0; c < 9; ++c)
+            gt.emplace_back(static_cast<float>(kOx + (c + 1) * kSq),
+                            static_cast<float>(kOy + (r + 1) * kSq));
+
+    // Sanity: the clean board detects via the raw pass.
+    IntrinsicCalibration cal;
+    cal.set_pattern(CalibrationPattern::Chessboard, 9, 6, 20.0f);
+    const auto clean = cal.detect_only(board, false);
+    ASSERT_TRUE(clean.found);
+
+    // Corrupt with salt-and-pepper raggedness (~16% of pixels flipped). A
+    // dedicated RNG (not cv::theRNG(), whose state the sanity check above
+    // consumes) keeps the corruption deterministic.
+    cv::Mat noise(board.size(), CV_8UC1);
+    cv::RNG rng(42);
+    rng.fill(noise, cv::RNG::UNIFORM, 0, 256);
+    cv::Mat eroded;
+    cv::bitwise_xor(board, noise < 40, eroded);
+
+    // Pin the premise: raw OpenCV cannot link this frame, so a successful
+    // detect_only below necessarily comes from the fallback.
+    {
+        std::vector<cv::Point2f> raw_corners;
+        EXPECT_FALSE(cv::findChessboardCorners(eroded, {9, 6}, raw_corners,
+                                               cv::CALIB_CB_FILTER_QUADS))
+            << "test premise broken: raw pass unexpectedly links this frame";
+    }
+
+    const auto res = cal.detect_only(eroded, false);
+    ASSERT_TRUE(res.found) << "fallback must rescue the ragged board";
+    ASSERT_EQ(res.points.size(), gt.size());
+    // Compare as sets (corner ORDER may flip under the fallback): every
+    // ground-truth corner must have a detected corner nearby.
+    double worst = 0.0, sum = 0.0;
+    for (const auto& g : gt) {
+        double best = 1e9;
+        for (const auto& p : res.points) best = std::min(best, cv::norm(p - g));
+        worst = std::max(worst, best);
+        sum += best;
+    }
+    std::fprintf(stderr, "[test] corner error: mean=%.2f px worst=%.2f px\n",
+                 sum / gt.size(), worst);
+    EXPECT_LT(sum / gt.size(), 2.0) << "mean corner error of the rescued view";
+    EXPECT_LT(worst, 6.0) << "worst corner error of the rescued view";
 }

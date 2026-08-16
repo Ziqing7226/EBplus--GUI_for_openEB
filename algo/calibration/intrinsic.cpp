@@ -16,8 +16,7 @@
 namespace gui_algo {
 
 namespace {
-// Radial-distortion-friendly grid validation: every row and column must stay
-// approximately straight — the cosine of the angle between two consecutive
+// Radial-distortion-friendly grid validation: every row and column must stay// approximately straight — the cosine of the angle between two consecutive
 // vectors of three consecutive points must stay above cos_max_angle (standard
 // points-on-grid radial check; perspective keeps lines straight, so this only
 // rejects genuinely mis-fit point sets). cos(π/9) ≈ 0.94 (~20° bend) is enough
@@ -50,6 +49,24 @@ bool points_on_grid_radial(const std::vector<cv::Point2f>& pts, int cols, int ro
         }
     }
     return true;
+}
+
+// Dilation fallback for binary blink frames whose square contours are too
+// ragged for the raw FILTER_QUADS pass (real thresholded blink frames carry
+// salt-and-pepper damage; small ~30 px squares are hit hardest). Dilating
+// the black (board) regions with a small odd kernel smooths the quad
+// contours and partially restores the threshold-eroded square edges, so the
+// rescued corners are if anything CLOSER to the true grid than the raw
+// frame's — no geometric compensation is applied (a uniform-shift model was
+// tried and made accuracy worse: dilation deforms quads non-uniformly).
+// The frame is board-black (0) on white (255).
+cv::Mat bridge_corners(const cv::Mat& gray, int k) {
+    cv::Mat black;
+    cv::threshold(gray, black, 128, 255, cv::THRESH_BINARY_INV);
+    cv::dilate(black, black, cv::getStructuringElement(cv::MORPH_RECT, {k, k}));
+    cv::Mat out;
+    cv::bitwise_not(black, out);
+    return out;
 }
 } // namespace
 
@@ -135,6 +152,26 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
                                            board_size_.height,
                                            static_cast<float>(std::cos(3.14159 / 9)))) {
                     found = false;
+                    corners.clear();
+                }
+            }
+            if (!found) {
+                // Corner-bridge fallback: real thresholded blink frames carry
+                // salt-and-pepper square damage that breaks the raw quad
+                // linking (see bridge_corners). Dilate the board regions and
+                // retry with growing kernels; rescued views still go through
+                // the straightness gate, and the solver's outlier rejection
+                // drops any that disagree with the majority.
+                for (const int k : {3, 5}) {
+                    const cv::Mat bridged = bridge_corners(gray, k);
+                    if (cv::findChessboardCorners(bridged, board_size_, corners,
+                                                  cv::CALIB_CB_FILTER_QUADS) &&
+                        points_on_grid_radial(corners, board_size_.width,
+                                              board_size_.height,
+                                              static_cast<float>(std::cos(3.14159 / 9)))) {
+                        found = true;
+                        break;
+                    }
                     corners.clear();
                 }
             }

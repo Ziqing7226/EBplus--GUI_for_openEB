@@ -15,9 +15,11 @@ namespace gui {
 
 namespace {
 // A capture is rejected if the detected grid's bounding box covers less than
-// this fraction of the frame area — the camera is too far for the grid to
-// condition cv::calibrateCamera well ("coverage insufficient").
-constexpr double kMinCoverageRatio = 0.10;
+// this fraction of the frame area — a much smaller grid cannot condition
+// cv::calibrateCamera well ("coverage insufficient"). 4% still admits a
+// 300×210 px board on a 1280×720 sensor (~30 px squares), which is the
+// practical floor for reliable quad linking on blink frames.
+constexpr double kMinCoverageRatio = 0.04;
 // Two poses whose detected points differ by less than this mean Euclidean
 // distance (px) are treated as the same pose (duplicate).
 constexpr double kDuplicateThresholdPx = 10.0;

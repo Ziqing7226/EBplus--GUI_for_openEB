@@ -37,6 +37,12 @@ struct BlinkParams {
     double ratio_on{0.15};       ///< Max acceptable |only-ON| / |both| ratio (rejects polarity-imbalanced noise).
     double ratio_off{0.15};      ///< Max acceptable |only-OFF| / |both| ratio.
     int median_blur_diameter{3}; ///< Median blur diameter on the binary mask (0 or even disables).
+    /// Fraction of the p99 per-pixel count used as the board threshold
+    /// (count frame only). Lower values include square-edge pixels (less
+    /// corner erosion → easier quad linking) at the cost of more noise.
+    /// 0.30: at 0.4 the corners of small (~30 px) squares erode below the
+    /// threshold and the quads lose contact, breaking quad linking entirely.
+    double count_frac{0.30};
 };
 
 /// @brief Binary blink frame plus the polarity statistics behind its gate.
@@ -145,7 +151,7 @@ inline BlinkFrame build_blink_frame_from_counts(const cv::Mat& on_cnt,
 
     cv::Mat sum;
     cv::add(on_cnt, off_cnt, sum);
-    const int T = detail::blink_count_threshold(sum, 12, 64, 0.4);
+    const int T = detail::blink_count_threshold(sum, 12, 64, params.count_frac);
 
     out.frame = cv::Mat(on_cnt.rows, on_cnt.cols, CV_8UC1, cv::Scalar(255));
     out.both = 0;
