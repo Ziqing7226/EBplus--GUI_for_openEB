@@ -536,7 +536,15 @@ void CalibrationWizard::on_frame_accepted(QImage annotated,
 
 void CalibrationWizard::on_frame_rejected(QString reason) {
     capture_in_flight_ = false;
-    set_status(tr("Rejected — %1").arg(reason));
+    QString msg = tr("Rejected — %1").arg(reason);
+    // Signal-quality failures only: suggest the two physical remedies
+    // (stronger blink contrast / less LCD PWM noise). Duplicate-pose and
+    // coverage rejections are not signal problems — no tip there.
+    if (!reason.contains(QLatin1String("Duplicate pose")) &&
+        !reason.contains(QLatin1String("Coverage"))) {
+        msg += tr(" Tip: maximize screen brightness or adjust bias_diff_on/off.");
+    }
+    set_status(msg);
     if (!capture_done_) enable_capture(camera_ && camera_->is_connected());
     update_delete_enabled();
 }
@@ -841,11 +849,9 @@ void CalibrationWizard::build_ui() {
 
     // ---- Capture hint ----
     hint_ = new QLabel(tr(
-        "The chessboard blinks to generate events — hold the camera steady. "
-        "Press <b>Space</b> to capture. Move the camera between captures so "
-        "every pose differs, and bring the board to the center AND the "
-        "corners of the view — the coverage hull on the aim view shows where "
-        "you have already captured."), this);
+        "Hold the camera steady and press <b>Space</b> to capture. Vary the "
+        "pose between captures; cover the center AND corners of the view "
+        "(see the coverage hull)."), this);
     hint_->setWordWrap(true);
     hint_->setProperty("class", "hint");
     outer->addWidget(hint_);
