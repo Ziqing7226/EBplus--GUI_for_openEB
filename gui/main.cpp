@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QFont>
 #include <QSurfaceFormat>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -24,11 +25,23 @@ static void ensure_openeb_env_defaults() {
     if (!std::getenv("HDF5_PLUGIN_PATH")) {
         ::setenv("HDF5_PLUGIN_PATH", "/usr/local/lib/hdf5/plugin", 0);
     }
-    // On Wayland sessions Qt 6's Wayland plugin renders a black viewport for
-    // our QOpenGLWidget; the XCB plugin (via XWayland) is the reliable path.
-    // Respect any user override.
+    // Platform plugin on Wayland sessions — a deliberate, documented
+    // trade-off (both sides are field-observed on this host):
+    //  - PRO xcb: older Qt/driver stacks rendered a black QOpenGLWidget
+    //    viewport under the native Wayland plugin; xcb (via XWayland) was
+    //    the reliable path.
+    //  - CON xcb: while ANOTHER window is fullscreen, XWayland presentation
+    //    is throttled and every animated view stutters until that window
+    //    closes; native Wayland does not have this problem (verified).
+    // Conservative default: keep xcb (a black viewport is a fatal failure,
+    // the stutter is not), and tell the user about the wayland escape hatch
+    // on the terminal. Any user override is respected (no print then).
     if (!std::getenv("QT_QPA_PLATFORM") && std::getenv("WAYLAND_DISPLAY")) {
         ::setenv("QT_QPA_PLATFORM", "xcb", 0);
+        std::fprintf(stderr,
+                     "[EBplus] Wayland session: defaulting QT_QPA_PLATFORM=xcb (XWayland).\n"
+                     "[EBplus] If animated views stutter while another window is fullscreen,\n"
+                     "[EBplus] relaunch with QT_QPA_PLATFORM=wayland.\n");
     }
     // Qt 6 may default to the Vulkan RHI backend and produce a black viewport
     // on this GPU; force OpenGL unless the user has set it.

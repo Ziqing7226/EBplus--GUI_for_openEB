@@ -40,13 +40,22 @@ export MV_HAL_PLUGIN_PATH="${MV_HAL_PLUGIN_PATH:-/usr/local/lib/metavision/hal/p
 
 # ---- Qt platform plugin + RHI backend ----
 # Hard-won lessons from runtime testing on this host:
-#   1. On Wayland sessions Qt 6's Wayland plugin still renders a black window
-#      for QOpenGLWidget children here; the XCB plugin (via XWayland) is the
-#      reliable path.  Set QT_QPA_PLATFORM=xcb unless the user overrides it.
-#   2. Qt 6 may default to the Vulkan RHI backend on this GPU and produce a
+#   1. On Wayland sessions, older Qt/driver stacks rendered a black window
+#      for QOpenGLWidget children under the native Wayland plugin; the XCB
+#      plugin (via XWayland) is the reliable path → default QT_QPA_PLATFORM
+#      to xcb. Any user override is respected.
+#   2. Known cost of the xcb/XWayland path: while ANOTHER window is
+#      fullscreen, animated views stutter until that window closes. Native
+#      Wayland does not have this problem — try QT_QPA_PLATFORM=wayland
+#      ./run.sh if you hit it (also printed to the terminal at launch).
+#      Newer Qt/driver stacks no longer black-screen there.
+#   3. Qt 6 may default to the Vulkan RHI backend on this GPU and produce a
 #      black viewport; force OpenGL with QSG_RHI_BACKEND=opengl.
-if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
-    export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+if [[ -n "${WAYLAND_DISPLAY:-}" && -z "${QT_QPA_PLATFORM:-}" ]]; then
+    export QT_QPA_PLATFORM="xcb"
+    echo "[run.sh] Wayland session: defaulting QT_QPA_PLATFORM=xcb (XWayland)." >&2
+    echo "[run.sh] If animated views stutter while another window is fullscreen," >&2
+    echo "[run.sh] relaunch with QT_QPA_PLATFORM=wayland." >&2
 fi
 export QSG_RHI_BACKEND="${QSG_RHI_BACKEND:-opengl}"
 
