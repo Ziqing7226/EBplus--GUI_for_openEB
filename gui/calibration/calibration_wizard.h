@@ -119,6 +119,10 @@ protected:
     void hideEvent(QHideEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void changeEvent(QEvent* event) override;
+    /// @brief Re-fits the captured-frame preview when the preview scroll
+    /// area's viewport is resized (the stored captures are full-resolution;
+    /// only the displayed pixmap is rescaled).
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 signals:
     /// @brief Cross-thread: reconfigure the worker's board scale + target.

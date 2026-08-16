@@ -702,9 +702,25 @@ void CalibrationWizard::show_last_preview() {
         return;
     }
     const QImage& img = captured_previews_.back();
-    preview_label_->setPixmap(QPixmap::fromImage(img).scaledToWidth(
-        preview_area_->viewport()->width(), Qt::SmoothTransformation));
-    preview_label_->resize(preview_label_->pixmap().size());
+    // Fit the WHOLE frame inside the viewport (both dimensions, aspect kept):
+    // fitting only the width lets a wide frame's height overflow the column,
+    // which is what brought up the scroll area's vertical scrollbar.
+    const QSize avail = preview_area_->viewport()->size().expandedTo({1, 1});
+    const QPixmap pm = QPixmap::fromImage(img).scaled(
+        avail, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    preview_label_->setPixmap(pm);
+    preview_label_->resize(pm.size());
+}
+
+bool CalibrationWizard::eventFilter(QObject* watched, QEvent* event) {
+    // Re-fit the captured preview to the preview area on resize — the stored
+    // captures are full-resolution, so this is just a re-scale of the top
+    // pixmap, not a re-render.
+    if (watched == preview_area_->viewport() &&
+        event->type() == QEvent::Resize && !captured_previews_.empty()) {
+        show_last_preview();
+    }
+    return QDialog::eventFilter(watched, event);
 }
 
 void CalibrationWizard::apply_pattern_to_display() {
@@ -810,6 +826,8 @@ void CalibrationWizard::build_ui() {
     preview_label_->setAlignment(Qt::AlignCenter);
     preview_label_->setText(tr("No frames captured yet."));
     preview_area_->setWidget(preview_label_);
+    // Re-fit the preview pixmap when the viewport resizes (eventFilter).
+    preview_area_->viewport()->installEventFilter(this);
     top_row->addWidget(preview_area_, 1);
 
     outer->addLayout(top_row);
