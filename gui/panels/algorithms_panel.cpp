@@ -429,40 +429,6 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_cb_->setChecked(false);
     form->addRow(preproc_filter_cb_);
 
-    // 1/4 downsample (default OFF — audit §五-F1): for most backends this
-    // only THINS events (coordinates unchanged, 3/4 of the input silently
-    // discarded); only the E2VID/ISI/TimeSurface/Hough backends actually
-    // halve coordinates. The checkbox is auto-set on algorithm enable
-    // (§11.2-I): ON for coordinate-halving backends (project memory),
-    // OFF for all others. Once the user manually toggles, auto-setting
-    // stops.
-    preproc_downsample_cb_ = new QCheckBox(tr("1/4 Downsample"), gb);
-    preproc_downsample_cb_->setChecked(false);
-    preproc_downsample_cb_->setToolTip(tr(
-        "对大多数算法仅抽稀事件（坐标不变）；仅 E2VID/ISI/TimeSurface/Hough 系做坐标减半"));
-    form->addRow(preproc_downsample_cb_);
-
-    // Undistort (default off). Applied AFTER filter + downsample. Loads the
-    // YAML written by Tools → Intrinsic Wizard and builds a forward event LUT
-    // (cv::undistortPoints with K adjusted for ROI origin + downsample factor).
-    // Default path is identical to the wizard's default export path.
-    preproc_undistort_cb_ = new QCheckBox(tr("Undistort (apply calibration)"), gb);
-    preproc_undistort_cb_->setChecked(false);
-    form->addRow(preproc_undistort_cb_);
-
-    preproc_undistort_path_ = new QLineEdit(gb);
-    preproc_undistort_path_->setText(default_intrinsic_yml_path());
-    preproc_undistort_path_->setToolTip(tr(
-        "Path to the YAML written by Tools → Intrinsic Wizard. "
-        "Default path is identical to the wizard's export default."));
-    preproc_undistort_browse_ = new QPushButton(tr("Browse..."), gb);
-    auto* undistort_row = new QWidget(gb);
-    auto* undistort_layout = new QHBoxLayout(undistort_row);
-    undistort_layout->setContentsMargins(0, 0, 0, 0);
-    undistort_layout->addWidget(preproc_undistort_path_, 1);
-    undistort_layout->addWidget(preproc_undistort_browse_, 0);
-    form->addRow(tr("Calibration file"), undistort_row);
-
     // Filter mode (9 modes, default STCF=1).
     preproc_filter_mode_combo_ = new QComboBox(gb);
     preproc_filter_mode_combo_->addItem("0=BAF");
@@ -596,6 +562,40 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         preproc_params_form_->addRow(lbl, w);
         preproc_rows_.push_back({lbl, w, p.mode, pkey});
     }
+
+    // 1/4 downsample (default OFF — audit §五-F1): for most backends this
+    // only THINS events (coordinates unchanged, 3/4 of the input silently
+    // discarded); only the E2VID/ISI/TimeSurface/Hough backends actually
+    // halve coordinates. The checkbox is auto-set on algorithm enable
+    // (§11.2-I): ON for coordinate-halving backends (project memory),
+    // OFF for all others. Once the user manually toggles, auto-setting
+    // stops.
+    preproc_downsample_cb_ = new QCheckBox(tr("1/4 Downsample"), gb);
+    preproc_downsample_cb_->setChecked(false);
+    preproc_downsample_cb_->setToolTip(tr(
+        "对大多数算法仅抽稀事件（坐标不变）；仅 E2VID/ISI/TimeSurface/Hough 系做坐标减半"));
+    form->addRow(preproc_downsample_cb_);
+
+    // Undistort (default off). Applied AFTER filter + downsample. Loads the
+    // YAML written by Tools → Intrinsic Wizard and builds a forward event LUT
+    // (cv::undistortPoints with K adjusted for ROI origin + downsample factor).
+    // Default path is identical to the wizard's default export path.
+    preproc_undistort_cb_ = new QCheckBox(tr("Undistort (apply calibration)"), gb);
+    preproc_undistort_cb_->setChecked(false);
+    form->addRow(preproc_undistort_cb_);
+
+    preproc_undistort_path_ = new QLineEdit(gb);
+    preproc_undistort_path_->setText(default_intrinsic_yml_path());
+    preproc_undistort_path_->setToolTip(tr(
+        "Path to the YAML written by Tools → Intrinsic Wizard. "
+        "Default path is identical to the wizard's export default."));
+    preproc_undistort_browse_ = new QPushButton(tr("Browse..."), gb);
+    auto* undistort_row = new QWidget(gb);
+    auto* undistort_layout = new QHBoxLayout(undistort_row);
+    undistort_layout->setContentsMargins(0, 0, 0, 0);
+    undistort_layout->addWidget(preproc_undistort_path_, 1);
+    undistort_layout->addWidget(preproc_undistort_browse_, 0);
+    form->addRow(tr("Calibration file"), undistort_row);
 
     parent_layout->addWidget(gb);
 
