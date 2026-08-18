@@ -272,6 +272,10 @@ facility::TriggerOut* CameraController::trigger_out_facility() {
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::TriggerOut>();
 }
+facility::CameraSync* CameraController::camera_sync_facility() {
+    if (!camera_) return nullptr;
+    return camera_->get_device().get_facility<facility::CameraSync>();
+}
 
 void CameraController::set_cd_broadcast(bool enabled) {
     cd_broadcast_.store(enabled, std::memory_order_relaxed);

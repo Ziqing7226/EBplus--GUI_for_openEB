@@ -3,6 +3,7 @@
 #include "trigger_panel.h"
 
 #include <QCheckBox>
+#include <QDebug>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -78,6 +79,11 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
     tout_freq_->setSuffix(" Hz");
     tout_freq_->setValue(1000.0);
     tout_form->addRow(tr("Frequency"), tout_freq_);
+
+    tout_hint_ = new QLabel(QString(), tout_group_);
+    tout_hint_->setWordWrap(true);
+    tout_hint_->setProperty("class", "hint");
+    tout_form->addRow(tout_hint_);
     outer->addWidget(tout_group_);
 
     outer->addStretch(1);
@@ -89,13 +95,14 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
     // Trigger Out enable
     connect(tout_enable_, &QCheckBox::toggled, this, [this](bool on) {
         if (!camera_) return;
-        auto* to = camera_->trigger_out_facility();
-        if (!to) return;
-        try {
-            if (on) to->enable(); else to->disable();
-        } catch (const std::exception& e) {
-            emit error_message(QString::fromUtf8(e.what()));
-            QSignalBlocker b(tout_enable_); tout_enable_->setChecked(!on);
+        if (!camera_->trigger_out_facility()) return;
+        if (on) {
+            if (!enable_trigger_out()) {
+                QSignalBlocker b(tout_enable_);
+                tout_enable_->setChecked(false);
+            }
+        } else {
+            disable_trigger_out();
         }
     });
     // Period <-> Frequency mirror.
@@ -124,10 +131,16 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
         if (!camera_) return;
         auto* to = camera_->trigger_out_facility();
         if (!to) return;
-        try { to->set_period(static_cast<uint32_t>(us)); }
+        bool ok = false;
+        try { ok = to->set_period(static_cast<uint32_t>(us)); }
         catch (const std::exception& e) {
-            emit error_message(QString::fromUtf8(e.what()));
+            qWarning() << "Trigger out set_period:" << e.what();
+        }
+        if (!ok) {
+            show_out_hint(tr("The camera did not accept this period — showing its current setting."), false);
             refresh_period_from_hw();
+        } else {
+            show_out_hint(QString(), false);
         }
     });
     connect(tout_freq_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -144,10 +157,16 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
         if (!camera_) return;
         auto* to = camera_->trigger_out_facility();
         if (!to) return;
-        try { to->set_period(static_cast<uint32_t>(us)); }
+        bool ok = false;
+        try { ok = to->set_period(static_cast<uint32_t>(us)); }
         catch (const std::exception& e) {
-            emit error_message(QString::fromUtf8(e.what()));
+            qWarning() << "Trigger out set_period:" << e.what();
+        }
+        if (!ok) {
+            show_out_hint(tr("The camera did not accept this frequency — showing its current setting."), false);
             refresh_period_from_hw();
+        } else {
+            show_out_hint(QString(), false);
         }
     });
     connect(tout_duty_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -155,8 +174,13 @@ TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {
         if (!camera_) return;
         auto* to = camera_->trigger_out_facility();
         if (!to) return;
-        try { to->set_duty_cycle(v); }
-        catch (const std::exception& e) { emit error_message(QString::fromUtf8(e.what())); }
+        bool ok = false;
+        try { ok = to->set_duty_cycle(v); }
+        catch (const std::exception& e) {
+            qWarning() << "Trigger out set_duty_cycle:" << e.what();
+        }
+        if (!ok) show_out_hint(tr("The camera did not accept this duty cycle."), false);
+        else     show_out_hint(QString(), false);
     });
 }
 
@@ -167,10 +191,13 @@ void TriggerPanel::on_camera_connected(CameraController* controller) {
 
 void TriggerPanel::on_camera_disconnected() {
     camera_ = nullptr;
+    switched_to_slave_ = false;
     clear_trigger_in_rows();
     tin_group_->setEnabled(false);
     tout_group_->setEnabled(false);
     tin_hint_->clear();
+    tout_hint_->clear();
+    tout_hint_->hide();
     hint_label_->setText(tr("No live camera connected."));
     hint_label_->setProperty("class", "hint");
     restyle(hint_label_);
@@ -220,10 +247,14 @@ void TriggerPanel::populate_trigger_in() {
             if (!camera_) return;
             auto* tin = camera_->trigger_in_facility();
             if (!tin) return;
+            bool ok = false;
             try {
-                if (on) tin->enable(ch); else tin->disable(ch);
+                ok = on ? tin->enable(ch) : tin->disable(ch);
             } catch (const std::exception& e) {
-                emit error_message(QString::fromUtf8(e.what()));
+                qWarning() << "Trigger in channel" << static_cast<int>(ch) << ":" << e.what();
+            }
+            if (!ok) {
+                tin_hint_->setText(tr("This camera rejected the trigger-in channel — it is likely not wired on this model."));
                 QSignalBlocker b(cb); cb->setChecked(!on);
             }
         });
@@ -235,9 +266,11 @@ void TriggerPanel::populate_trigger_out() {
     auto* to = camera_ ? camera_->trigger_out_facility() : nullptr;
     if (!to) {
         tout_group_->setEnabled(false);
+        show_out_hint(tr("Trigger Out not supported."), false);
         return;
     }
     tout_group_->setEnabled(true);
+    switched_to_slave_ = false; // fresh read of hardware state below
     try {
         QSignalBlocker b0(tout_enable_); tout_enable_->setChecked(to->is_enabled());
         const uint32_t period = to->get_period();
@@ -253,8 +286,81 @@ void TriggerPanel::populate_trigger_out() {
             tout_freq_->setValue(1.0e6 / static_cast<double>(period));
         }
     } catch (const std::exception& e) {
-        emit error_message(tr("Trigger Out init: %1").arg(QString::fromUtf8(e.what())));
+        qWarning() << "Trigger Out init:" << e.what();
+        show_out_hint(tr("Trigger Out could not be read from this camera."), false);
+        return;
     }
+    // HAL rejects trigger out in Master sync mode; tell the user it will be
+    // handled automatically instead of letting the checkbox appear to fail.
+    auto* sync = camera_->camera_sync_facility();
+    if (sync) {
+        try {
+            if (sync->get_mode() == Metavision::I_CameraSynchronization::SyncMode::MASTER) {
+                show_out_hint(tr("Camera is in Master sync mode; it will be switched to Slave when trigger out is enabled."), true);
+                return;
+            }
+        } catch (...) {}
+    }
+    show_out_hint(QString(), false);
+}
+
+bool TriggerPanel::enable_trigger_out() {
+    auto* to = camera_ ? camera_->trigger_out_facility() : nullptr;
+    if (!to) return false;
+    bool ok = false;
+    try { ok = to->enable(); }
+    catch (const std::exception& e) { qWarning() << "Trigger out enable:" << e.what(); }
+    if (ok) {
+        show_out_hint(QString(), false);
+        return true;
+    }
+    // HAL rejects trigger out in Master sync mode — switch to Slave and retry.
+    auto* sync = camera_->camera_sync_facility();
+    if (sync) {
+        try {
+            if (sync->get_mode() == Metavision::I_CameraSynchronization::SyncMode::MASTER &&
+                sync->set_mode_slave()) {
+                ok = to->enable();
+                if (ok) {
+                    switched_to_slave_ = true;
+                    show_out_hint(tr("Camera sync mode was switched to Slave so trigger out can run."), true);
+                    return true;
+                }
+                // Could not enable even as Slave — undo the mode change.
+                try { sync->set_mode_master(); } catch (...) {}
+            }
+        } catch (const std::exception& e) { qWarning() << "Sync mode switch:" << e.what(); }
+    }
+    show_out_hint(tr("This camera rejected the trigger-out signal — it is likely not supported by its firmware."), false);
+    return false;
+}
+
+void TriggerPanel::disable_trigger_out() {
+    auto* to = camera_ ? camera_->trigger_out_facility() : nullptr;
+    if (!to) return;
+    try { to->disable(); }
+    catch (const std::exception& e) { qWarning() << "Trigger out disable:" << e.what(); }
+    // Only restore Standalone when WE switched the mode for trigger out —
+    // a camera the user deliberately put in Slave stays in Slave.
+    if (switched_to_slave_) {
+        switched_to_slave_ = false;
+        auto* sync = camera_->camera_sync_facility();
+        if (sync) {
+            try {
+                sync->set_mode_standalone();
+                show_out_hint(tr("Camera sync mode was restored to Standalone."), true);
+                return;
+            } catch (const std::exception& e) { qWarning() << "Sync mode restore:" << e.what(); }
+        }
+    }
+    show_out_hint(QString(), false);
+}
+
+void TriggerPanel::show_out_hint(const QString& text, bool info) {
+    tout_hint_->setText(text);
+    tout_hint_->setProperty("class", text.isEmpty() ? "hint" : (info ? "info" : "hint"));
+    tout_hint_->setVisible(!text.isEmpty());
+    restyle(tout_hint_);
 }
 
 void TriggerPanel::clear_trigger_in_rows() {

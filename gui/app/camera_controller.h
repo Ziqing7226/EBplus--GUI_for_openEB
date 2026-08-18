@@ -17,6 +17,7 @@
 
 #include <metavision/hal/facilities/i_antiflicker_module.h>
 #include <metavision/hal/facilities/i_erc_module.h>
+#include <metavision/hal/facilities/i_camera_synchronization.h>
 #include <metavision/hal/facilities/i_event_trail_filter_module.h>
 #include <metavision/hal/facilities/i_geometry.h>
 #include <metavision/hal/facilities/i_ll_biases.h>
@@ -45,6 +46,7 @@ using TrailFilter  = Metavision::I_EventTrailFilterModule;
 using Erc          = Metavision::I_ErcModule;
 using TriggerIn    = Metavision::I_TriggerIn;
 using TriggerOut   = Metavision::I_TriggerOut;
+using CameraSync   = Metavision::I_CameraSynchronization;
 using Geometry     = Metavision::I_Geometry;
 } // namespace facility
 
@@ -109,6 +111,7 @@ public:
     facility::Erc*         erc_facility();
     facility::TriggerIn*   trigger_in_facility();
     facility::TriggerOut*  trigger_out_facility();
+    facility::CameraSync*  camera_sync_facility();
 
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
     /// Live camera: applies the hardware ROI (I_ROI) so the sensor itself

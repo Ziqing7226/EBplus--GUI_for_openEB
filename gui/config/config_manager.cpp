@@ -17,6 +17,7 @@
 #include <metavision/hal/facilities/i_event_trail_filter_module.h>
 #include <metavision/hal/facilities/i_ll_biases.h>
 #include <metavision/hal/facilities/i_roi.h>
+#include <metavision/hal/facilities/i_camera_synchronization.h>
 #include <metavision/hal/facilities/i_trigger_in.h>
 #include <metavision/hal/facilities/i_trigger_out.h>
 
@@ -290,10 +291,24 @@ bool ConfigManager::apply_trigger(CameraController* c, const QJsonObject& o, QSt
                 catch (...) { ok = false; }
             }
             if (oo.contains("enabled")) {
+                // HAL rejects trigger out in Master sync mode; switch to
+                // Slave and retry so a saved "enabled" config restores cleanly.
+                bool en_ok = false;
                 try {
-                    if (oo.value("enabled").toBool()) to->enable();
-                    else                              to->disable();
-                } catch (...) { ok = false; }
+                    if (oo.value("enabled").toBool()) {
+                        en_ok = to->enable();
+                        if (!en_ok) {
+                            auto* sync = c->camera_sync_facility();
+                            if (sync && sync->get_mode() == Metavision::I_CameraSynchronization::SyncMode::MASTER &&
+                                sync->set_mode_slave()) {
+                                en_ok = to->enable();
+                            }
+                        }
+                    } else {
+                        en_ok = to->disable();
+                    }
+                } catch (...) {}
+                ok &= en_ok;
             }
         }
     }

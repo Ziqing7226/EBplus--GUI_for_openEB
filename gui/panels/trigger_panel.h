@@ -44,6 +44,15 @@ private:
     void populate_trigger_out();
     void clear_trigger_in_rows();
 
+    // Trigger Out enable/disable with automatic sync-mode handling: HAL
+    // rejects trigger out while the camera is in Master sync mode, so
+    // enable_trigger_out() transparently switches to Slave and remembers it;
+    // disable_trigger_out() restores Standalone. Failures are reported via
+    // the in-panel hint (friendly wording), never as error popups.
+    bool enable_trigger_out();
+    void disable_trigger_out();
+    void show_out_hint(const QString& text, bool info);
+
     QGroupBox*   tin_group_{nullptr};
     QVBoxLayout* tin_layout_{nullptr};
     QLabel*      tin_hint_{nullptr};
@@ -51,10 +60,15 @@ private:
     QHash<int, QCheckBox*> tin_checks_;
 
     QGroupBox*       tout_group_{nullptr};
+    QLabel*          tout_hint_{nullptr};
     QCheckBox*       tout_enable_{nullptr};
     QSpinBox*        tout_period_{nullptr};   // µs
     QDoubleSpinBox*  tout_duty_{nullptr};     // 0.0 – 1.0
     QDoubleSpinBox*  tout_freq_{nullptr};     // Hz (mirror of period)
+    // True while WE switched the camera to Slave sync mode to make trigger
+    // out possible; disable_trigger_out() restores Standalone only then, so
+    // a camera the user deliberately put in Slave stays in Slave.
+    bool switched_to_slave_{false};
 
     QLabel* hint_label_{nullptr};
 };
