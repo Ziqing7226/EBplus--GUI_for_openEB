@@ -673,17 +673,9 @@ void AlgoBridge::register_openeb_filters() {
     add({"flip_y", "Flip Y", "openeb_filter", "openeb",
          AlgoDisplayMode::Passive, {}});
 
-    add({"rotate", "Rotate", "openeb_filter", "openeb",
-         AlgoDisplayMode::Passive,
-         {penum("rotation", "Rotation (deg)", "0", {"0", "90", "180", "270"})}});
-
-    add({"transpose", "Transpose", "openeb_filter", "openeb",
-         AlgoDisplayMode::Passive, {}});
-
-    add({"rescale", "Rescale", "openeb_filter", "openeb",
-         AlgoDisplayMode::Passive,
-         {pfloat("scale_width", "Scale X", "1.0", "0.0001", "10"),
-          pfloat("scale_height", "Scale Y", "1.0", "0.0001", "10")}});
+    // rotate / transpose / rescale were removed (2026-08-18): their
+    // coordinate changes are not propagated to the downstream W×H buffers,
+    // causing out-of-bounds writes (heap corruption / delayed segfault).
 }
 
 // ---------------------------------------------------------------------------

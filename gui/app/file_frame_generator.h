@@ -81,10 +81,10 @@ public:
     /// @brief Sets the color palette for rendering (matches CDFrameGenerator).
     void set_color_palette(Metavision::ColorPalette palette);
 
-    /// @brief Sets the FilterChain for event transformation (flip, rotate,
+    /// @brief Sets the FilterChain for event transformation (flip, polarity,
     /// etc.) during file playback. Applied per-frame in render_frame() to
     /// BOTH the display rendering and the events emitted via
-    /// events_window_ready, so that flip/rotate/etc. take effect immediately
+    /// events_window_ready, so that transforms take effect immediately
     /// and algorithm output is also transformed. nullptr = no filtering.
     void set_filter_chain(FilterChain* fc) { filter_chain_ = fc; }
 
@@ -172,7 +172,7 @@ signals:
     /// @brief Emitted with the (filtered) events in the current accumulation
     /// window [start, end). Used to feed algorithm instances synchronously
     /// with the displayed frame during file playback. When a FilterChain is
-    /// set, the events are already filtered (flip/rotate/etc. applied) so
+    /// set, the events are already filtered (flip/etc. applied) so
     /// algorithm output matches the display orientation.
     void events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
                              Metavision::timestamp ts);

@@ -42,25 +42,26 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Registry completeness (§3.11.2: 28 self + 8 openEB). noise_filter was
+// Registry completeness (§3.11.2: 28 self + 4 openEB). noise_filter was
 // removed in v1.0.9 (now a stackable preprocessing stage); sensor_self_test
 // was added in §4.4.8; intrinsic_calibration was removed (now a Tools-menu
 // wizard, not a registered algo); perspective_undistort was removed (audit
 // §三-B8, superseded by the preproc undistort stage); the 22 unreachable
 // OpenEB frame/preproc/util/roi_mask/adaptive_rate_split registrations were
 // removed (audit §三-B6/7), leaving the FilterChain event-transform stages
-// (polarity_filter, polarity_invert, flip_x, flip_y, rotate, transpose,
-// rescale — roi_filter was removed in Phase 2.6 debug D-6, superseded by the
-// unified ROI). ultra_slow_motion was removed in Phase 2.5 (broken
+// (polarity_filter, polarity_invert, flip_x, flip_y — roi_filter was removed
+// in Phase 2.6 debug D-6, superseded by the unified ROI; rotate/transpose/
+// rescale were removed 2026-08-18 for coordinate-OOB heap corruption).
+// ultra_slow_motion was removed in Phase 2.5 (broken
 // Replace-display promise, no downstream consumer). sensor_self_test is
 // intentionally NOT registered (it is a Devices-panel diagnostic, not an
 // algorithm — its instance is created via create_with_info).
-// Live registry: 28 self-developed + 7 OpenEB = 35.
+// Live registry: 28 self-developed + 4 OpenEB = 32.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 35u);
+    EXPECT_EQ(algos.size(), 32u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
@@ -68,7 +69,7 @@ TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
         else if (a.source == "openeb") ++openeb_count;
     }
     EXPECT_EQ(self_count, 28u);
-    EXPECT_EQ(openeb_count, 7u);
+    EXPECT_EQ(openeb_count, 4u);
 }
 
 TEST(AlgoBridgeRegistry, KeyNamesPresent) {
@@ -119,6 +120,11 @@ TEST(AlgoBridgeRegistry, RemovedRegistrationsAreGone) {
     EXPECT_EQ(bridge.find("adaptive_rate_split"), nullptr);
     // Audit §三-B8: superseded by the preproc undistort stage.
     EXPECT_EQ(bridge.find("perspective_undistort"), nullptr);
+    // 2026-08-18: coordinate-changing transforms removed (OOB heap
+    // corruption — no frame-geometry propagation to downstream buffers).
+    EXPECT_EQ(bridge.find("rotate"), nullptr);
+    EXPECT_EQ(bridge.find("transpose"), nullptr);
+    EXPECT_EQ(bridge.find("rescale"), nullptr);
 }
 
 TEST(AlgoBridgeRegistry, NoiseFilterRemovedInV1_0_9) {

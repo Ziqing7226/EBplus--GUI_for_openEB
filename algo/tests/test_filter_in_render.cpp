@@ -252,69 +252,6 @@ int main(int argc, char** argv) {
                              "original coordinates, algo stream kept complete\n");
     }
 
-    // --- Test 6: transpose on a non-square frame (BUG: OOB write crash).
-    // Transpose swaps x/y, turning a W×H stream into an H×W one. All
-    // downstream buffers stay W×H, so events that land outside after the
-    // swap must be dropped by TransposeStage — without the guard the live
-    // display path writes out of bounds into
-    // PeriodicFrameGenerationAlgorithm::time_surface_ (heap corruption →
-    // delayed segfault). FileFrameGenerator guards too, so this verifies the
-    // stage-level guard keeps the algorithm feed (events_window_ready) safe.
-    {
-        const int TW = 100, TH = 50;
-        FileFrameGenerator gen5;
-        gen5.set_geometry(TW, TH);
-        gen5.set_fps(60);
-        gen5.set_accumulation_time_us(1000);
-        FilterChain chain5;
-        chain5.set_geometry(TW, TH);
-        chain5.set_stage_enabled("transpose", true);
-        gen5.set_filter_chain(&chain5);
-
-        QImage rendered5;
-        QObject::connect(&gen5, &FileFrameGenerator::frame_ready,
-                         [&](QImage f, Metavision::timestamp) { rendered5 = f; });
-        std::shared_ptr<std::vector<Metavision::EventCD>> emitted5;
-        QObject::connect(&gen5, &FileFrameGenerator::events_window_ready,
-                         [&](std::shared_ptr<std::vector<Metavision::EventCD>> evs,
-                             Metavision::timestamp) { emitted5 = evs; });
-
-        // (10,20) → (20,10): in-frame, kept. (90,20) → (20,90): y=90 >= TH,
-        // dropped (the OOB case). (10,49) → (49,10): kept.
-        std::vector<Metavision::EventCD> evs;
-        evs.push_back(Metavision::EventCD{10, 20, 100, 1});
-        evs.push_back(Metavision::EventCD{90, 20, 101, 1});
-        evs.push_back(Metavision::EventCD{10, 49, 102, 1});
-        gen5.add_events(evs.data(), evs.data() + evs.size());
-        gen5.set_duration_us(2000);
-        gen5.seek(0);
-
-        if (rendered5.isNull()) {
-            std::fprintf(stderr, "FAIL: no frame rendered with transpose\n");
-            return 1;
-        }
-        const QRgb bg = rendered5.pixel(0, 0);
-        if (rendered5.pixel(20, 10) == bg || rendered5.pixel(49, 10) == bg) {
-            std::fprintf(stderr, "FAIL: in-frame transposed events must render\n");
-            return 1;
-        }
-        if (!emitted5 || emitted5->size() != 2) {
-            std::fprintf(stderr, "FAIL: transpose must drop the OOB event "
-                                 "(expected 2 events, got %zu)\n",
-                         emitted5 ? emitted5->size() : 0);
-            return 1;
-        }
-        const auto& e0 = (*emitted5)[0];
-        const auto& e1 = (*emitted5)[1];
-        if (!((e0.x == 20 && e0.y == 10) && (e1.x == 49 && e1.y == 10))) {
-            std::fprintf(stderr, "FAIL: unexpected transposed events (%d,%d) (%d,%d)\n",
-                         e0.x, e0.y, e1.x, e1.y);
-            return 1;
-        }
-        std::fprintf(stderr, "PASS: transpose drops OOB events (x>=frame height) "
-                             "and keeps in-frame ones\n");
-    }
-
     std::fprintf(stderr, "PASS: flip_x correctly applied in render_frame() and events_window_ready\n");
     return 0;
 }

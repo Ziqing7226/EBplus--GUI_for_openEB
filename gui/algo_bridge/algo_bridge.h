@@ -6,8 +6,10 @@
 // The bridge真正实例化并调用 algo/cv 与 algo/analytics 的真实算法类。
 // AlgoInstance 持有一个 AlgoBackend，push_events 时零拷贝 reinterpret_cast
 // EventCD→gui_algo::Event 后调用真实 process()/filter()，pull_result 返回
-// 过滤事件 + 叠加层 + 帧。注册表列出 28 个自研模块 + 8 个 OpenEB 事件变换
-// 阶段（flip/rotate/ROI 等，实际处理在 FilterChain，此处仅作注册占位）。
+// 过滤事件 + 叠加层 + 帧。注册表列出 28 个自研模块 + 4 个 OpenEB 事件变换
+// 阶段（flip/polarity 等，实际处理在 FilterChain，此处仅作注册占位；
+// rotate/transpose/rescale 已于 2026-08-18 移除——坐标变换不传播帧几何，
+// 会越界写坏下游 W×H 缓冲）。
 
 #ifndef GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
 #define GUI_ALGO_BRIDGE_ALGO_BRIDGE_H

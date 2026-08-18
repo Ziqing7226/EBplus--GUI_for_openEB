@@ -24,7 +24,7 @@ PreprocessingPanel::PreprocessingPanel(QWidget* parent) : AbstractPanel(parent) 
 void PreprocessingPanel::build_ui() {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    group_ = new QGroupBox(tr("Display Transform (display stream only)"), this);
+    group_ = new QGroupBox(tr("Display Transform"), this);
     auto* form = new QFormLayout(group_);
 
     auto make_row = [&](const QString& stage, const QString& label) {
@@ -61,43 +61,12 @@ void PreprocessingPanel::build_ui() {
     make_row("polarity_invert", tr("Polarity Invert"));
     make_row("flip_x", tr("Flip X"));
     make_row("flip_y", tr("Flip Y"));
-    make_enum_row("rotate", tr("Rotate"),
-                  {"0", "90", "180", "270"}, "rotation");
-    make_row("transpose", tr("Transpose"));
-    // Rescale needs two float inputs; expose as separate rows so the row
-    // width fits the narrower sidebar (§13.3 — splitting wide rows).
-    {
-        auto* cb = new QCheckBox(tr("Rescale"), group_);
-        form->addRow(cb);
-        auto* sx = new QDoubleSpinBox(group_);
-        sx->setRange(0.01, 10.0);
-        sx->setValue(1.0);
-        sx->setEnabled(false);
-        auto* sy = new QDoubleSpinBox(group_);
-        sy->setRange(0.01, 10.0);
-        sy->setValue(1.0);
-        sy->setEnabled(false);
-        form->addRow(tr("  Scale X"), sx);
-        form->addRow(tr("  Scale Y"), sy);
-        enables_["rescale"] = cb;
-        // Store pointers for apply_stage (typed correctly, no casts).
-        double_spins_["rescale|scale_width"] = sx;
-        double_spins_["rescale|scale_height"] = sy;
-        connect(cb, &QCheckBox::toggled, this, [this, sx, sy](bool on) {
-            sx->setEnabled(on); sy->setEnabled(on);
-            apply_stage("rescale");
-        });
-        connect(sx, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
-            apply_stage("rescale");
-        });
-        connect(sy, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
-            apply_stage("rescale");
-        });
-    }
     // Phase 2.6 debug D-6: the ROI Filter stage was deleted — the unified
     // ROI (Hardware/Algorithms page checkbox + dialog, hardware I_ROI on
     // live / software crop on file) is the single ROI concept; this stage
     // duplicated it with fully independent state.
+    // 2026-08-18: rotate / transpose / rescale were deleted (coordinate
+    // changes without geometry propagation → OOB heap corruption).
 
     outer->addWidget(group_);
 }
@@ -115,17 +84,6 @@ void PreprocessingPanel::apply_stage(const QString& stage) {
         auto* cmb = combos_.value("polarity_filter|polarity");
         if (cmb) chain->set_stage_param(stage.toStdString(), "polarity",
                                         std::to_string(cmb->currentIndex()));
-    } else if (stage == "rotate") {
-        auto* cmb = combos_.value("rotate|rotation");
-        if (cmb) chain->set_stage_param(stage.toStdString(), "rotation",
-                                        cmb->currentText().toStdString());
-    } else if (stage == "rescale") {
-        auto* sx = double_spins_.value("rescale|scale_width");
-        auto* sy = double_spins_.value("rescale|scale_height");
-        if (sx) chain->set_stage_param(stage.toStdString(), "scale_width",
-                                       std::to_string(sx->value()));
-        if (sy) chain->set_stage_param(stage.toStdString(), "scale_height",
-                                       std::to_string(sy->value()));
     }
     if (cb->isChecked()) {
         emit info_message(tr("Preprocess: %1 on").arg(stage));

@@ -79,7 +79,7 @@ public:
     void set_frame_decay_time_us(Metavision::timestamp us);
 
     /// @brief Sets the FilterChain for file-mode display filtering. Applied
-    /// per-frame in FileFrameGenerator::render_frame() so flip/rotate/etc.
+    /// per-frame in FileFrameGenerator::render_frame() so flip etc.
     /// take effect immediately during file playback. Must be called before
     /// start_file() to ensure the pointer is available when rendering begins.
     void set_file_filter_chain(FilterChain* fc);

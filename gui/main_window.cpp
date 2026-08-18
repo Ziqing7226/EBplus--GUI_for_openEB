@@ -1625,10 +1625,10 @@ void MainWindow::install_algo_callback() {
             // events_window_ready (synchronous with frame display).
             if (!file_source) {
                 // Apply FilterChain so algorithms AND the XYT display receive
-                // the same orientation (flip/rotate/etc.) as the display
+                // the same orientation (flip/etc.) as the display
                 // pipeline. Without this, Replace-mode algorithms overwrite
                 // the flipped display frame with an unflipped output, making
-                // flip/rotate invisible (same issue fixed for file mode in
+                // the flip invisible (same issue fixed for file mode in
                 // FileFrameGenerator::render_frame).
                 //
                 // Thread safety: FilterChain::process() and has_enabled()

@@ -3,9 +3,14 @@
 // disable / re-parameterize each stage without depending on the concrete
 // algorithm headers.
 //
-// Supported stages: polarity filter, polarity invert, flip X/Y, rotate,
-// transpose, rescale, ROI filter. Each stage is identified by the same name
-// used in AlgoBridge::registry_ (e.g. "polarity_filter").
+// Supported stages: polarity filter, polarity invert, flip X/Y. Each stage is
+// identified by the same name used in AlgoBridge::registry_ (e.g.
+// "polarity_filter").
+//
+// rotate / transpose / rescale were removed (2026-08-18): they change event
+// coordinates WITHOUT propagating the new frame geometry, so downstream
+// W×H buffers (live display time surface, algorithm instances) can be
+// written out of bounds → heap corruption / delayed segfault.
 
 #ifndef GUI_ALGO_BRIDGE_FILTER_CHAIN_H
 #define GUI_ALGO_BRIDGE_FILTER_CHAIN_H
@@ -43,7 +48,7 @@ class FilterChain {
 public:
     FilterChain();
 
-    /// @brief Sets the sensor geometry (needed by flip/rotate/transpose stages).
+    /// @brief Sets the sensor geometry (needed by the flip stages).
     void set_geometry(int width, int height);
 
     /// @brief Returns the named stage. The pointer is returned WITHOUT the

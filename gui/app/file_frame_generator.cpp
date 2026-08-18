@@ -320,7 +320,7 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
     }
 
     // Apply FilterChain to the window events for BOTH display rendering and
-    // algorithm feeding. This ensures flip/rotate/etc. take effect immediately
+    // algorithm feeding. This ensures flip/etc. take effect immediately
     // during file playback (events are buffered raw and filtered per-frame),
     // AND that algorithm output is also flipped — ReplaceStrategy replaces
     // the display frame with the algorithm's output, so if algorithms receive

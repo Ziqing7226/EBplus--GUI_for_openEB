@@ -14,7 +14,6 @@
 
 class QCheckBox;
 class QSpinBox;
-class QDoubleSpinBox;
 class QComboBox;
 class QGroupBox;
 
@@ -29,10 +28,11 @@ public:
 
     // Stable id "preprocessing" (layout/panel registry key) — do NOT rename.
     QString panel_id() const override { return QStringLiteral("preprocessing"); }
-    // User-visible title: "Display Transform" to distinguish these OpenEB
-    // display-only event-transform stages from the AlgorithmsPanel
-    // "Preprocessing" stages (filter/downsample/undistort), which reach BOTH
-    // the display and every algorithm instance.
+    // User-visible title: "Display Transform" distinguishes these OpenEB
+    // event-transform stages from the AlgorithmsPanel "Preprocessing" stages
+    // (filter/downsample/undistort). NOTE: both reach the display AND every
+    // algorithm instance — the FilterChain output is shared (so Replace-mode
+    // output keeps the display orientation).
     QString panel_title() const override { return tr("Display Transform"); }
     QString panel_group() const override { return QStringLiteral("Algorithms"); }
 
@@ -57,7 +57,6 @@ private:
     QHash<QString, QCheckBox*> enables_;
     QHash<QString, QComboBox*> combos_;
     QHash<QString, QSpinBox*> spins_;
-    QHash<QString, QDoubleSpinBox*> double_spins_;
     QGroupBox* group_{nullptr};
 };
 
