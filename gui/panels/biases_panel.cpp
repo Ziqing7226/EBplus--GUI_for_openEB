@@ -2,6 +2,7 @@
 
 #include "biases_panel.h"
 
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -29,19 +30,24 @@ BiasesPanel::BiasesPanel(QWidget* parent) : AbstractPanel(parent) {
     hint_label_->setProperty("class", "hint");
     outer->addWidget(hint_label_);
 
-    // No inner QScrollArea — the BiasesPanel is already hosted inside the
-    // Basic tab's outer scroll area, so an inner scroll would just produce
-    // a tiny viewport with its own scrollbar (the user explicitly asked to
-    // see all bias rows at once). Using a plain layout lets the outer scroll
-    // handle overflow naturally and gives every row its full height.
-    container_ = new QWidget(this);
-    rows_layout_ = new QVBoxLayout(container_);
-    rows_layout_->setContentsMargins(8, 8, 8, 8);
+    // The bias rows live in a titled group box (matching the ESP panel's
+    // Anti-Flicker / Trail Filter / ERC sections). No inner QScrollArea —
+    // the BiasesPanel is already hosted inside the Basic tab's outer scroll
+    // area, so an inner scroll would just produce a tiny viewport with its
+    // own scrollbar (the user explicitly asked to see all bias rows at
+    // once). A plain layout lets the outer scroll handle overflow naturally
+    // and gives every row its full height. Hidden until a camera with a
+    // bias facility is connected (the hint label covers the empty states).
+    group_ = new QGroupBox(tr("BIAS"), this);
+    rows_layout_ = new QVBoxLayout(group_);
+    // The group box border + title padding already inset the content; 4 px
+    // keeps the rows close to their former position inside the frame.
+    rows_layout_->setContentsMargins(4, 4, 4, 4);
     rows_layout_->setSpacing(8);
     rows_layout_->addStretch(1);
-    outer->addWidget(container_, 1);
-
-    container_->setEnabled(false);
+    outer->addWidget(group_, 1);
+    group_->setVisible(false);
+    group_->setEnabled(false);
 
     // Debounced apply for wheel/keyboard slider edits (see header, §六-U1).
     apply_debounce_.setSingleShot(true);
@@ -67,8 +73,10 @@ void BiasesPanel::on_camera_disconnected() {
     clear_rows();
     hint_label_->setText(tr("No live camera connected."));
     hint_label_->setProperty("class", "hint");
+    hint_label_->setVisible(true);
     restyle(hint_label_);
-    container_->setEnabled(false);
+    group_->setEnabled(false);
+    group_->setVisible(false);
     populated_ = false;
 }
 
@@ -131,8 +139,10 @@ void BiasesPanel::populate() {
     if (!biases) {
         hint_label_->setText(tr("Biases not supported by this camera."));
         hint_label_->setProperty("class", "hint");
+        hint_label_->setVisible(true);
         restyle(hint_label_);
-        container_->setEnabled(false);
+        group_->setEnabled(false);
+        group_->setVisible(false);
         populated_ = false;
         return;
     }
@@ -142,21 +152,26 @@ void BiasesPanel::populate() {
         all = biases->get_all_biases();
     } catch (const std::exception& e) {
         hint_label_->setText(tr("Failed to enumerate biases: %1").arg(QString::fromUtf8(e.what())));
-        container_->setEnabled(false);
+        hint_label_->setVisible(true);
+        group_->setEnabled(false);
+        group_->setVisible(false);
         populated_ = false;
         return;
     }
 
     if (all.empty()) {
         hint_label_->setText(tr("Camera reports no configurable biases."));
-        container_->setEnabled(false);
+        hint_label_->setVisible(true);
+        group_->setEnabled(false);
+        group_->setVisible(false);
         populated_ = false;
         return;
     }
 
-    hint_label_->setText(tr("BIAS"));
-    hint_label_->setProperty("class", "info");
-    restyle(hint_label_);
+    // The group box title carries the "BIAS" heading — hide the hint label
+    // so the text does not appear twice.
+    hint_label_->setVisible(false);
+    group_->setVisible(true);
 
     // Insert rows before the trailing stretch.
     for (const auto& [name, value] : all) {
@@ -164,7 +179,7 @@ void BiasesPanel::populate() {
         row.name = name;
         row.snapshot_value = value;
 
-        auto* row_widget = new QWidget(container_);
+        auto* row_widget = new QWidget(group_);
         row.row_widget = row_widget;
 
         // Resolve range + metadata.
@@ -207,6 +222,11 @@ void BiasesPanel::populate() {
         row.spin->setToolTip(description);
 
         auto* btn_reset = new QPushButton(tr("Reset"), row_widget);
+        // Compact padding (base.qss) trims the wide internal side border so
+        // the rows fit inside the group box frame without widening the
+        // sidebar — the width still follows the (smaller) size hint, so the
+        // text is never clipped.
+        btn_reset->setProperty("class", "compact");
 
         if (!modifiable) {
             row.slider->setEnabled(false);
@@ -269,7 +289,7 @@ void BiasesPanel::populate() {
         rows_.push_back(std::move(row));
     }
 
-    container_->setEnabled(true);
+    group_->setEnabled(true);
     populated_ = true;
 }
 

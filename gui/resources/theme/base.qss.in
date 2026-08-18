@@ -39,6 +39,9 @@ QPushButton:hover    { background-color: %bg-hover%; }
 QPushButton:pressed  { background-color: %bg-panel%; }
 QPushButton:focus    { outline: 2px solid %accent%; outline-offset: 1px; }
 QPushButton:disabled { color: %fg-muted%; background-color: %bg-panel%; }
+/* Narrower side padding for tight rows (e.g. the bias rows' Reset buttons):
+   the default 14 px makes the internal white border dominate small buttons. */
+QPushButton[class="compact"] { padding: 6px 9px; }
 
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     background-color: %bg-input%;

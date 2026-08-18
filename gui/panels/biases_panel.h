@@ -22,6 +22,7 @@
 class QSpinBox;
 class QSlider;
 class QLabel;
+class QGroupBox;
 
 namespace gui {
 
@@ -70,7 +71,7 @@ private:
     void apply_value(BiasRow& row, int value);
 
     QVBoxLayout* rows_layout_{nullptr};
-    QWidget* container_{nullptr};
+    QGroupBox* group_{nullptr};
     QLabel* hint_label_{nullptr};
 
     std::vector<BiasRow> rows_;
