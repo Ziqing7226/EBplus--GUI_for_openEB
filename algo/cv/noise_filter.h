@@ -16,8 +16,9 @@
 //                  sums neighbour age scores (1 - dt/tau) over a square
 //                  neighbourhood; passes when the score reaches threshold.
 //   Harmonic     — ✅ 移植自 jAER HarmonicFilter: a global driven damped
-//                  oscillator resonant at the mains frequency filters out
-//                  events near zero crossings of the oscillator.
+//                  oscillator resonant at DOUBLE the line frequency (line
+//                  doubling; ON/OFF activity peaks alternate at 2x line)
+//                  filters out events near zero crossings of the oscillator.
 //   Repetitious  — drops events recurring at a learned per-pixel ISI
 //                  (port of jAER RepetitiousFilter).
 //   SpatialBP    — center/surround time-surface differencing (port of jAER
@@ -702,7 +703,13 @@ private:
 
     // Harmonic (jAER HarmonicFilter) oscillator helpers -------------------
     void harm_recompute() {
-        const double f0 = static_cast<double>(harm_line_freq_hz_);
+        // jAER: "set by user to double line frequency" — mains-driven lamps
+        // flicker at 2x line (full-wave rectification / power ~ V^2), and the
+        // ON and OFF activity bursts alternate at that doubled rate; the
+        // oscillator crosses zero at those activity peaks only when resonant
+        // there. The GUI stores the LINE frequency (50/60); the resonance is
+        // doubled here.
+        const double f0 = 2.0 * static_cast<double>(harm_line_freq_hz_);
         constexpr double kTwoPi = 6.28318530717958647693;
         const double omega = (f0 > 0.0) ? kTwoPi * f0 : 1.0;
         const double tau = (f0 > 0.0) ? 1.0 / omega : 1.0;
@@ -778,7 +785,10 @@ private:
     Metavision::timestamp agep_tau_us_{10000};
     double agep_threshold_{5.0};  // jAER correlationThreshold (default 5, max 8)
     int agep_radius_{1};          // neighbourhood radius (1 = 3x3)
-    int harm_line_freq_hz_{50};   // jAER f0 默认 100（此处 50 = 市电频率，有意）
+    int harm_line_freq_hz_{50};   // 市电线频率（50/60）；振荡器共振频率在其
+                                  // 2 倍处（jAER "double line frequency"，见
+                                  // harm_recompute——倍频整流/V² 使灯光以 2×
+                                  // 线频闪烁，ON/OFF 活动峰也以 2× 线频交替）
     double harm_notch_q_{3.0};    // jAER quality factor Q
     double harm_threshold_{0.1};  // jAER threshold (fraction of power)
     int rep_ratio_shorter_{2};   // jAER RepetitiousFilter default
