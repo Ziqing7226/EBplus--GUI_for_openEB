@@ -469,29 +469,29 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     };
     static const PDef pdefs[] = {
         // STCF (mode 1)
-        {"preproc_filter_correlation_time_s", "STCF corr (s)", 'f', "0.005", "0.001", "0.1", 1},
+        {"preproc_filter_correlation_time_s", "STCF corr (s)", 'f', "0.025", "0.001", "0.1", 1},
         {"preproc_filter_min_neighbors", "STCF min nbr", 'i', "2", "1", "8", 1},
-        {"preproc_filter_require_polarity_match", "STCF pol match", 'b', "false", "", "", 1},
-        {"preproc_filter_allow_coincidence", "STCF coincide", 'b', "false", "", "", 1},
+        {"preproc_filter_require_polarity_match", "STCF pol match", 'b', "true", "", "", 1},
+        {"preproc_filter_allow_coincidence", "STCF coincide", 'b', "true", "", "", 1},
         // BAF (mode 0)
-        {"preproc_filter_baf_dt_us", "BAF dt (us)", 'i', "1000", "1000", "100000", 0},
+        {"preproc_filter_baf_dt_us", "BAF dt (us)", 'i', "25000", "1000", "100000", 0},
         {"preproc_filter_baf_subsample_by", "BAF subsample", 'i', "0", "0", "4", 0},
         // Refractory (mode 2)
         {"preproc_filter_refractory_us", "Refractory (us)", 'i', "1000", "100", "100000", 2},
         // DWF (mode 3)
-        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "1024", 3},
-        {"preproc_filter_dwf_dist_threshold", "DWF dist", 'i', "2", "1", "1024", 3},
-        {"preproc_filter_dwf_min_correlated", "DWF min corr", 'i', "2", "1", "8", 3},
-        {"preproc_filter_dwf_double_mode", "DWF double", 'b', "false", "", "", 3},
+        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "64", "1", "1024", 3},
+        {"preproc_filter_dwf_dist_threshold", "DWF dist", 'i', "5", "1", "1024", 3},
+        {"preproc_filter_dwf_min_correlated", "DWF min corr", 'i', "1", "1", "8", 3},
+        {"preproc_filter_dwf_double_mode", "DWF double", 'b', "true", "", "", 3},
         // AgePolarity (mode 4)
-        {"preproc_filter_agep_tau_us", "AgePol tau (us)", 'i', "3000", "1000", "100000", 4},
-        {"preproc_filter_age_threshold", "AgePol thresh", 'f', "2.0", "0.0", "8.0", 4},
-        {"preproc_filter_agep_radius", "AgePol radius", 'i', "2", "1", "5", 4},
+        {"preproc_filter_agep_tau_us", "AgePol tau (us)", 'i', "10000", "1000", "100000", 4},
+        {"preproc_filter_age_threshold", "AgePol thresh", 'f', "5.0", "0.0", "8.0", 4},
+        {"preproc_filter_agep_radius", "AgePol radius", 'i', "1", "1", "5", 4},
         // Harmonic (mode 5) — line_freq_hz is an enum (50 or 60 Hz), not an
         // arbitrary int. Use type 'e' so the UI presents a combo box and the
         // backend's penum definition (algo_bridge.cpp) is respected.
         {"preproc_filter_line_freq_hz", "Harm Hz", 'e', "50", "50", "60", 5},
-        {"preproc_filter_notch_q", "Harm Q", 'f', "5.0", "0.1", "100.0", 5},
+        {"preproc_filter_notch_q", "Harm Q", 'f', "3.0", "0.1", "100.0", 5},
         {"preproc_filter_harmonic_threshold", "Harm thresh", 'f', "0.1", "0.0", "1.0", 5},
         // Repetitious (mode 6). rep_period_us/rep_tolerance_us are omitted:
         // the algo stores them but never uses them (audit §7.3).
@@ -500,9 +500,9 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_rep_min_dt_to_store_us", "Rep min dt (us)", 'i', "1000", "0", "1000000", 6},
         {"preproc_filter_rep_averaging_samples", "Rep avg samples", 'i', "3", "1", "100", 6},
         // SpatialBP (mode 7)
-        {"preproc_filter_sbp_center_radius_px", "SBP center", 'i', "2", "1", "10", 7},
-        {"preproc_filter_sbp_surround_radius_px", "SBP surround", 'i', "10", "5", "30", 7},
-        {"preproc_filter_sbp_dt_surround_us", "SBP dt (us)", 'i', "10000", "100", "1000000", 7},
+        {"preproc_filter_sbp_center_radius_px", "SBP center", 'i', "0", "0", "10", 7},
+        {"preproc_filter_sbp_surround_radius_px", "SBP surround", 'i', "1", "1", "30", 7},
+        {"preproc_filter_sbp_dt_surround_us", "SBP dt (us)", 'i', "8000", "100", "1000000", 7},
         // KNoise (mode 8) — dv-processing KNoiseFilter port
         {"preproc_filter_knoise_dt_us", "KNoise dt (us)", 'i', "3000", "100", "100000", 8},
         // Cross-mode flags
@@ -605,6 +605,10 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     // main algorithm — preprocessing overlays on top of it.
     connect(preproc_filter_cb_, &QCheckBox::toggled, this, [this](bool on) {
         apply_global_preproc("preproc_filter_enabled", on ? "true" : "false");
+        // Make the panel the source of truth: without this push the backend
+        // keeps its built-in defaults for every row the user never touched,
+        // and those defaults had silently diverged from the displayed ones.
+        push_all_preproc_params();
         refresh_preproc_params();
     });
     connect(preproc_downsample_cb_, &QCheckBox::toggled, this, [this](bool on) {
@@ -633,6 +637,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int idx) {
                 apply_global_preproc("preproc_filter_mode", std::to_string(idx));
+                push_all_preproc_params();
                 refresh_preproc_params();
             });
 
@@ -660,6 +665,23 @@ void AlgorithmsPanel::refresh_preproc_params() {
         const bool visible = filter_on && (row.mode < 0 || row.mode == mode);
         if (row.label) row.label->setVisible(visible);
         if (row.field) row.field->setVisible(visible);
+    }
+}
+
+void AlgorithmsPanel::push_all_preproc_params() {
+    for (const auto& row : preproc_rows_) {
+        if (!row.field) continue;
+        std::string value;
+        if (auto* cmb = qobject_cast<QComboBox*>(row.field)) {
+            value = cmb->currentText().toStdString();
+        } else if (auto* sp = qobject_cast<QSpinBox*>(row.field)) {
+            value = std::to_string(sp->value());
+        } else if (auto* dsp = qobject_cast<QDoubleSpinBox*>(row.field)) {
+            value = std::to_string(dsp->value());
+        } else {
+            continue;
+        }
+        apply_global_preproc(row.key, value);
     }
 }
 
