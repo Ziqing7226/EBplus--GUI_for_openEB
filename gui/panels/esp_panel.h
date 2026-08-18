@@ -19,7 +19,6 @@ class QCheckBox;
 class QComboBox;
 class QSpinBox;
 class QDoubleSpinBox;
-class QLabel;
 class QGroupBox;
 
 namespace gui {
@@ -67,8 +66,6 @@ private:
     QGroupBox*    erc_group_{nullptr};
     QCheckBox*    erc_enable_{nullptr};
     QSpinBox*     erc_rate_{nullptr};
-
-    QLabel*       hint_label_{nullptr};
 };
 
 } // namespace gui

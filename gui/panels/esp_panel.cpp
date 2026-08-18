@@ -11,7 +11,6 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QLabel>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStyle>
@@ -40,11 +39,6 @@ EspPanel::EspPanel(QWidget* parent) : AbstractPanel(parent) {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(6);
-
-    hint_label_ = new QLabel(tr("Connect a live camera to enable ESP settings."), this);
-    hint_label_->setWordWrap(true);
-    hint_label_->setProperty("class", "hint");
-    outer->addWidget(hint_label_);
 
     // --- Anti-Flicker -----------------------------------------------------
     af_group_ = make_group(this, tr("Anti-Flicker"));
@@ -251,9 +245,6 @@ void EspPanel::on_camera_connected(CameraController* controller) {
 void EspPanel::on_camera_disconnected() {
     camera_ = nullptr;
     set_all_enabled(false);
-    hint_label_->setText(tr("Connect a live camera to enable ESP settings."));
-    hint_label_->setProperty("class", "hint");
-    restyle(hint_label_);
 }
 
 void EspPanel::populate() {
@@ -262,17 +253,6 @@ void EspPanel::populate() {
     populate_trail();
     populate_erc();
 
-    const bool any = camera_->anti_flicker_facility() ||
-                     camera_->trail_filter_facility() ||
-                     camera_->erc_facility();
-    if (any) {
-        hint_label_->setText(tr("ESP facilities loaded. Edits apply immediately."));
-        hint_label_->setProperty("class", "info");
-    } else {
-        hint_label_->setText(tr("No ESP facilities available on this camera."));
-        hint_label_->setProperty("class", "hint");
-    }
-    restyle(hint_label_);
     // Note: do NOT call set_all_enabled(true) here — each populate_* function
     // already enables its group if the facility exists and disables it if
     // not. Calling set_all_enabled(true) afterwards would override the
