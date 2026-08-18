@@ -1,15 +1,13 @@
-// gui/config/config_manager.h — JSON config serialization & presets (design §3.7).
+// gui/config/config_manager.h — JSON config serialization (design §3.7).
 //
 // Captures the live camera state (Biases, ROI, ESP, Trigger) into a JSON
-// document and restores it. Ships built-in presets (High Sensitivity, Low
-// Noise, Standard). Validates sensor generation compatibility on load.
+// document and restores it. Validates sensor generation compatibility on load.
 
 #ifndef GUI_CONFIG_CONFIG_MANAGER_H
 #define GUI_CONFIG_CONFIG_MANAGER_H
 
 #include <QObject>
 #include <QString>
-#include <QStringList>
 #include <QJsonObject>
 
 namespace gui {
@@ -29,11 +27,6 @@ public:
 
     bool save_to_file(CameraController* controller, const QString& path, QString& err) const;
     bool load_from_file(CameraController* controller, const QString& path, QString& err) const;
-
-    /// @brief Built-in preset names (localized display strings).
-    QStringList preset_names() const;
-    /// @brief Apply a built-in preset by index.
-    bool apply_preset(CameraController* controller, int index, QString& err) const;
 
     /// @brief Validate the JSON against the connected sensor.
     QString validate(const QJsonObject& obj, CameraController* controller) const;

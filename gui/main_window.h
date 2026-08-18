@@ -106,9 +106,8 @@ private slots:
     void on_record_stop();
     void on_record_elapsed(std::chrono::seconds s);
 
-    // Phase 4 — export / presets.
+    // Phase 4 — export.
     void on_export_dialog();
-    void on_apply_preset(int index);
 
     // Phase 9 — calibration.
     void on_intrinsic_wizard();

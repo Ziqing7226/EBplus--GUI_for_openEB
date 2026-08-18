@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QStringList>
 #include <QtDebug>
 
 #include <map>
@@ -332,51 +333,6 @@ bool ConfigManager::load_from_file(CameraController* controller, const QString& 
         return false;
     }
     return apply(controller, doc.object(), err);
-}
-
-// ---------------------------------------------------------------------------
-// Presets
-// ---------------------------------------------------------------------------
-
-QStringList ConfigManager::preset_names() const {
-    return {tr("Standard"), tr("High Sensitivity"), tr("Low Noise")};
-}
-
-bool ConfigManager::apply_preset(CameraController* controller, int index, QString& err) const {
-    if (!controller) {
-        err = tr("No camera connected.");
-        return false;
-    }
-    auto* b = controller->biases_facility();
-    if (!b) {
-        err = tr("Biases not supported by this sensor.");
-        return false;
-    }
-    // Presets are heuristic guidance: standard = defaults, high-sensitivity =
-    // lower diff thresholds, low-noise = higher diff thresholds.
-    QJsonObject obj = capture(controller);
-    QJsonObject biases = obj.value("biases").toObject();
-    int missing = 0;
-    auto adjust = [&biases, &missing](const QString& key, int delta) {
-        if (!biases.contains(key)) { ++missing; return; }
-        QJsonObject e = biases.value(key).toObject();
-        // Value is stored as a JSON int (capture_biases writes kv.second).
-        int v = e.value("value").toInt();
-        e["value"] = v + delta;
-        biases[key] = e;
-    };
-    switch (index) {
-        case 0: break; // Standard = no change
-        case 1: adjust("bias_diff_on", -10); adjust("bias_diff_off", -10); break;
-        case 2: adjust("bias_diff_on", +15); adjust("bias_diff_off", +15); break;
-        default: err = tr("Unknown preset."); return false;
-    }
-    if (missing > 0) {
-        err = tr("Sensor does not expose bias_diff_on/bias_diff_off; preset has no effect.");
-        return false;
-    }
-    obj["biases"] = biases;
-    return apply(controller, obj, err);
 }
 
 QString ConfigManager::validate(const QJsonObject& obj, CameraController* controller) const {

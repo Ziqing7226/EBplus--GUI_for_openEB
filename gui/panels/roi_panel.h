@@ -2,8 +2,7 @@
 // debug D-6).
 //
 // Reduced to a single "Enable ROI" checkbox + "ROI Settings..." button (the
-// rect/mode/drag settings live in the modal UnifiedRoiDialog) plus the bias
-// presets (unrelated to the ROI rect — they only program biases). The ROI
+// rect/mode/drag settings live in the modal UnifiedRoiDialog). The ROI
 // works on both live cameras (hardware I_ROI) and file playback (software
 // crop); all writes go through CameraController::set_unified_roi.
 
@@ -15,7 +14,6 @@
 #include "abstract_panel.h"
 
 class QCheckBox;
-class QComboBox;
 class QPushButton;
 
 namespace gui {
@@ -40,12 +38,6 @@ public slots:
     /// QSignalBlocker — does not re-emit roi_enable_toggled).
     void set_roi_enabled(bool enabled);
 
-    /// @brief Populates the preset combo box (moved from Camera menu — §14.5).
-    void set_preset_names(const QStringList& names);
-
-    /// @brief Enables/disables the preset controls.
-    void set_presets_enabled(bool enabled);
-
 signals:
     /// @brief Emitted when the USER toggles "Enable ROI". MainWindow applies
     /// it via CameraController::set_unified_roi (and opens the settings
@@ -55,17 +47,9 @@ signals:
     /// @brief Emitted when the "ROI Settings..." button is clicked.
     void roi_settings_requested();
 
-    /// @brief Emitted when the user clicks "Apply" on a preset (moved from
-    /// Camera menu). @p index is the preset index.
-    void preset_apply_requested(int index);
-
 private:
     QCheckBox*    enable_cb_{nullptr};
     QPushButton*  settings_btn_{nullptr};
-
-    // Bias presets (moved from Camera menu, §14.5) — unrelated to the ROI rect.
-    QComboBox*    preset_combo_{nullptr};
-    QPushButton*  preset_apply_btn_{nullptr};
 };
 
 } // namespace gui

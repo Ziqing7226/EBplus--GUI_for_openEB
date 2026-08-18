@@ -182,10 +182,6 @@ MainWindow::MainWindow(QWidget* parent)
     build_status_bar();
     wire_signals();
 
-    // Populate the ROI panel's preset combo from the config manager (§14.5 —
-    // presets moved from the Camera menu to the sidebar ROI panel).
-    settings_->roi_panel()->set_preset_names(config_.preset_names());
-
     build_title_bar_controls();
 
     // Edge/corner resize handles — since the window is frameless, the WM
@@ -505,8 +501,8 @@ void MainWindow::build_menus() {
     auto* m_theme = mb->addMenu(tr("&Theme"));
     theme_.build_menu(m_theme);
 
-    // The Camera menu has been removed — ROI Drag Mode and Presets moved
-    // to the sidebar's ROI panel (Hardware section) per §14.5.
+    // The Camera menu has been removed — ROI Drag Mode lives in the
+    // sidebar's ROI panel (Hardware section) per §14.5.
     // Connect/Disconnect/Refresh already live in the DevicesPanel.
 
     // Preprocess menu and Frame Mode menu have been removed — all
@@ -780,8 +776,6 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(live);
         a_save_biases_->setEnabled(live);
         a_load_biases_->setEnabled(live);
-        // Presets moved to the sidebar ROI panel (§14.5).
-        settings_->roi_panel()->set_presets_enabled(live);
         // Recording + Export moved to the sidebar File Tools panel (§14.5).
         settings_->file_tools_panel()->set_record_enabled(live);
         settings_->file_tools_panel()->set_stop_enabled(false);
@@ -855,7 +849,7 @@ void MainWindow::wire_signals() {
         // BEFORE start() completes, so HAL facilities (biases, ROI, trigger,
         // ESP) may not be fully available at that point. Calling again here
         // ensures panels see the live camera's facilities — matching the
-        // pattern used by on_load_config / on_apply_preset. Safe to call
+        // pattern used by on_load_config. Safe to call
         // twice: each panel's populate() clears and rebuilds.
         settings_->biases_panel()->on_camera_connected(&camera_);
         settings_->roi_panel()->on_camera_connected(&camera_);
@@ -882,8 +876,6 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(false);
         a_save_biases_->setEnabled(false);
         a_load_biases_->setEnabled(false);
-        // Presets moved to the sidebar ROI panel (§14.5).
-        settings_->roi_panel()->set_presets_enabled(false);
         // Recording + Export moved to the sidebar File Tools panel (§14.5).
         settings_->file_tools_panel()->set_record_enabled(false);
         settings_->file_tools_panel()->set_stop_enabled(false);
@@ -1111,9 +1103,6 @@ void MainWindow::wire_signals() {
             &MainWindow::on_roi_enable_toggled);
     connect(roi, &RoiPanel::roi_settings_requested, this,
             &MainWindow::open_roi_settings_dialog);
-
-    // Presets moved from Camera menu to ROI panel (§14.5).
-    connect(roi, &RoiPanel::preset_apply_requested, this, &MainWindow::on_apply_preset);
 
     // Recording + Export moved from File menu/toolbar to File Tools panel (§14.5).
     auto* ft = settings_->file_tools_panel();
@@ -1611,20 +1600,6 @@ void MainWindow::on_export_dialog() {
     }
 }
 
-void MainWindow::on_apply_preset(int index) {
-    QString err;
-    if (!config_.apply_preset(&camera_, index, err)) {
-        QMessageBox::warning(this, tr("Apply preset"), err);
-        return;
-    }
-    // Refresh Phase 2 panels.
-    settings_->biases_panel()->on_camera_connected(&camera_);
-    settings_->roi_panel()->on_camera_connected(&camera_);
-    settings_->esp_panel()->on_camera_connected(&camera_);
-    settings_->trigger_panel()->on_camera_connected(&camera_);
-    statusBar()->showMessage(tr("Preset applied."), 3000);
-}
-
 // ---------------------------------------------------------------------------
 // Algorithm event/result pipeline (design §3.8, §5.6.1)
 // ---------------------------------------------------------------------------
@@ -2088,7 +2063,7 @@ void MainWindow::on_about() {
            "<p>Qt 6 + OpenEB 5.2.0.</p>"
            "<p>Camera discovery, real-time OpenGL event display, statistics, "
            "Bias / ROI / ESP / Trigger panels, recording & playback, HDF5 / AVI "
-           "export, JSON config with presets, OpenEB filter-chain preprocessing, "
+           "export, JSON config, OpenEB filter-chain preprocessing, "
            "file conversion tools, calibration wizard, "
            "30 self-developed CV/analytics algorithms with overlay/replace/"
            "standalone display modes, XYT 3D point cloud, and more.</p>"));

@@ -3,7 +3,6 @@
 #include "roi_panel.h"
 
 #include <QCheckBox>
-#include <QComboBox>
 #include <QFormLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -37,29 +36,15 @@ RoiPanel::RoiPanel(QWidget* parent) : AbstractPanel(parent) {
     hint->setProperty("class", "hint");
     form->addRow(QString(), hint);
 
-    // --- Bias presets (moved from Camera menu, §14.5; unrelated to the rect) ---
-    form->addRow(new QLabel(QString(), this));  // spacer
-    preset_combo_ = new QComboBox(this);
-    preset_combo_->setEnabled(false);
-    preset_apply_btn_ = new QPushButton(tr("Apply Preset"), this);
-    preset_apply_btn_->setEnabled(false);
-    form->addRow(tr("Preset"), preset_combo_);
-    form->addRow(QString(), preset_apply_btn_);
-
     connect(enable_cb_, &QCheckBox::toggled, this,
             [this](bool on) { emit roi_enable_toggled(on); });
     connect(settings_btn_, &QPushButton::clicked, this,
             [this]() { emit roi_settings_requested(); });
-    connect(preset_apply_btn_, &QPushButton::clicked, this, [this]() {
-        const int idx = preset_combo_->currentIndex();
-        if (idx >= 0) emit preset_apply_requested(idx);
-    });
 }
 
 void RoiPanel::on_camera_connected(CameraController* /*controller*/) {
     // Nothing to populate: the ROI state lives in CameraController and the
-    // checkbox is synced via set_roi_enabled (roi_state_changed). Presets
-    // are enabled by MainWindow (live sources only).
+    // checkbox is synced via set_roi_enabled (roi_state_changed).
 }
 
 void RoiPanel::on_camera_disconnected() {
@@ -70,16 +55,6 @@ void RoiPanel::on_camera_disconnected() {
 void RoiPanel::set_roi_enabled(bool enabled) {
     QSignalBlocker b(enable_cb_);
     enable_cb_->setChecked(enabled);
-}
-
-void RoiPanel::set_preset_names(const QStringList& names) {
-    preset_combo_->clear();
-    preset_combo_->addItems(names);
-}
-
-void RoiPanel::set_presets_enabled(bool enabled) {
-    preset_combo_->setEnabled(enabled);
-    preset_apply_btn_->setEnabled(enabled);
 }
 
 } // namespace gui
