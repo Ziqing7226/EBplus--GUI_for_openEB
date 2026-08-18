@@ -102,8 +102,8 @@ DisplayPanel::DisplayPanel(QWidget* parent) : AbstractPanel(parent) {
         "Integration render decayed intensities."));
     form->addRow(tr("Frame mode"), frame_mode_combo_);
 
-    // Decay time (µs) for TimeDecay / EventsIntegration. Enabled only for
-    // those two modes.
+    // Decay time (µs) for TimeDecay / EventsIntegration. The row is shown
+    // only for those two modes (update_decay_visibility).
     decay_spin_ = new QSpinBox(this);
     decay_spin_->setRange(1000, 10000000);
     decay_spin_->setSingleStep(1000);
@@ -112,8 +112,8 @@ DisplayPanel::DisplayPanel(QWidget* parent) : AbstractPanel(parent) {
     decay_spin_->setToolTip(tr("Characteristic decay time for the Time Decay "
         "and Events Integration frame modes. Longer values keep older events "
         "visible for longer."));
-    decay_spin_->setEnabled(false);
     form->addRow(tr("Decay time"), decay_spin_);
+    form_ = form;
 
     // Wire slider <-> spinbox with exponential mapping.
     // Block the peer widget to prevent feedback loops: the round-trip
@@ -151,14 +151,16 @@ DisplayPanel::DisplayPanel(QWidget* parent) : AbstractPanel(parent) {
     connect(palette_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &DisplayPanel::color_palette_changed);
 
-    // Frame mode -> signal + decay-time enablement.
+    // Frame mode -> signal + decay-time row visibility.
     connect(frame_mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) {
-                update_decay_enabled();
+                update_decay_visibility();
                 emit frame_mode_changed(frame_mode());
             });
     connect(decay_spin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
             [this](int v) { emit decay_time_changed_us(v); });
+
+    update_decay_visibility();
 }
 
 int DisplayPanel::accumulation_time_us() const {
@@ -206,20 +208,23 @@ void DisplayPanel::set_frame_mode(FrameMode mode) {
     QSignalBlocker b(frame_mode_combo_);
     const int idx = frame_mode_combo_->findData(static_cast<int>(mode));
     if (idx >= 0) frame_mode_combo_->setCurrentIndex(idx);
-    update_decay_enabled();
+    update_decay_visibility();
 }
 
 void DisplayPanel::set_decay_time_us(int us) {
     if (!decay_spin_) return;
     QSignalBlocker b(decay_spin_);
     decay_spin_->setValue(us);
+    update_decay_visibility();
 }
 
-void DisplayPanel::update_decay_enabled() {
-    if (!decay_spin_ || !frame_mode_combo_) return;
+void DisplayPanel::update_decay_visibility() {
+    if (!decay_spin_ || !frame_mode_combo_ || !form_) return;
     const FrameMode m = frame_mode();
-    decay_spin_->setEnabled(m == FrameMode::TimeDecay ||
-                            m == FrameMode::EventsIntegration);
+    const bool uses_decay = m == FrameMode::TimeDecay ||
+                            m == FrameMode::EventsIntegration;
+    form_->setRowVisible(decay_spin_, uses_decay);
+    decay_spin_->setEnabled(uses_decay);
 }
 
 } // namespace gui

@@ -16,6 +16,7 @@
 #include "abstract_panel.h"
 #include "app/frame_mode_renderer.h"  // gui::FrameMode
 
+class QFormLayout;
 class QSlider;
 class QSpinBox;
 class QComboBox;
@@ -52,7 +53,7 @@ public:
     /// @brief Sets the frame-mode combo without emitting signals.
     void set_frame_mode(FrameMode mode);
 
-    /// @brief Sets the decay-time spinbox (and its enabled state) without
+    /// @brief Sets the decay-time spinbox (and its row visibility) without
     /// emitting signals.
     void set_decay_time_us(int us);
 
@@ -65,10 +66,11 @@ signals:
     void decay_time_changed_us(int us);
 
 private:
-    /// @brief Enables/disables the decay-time control for the current mode
-    /// (only TimeDecay and EventsIntegration use it).
-    void update_decay_enabled();
+    /// @brief Shows/hides the decay-time row for the current mode (only
+    /// TimeDecay and EventsIntegration use it).
+    void update_decay_visibility();
 
+    QFormLayout* form_{nullptr};
     QSlider* accum_slider_{nullptr};
     QSpinBox* accum_spin_{nullptr};
     QSpinBox* fps_spin_{nullptr};
