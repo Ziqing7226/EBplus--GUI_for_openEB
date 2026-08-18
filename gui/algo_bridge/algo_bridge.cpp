@@ -353,7 +353,7 @@ std::vector<AlgoParamSpec> preproc_params() {
     return {
         pbool("preproc_filter_enabled", "Preproc: noise filter", "false"),
         pbool("preproc_downsample", "Preproc: 1/4 downsample", "false"),
-        penum("preproc_filter_mode", "Preproc: filter mode", "1",
+        penum("preproc_filter_mode", "Preproc: filter mode", "8",
               {"0=BAF", "1=STCF", "2=Refractory", "3=DWF",
                "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP",
                "8=KNoise"}),
@@ -366,7 +366,7 @@ std::vector<AlgoParamSpec> preproc_params() {
         pint("preproc_filter_baf_dt_us", "Preproc BAF dt (us)", "25000", "1000", "100000"),
         pint("preproc_filter_baf_subsample_by", "Preproc BAF subsample", "0", "0", "4"),
         // Refractory (mode 2)
-        pint("preproc_filter_refractory_us", "Preproc Refractory (us)", "1000", "100", "100000"),
+        pint("preproc_filter_refractory_us", "Preproc Refractory (us)", "10000", "100", "100000"),
         // DWF (mode 3)
         // dwf_window_length upper bound raised to 1024 (audit §5-B3): the
         // jAER/design working point is 512, unreachable with the old max 100.
@@ -402,9 +402,10 @@ std::vector<AlgoParamSpec> preproc_params() {
         pint("preproc_filter_sbp_center_radius_px", "Preproc SBP center", "0", "0", "10"),
         pint("preproc_filter_sbp_surround_radius_px", "Preproc SBP surround", "1", "1", "30"),
         pint("preproc_filter_sbp_dt_surround_us", "Preproc SBP dt (us)", "8000", "100", "1000000"),
-        // KNoise (mode 8) — dv-processing KNoiseFilter port; dt calibrated on
-        // algo/tests/sparklers.raw (see algo/cv/noise_filter.h).
-        pint("preproc_filter_knoise_dt_us", "Preproc KNoise dt (us)", "3000", "100", "100000"),
+        // KNoise (mode 8) — dv-processing KNoiseFilter port; dt aligned to
+        // the dv default 2000 us (keep-rate on sparklers.raw is flat in dt,
+        // see algo/cv/noise_filter.h).
+        pint("preproc_filter_knoise_dt_us", "Preproc KNoise dt (us)", "2000", "100", "100000"),
         // Cross-mode flags
         pbool("preproc_filter_filter_hot_pixels", "Preproc filter hot px", "false"),
         pbool("preproc_filter_adaptive_correlation_time", "Preproc adaptive corr", "false"),

@@ -772,7 +772,10 @@ private:
     int stcf_min_neighbors_{2};
     bool stcf_require_polarity_match_{true};
     bool stcf_allow_coincidence_{true}; // jAER: no coincidence exclusion
-    Metavision::timestamp refractory_period_us_{1000};
+    // jAER reuses the base-class 25 ms correlationTimeS as the refractory
+    // period; 10 ms keeps the same order (pixel-physical refractory is far
+    // shorter) while dropping less real signal at this sensor's rates.
+    Metavision::timestamp refractory_period_us_{10000};
     int dwf_wlen_{64};           // jAER wLen (total window length, events);
                                  // 512 (jAER pref default) costs an O(wLen)
                                  // scan per noise event (~474 ns at 512) and
@@ -805,11 +808,11 @@ private:
     /// the ring cells, so the per-event loop skips no center cells and runs
     /// no center-membership branches.
     std::vector<std::array<std::int16_t, 2>> sbp_offsets_;
-    // dv default is 2000 us, tuned on DAVIS240; the value below is calibrated
-    // on algo/tests/sparklers.raw: keep-rate vs dt is 0.718@500us, 0.720@1ms,
-    // 0.721@2-3ms, plateau 0.722 from ~5ms — the elbow is below 1 ms, so
-    // 3000 us sits on the plateau without an over-wide correlation window.
-    Metavision::timestamp knoise_dt_us_{3000}; // dv KNoiseFilter timeDelta
+    // dv default is 2000 us (tuned on DAVIS240) — aligned by decision.
+    // For reference, the keep-rate measured on algo/tests/sparklers.raw is
+    // nearly flat in dt (0.718@500us .. 0.722@5ms), so the alignment costs
+    // nothing there.
+    Metavision::timestamp knoise_dt_us_{2000}; // dv KNoiseFilter timeDelta
 
     bool filter_hot_pixels_{false};
     bool adaptive_correlation_time_{false};

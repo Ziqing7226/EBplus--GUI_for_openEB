@@ -172,7 +172,7 @@ INSTANTIATE_TEST_SUITE_P(AllModes, NoiseFilterRawTest,
 TEST_F(RawAlgoTest, NoiseFilterKNoiseKeepRate) {
     const auto& s = stream();
     NoiseFilter f(s.width(), s.height(), NoiseFilter::Mode::KNoise);
-    EXPECT_EQ(f.knoise_dt_us(), 3000); // calibrated default
+    EXPECT_EQ(f.knoise_dt_us(), 2000); // dv-aligned default
     std::size_t total_kept = 0;
     std::size_t total_in = 0;
     for (const auto& batch : s.batches(kBatchWindowUs)) {

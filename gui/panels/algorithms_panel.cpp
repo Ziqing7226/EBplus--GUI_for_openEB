@@ -429,7 +429,8 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_cb_->setChecked(false);
     form->addRow(preproc_filter_cb_);
 
-    // Filter mode (9 modes, default STCF=1).
+    // Filter mode (9 modes; default KNoise=8 — the O(W+H)-memory,
+    // fixed-cost filter, and the backend/registry default).
     preproc_filter_mode_combo_ = new QComboBox(gb);
     preproc_filter_mode_combo_->addItem("0=BAF");
     preproc_filter_mode_combo_->addItem("1=STCF");
@@ -440,7 +441,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_mode_combo_->addItem("6=Repetitious");
     preproc_filter_mode_combo_->addItem("7=SpatialBP");
     preproc_filter_mode_combo_->addItem("8=KNoise");
-    preproc_filter_mode_combo_->setCurrentIndex(1);  // STCF
+    preproc_filter_mode_combo_->setCurrentIndex(8);  // KNoise
     form->addRow(tr("Filter mode"), preproc_filter_mode_combo_);
 
     // Mode-specific parameter rows (BUG-3 fix). All 9 modes' params are
@@ -477,7 +478,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_baf_dt_us", "BAF dt (us)", 'i', "25000", "1000", "100000", 0},
         {"preproc_filter_baf_subsample_by", "BAF subsample", 'i', "0", "0", "4", 0},
         // Refractory (mode 2)
-        {"preproc_filter_refractory_us", "Refractory (us)", 'i', "1000", "100", "100000", 2},
+        {"preproc_filter_refractory_us", "Refractory (us)", 'i', "10000", "100", "100000", 2},
         // DWF (mode 3)
         {"preproc_filter_dwf_window_length", "DWF win len", 'i', "64", "1", "1024", 3},
         {"preproc_filter_dwf_dist_threshold", "DWF dist", 'i', "5", "1", "1024", 3},
@@ -504,7 +505,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_sbp_surround_radius_px", "SBP surround", 'i', "1", "1", "30", 7},
         {"preproc_filter_sbp_dt_surround_us", "SBP dt (us)", 'i', "8000", "100", "1000000", 7},
         // KNoise (mode 8) — dv-processing KNoiseFilter port
-        {"preproc_filter_knoise_dt_us", "KNoise dt (us)", 'i', "3000", "100", "100000", 8},
+        {"preproc_filter_knoise_dt_us", "KNoise dt (us)", 'i', "2000", "100", "100000", 8},
         // Cross-mode flags
         {"preproc_filter_filter_hot_pixels", "Filter hot px", 'b', "false", "", "", -1},
         {"preproc_filter_adaptive_correlation_time", "Adaptive corr", 'b', "false", "", "", -1},
@@ -641,7 +642,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
                 refresh_preproc_params();
             });
 
-    // Show the rows matching the default mode (STCF=1).
+    // Show the rows matching the default mode (KNoise=8).
     refresh_preproc_params();
 
     // Forward the default undistort path ONCE so the default actually works:

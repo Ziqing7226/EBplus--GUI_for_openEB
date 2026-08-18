@@ -170,7 +170,7 @@ struct Preprocessor {
     bool downsample_enabled_{false};
     bool halve_coords_{false};
     int filter_w_{0}, filter_h_{0};
-    gui_algo::NoiseFilter::Mode filter_mode_{gui_algo::NoiseFilter::Mode::STCF};
+    gui_algo::NoiseFilter::Mode filter_mode_{gui_algo::NoiseFilter::Mode::KNoise};
     std::unique_ptr<gui_algo::NoiseFilter> filter_;
     std::unordered_map<std::string, std::string> filter_params_;
     std::vector<gui_algo::Event> buf_;
