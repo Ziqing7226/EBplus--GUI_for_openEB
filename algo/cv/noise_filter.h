@@ -89,6 +89,7 @@ public:
         dwf_init();
         harm_recompute();
         knoise_init();
+        sbp_rebuild_offsets();
     }
 
     // Mode + common options ------------------------------------------------
@@ -123,7 +124,7 @@ public:
 
     // DWF (✅ 移植自 jAER DoubleWindowFilter) -------------------------------
     void set_dwf_window_length(int v) {
-        const int nv = clamp_i(v, 2, 4096);
+        const int nv = clamp_i(v, 1, 4096);
         if (nv != dwf_wlen_) { dwf_wlen_ = nv; dwf_init(); }
     }
     void set_dwf_dist_threshold(int v) { dwf_dis_thr_ = clamp_i(v, 1, 1024); }
@@ -169,8 +170,25 @@ public:
     int min_dt_to_store_us() const { return rep_min_dt_to_store_; }
 
     // SpatialBP (jAER port) ------------------------------------------------
-    void set_center_radius_px(int v) { sbp_center_ = clamp_i(v, 1, 10); }
-    void set_surround_radius_px(int v) { sbp_surround_ = clamp_i(v, 5, 30); }
+    // jAER clips center to [0, surround-1] and surround to >= center+1 so a
+    // surround ring always exists; a degenerate surround <= center would
+    // splat nothing and the filter would pass every event.
+    void set_center_radius_px(int v) {
+        int c = clamp_i(v, 0, 10);
+        if (c >= sbp_surround_) c = sbp_surround_ - 1;
+        if (c != sbp_center_) {
+            sbp_center_ = c;
+            sbp_rebuild_offsets();
+        }
+    }
+    void set_surround_radius_px(int v) {
+        int s = clamp_i(v, 1, 30);
+        if (s < sbp_center_ + 1) s = sbp_center_ + 1;
+        if (s != sbp_surround_) {
+            sbp_surround_ = s;
+            sbp_rebuild_offsets();
+        }
+    }
     void set_dt_surround_us(int v) { sbp_dt_surround_us_ = clamp_i(v, 100, 1000000); }
     int center_radius_px() const { return sbp_center_; }
     int surround_radius_px() const { return sbp_surround_; }
@@ -529,27 +547,38 @@ private:
 
     // Port of jAER SpatialBandpassFilter: maintain a dedicated surround
     // timestamp map; pass when (e.t - surroundTs[x][y]) > dt_surround_us,
-    // then splat e.t to the square surround ring on every event.
+    // then splat e.t to the surround ring on every event (pass or drop —
+    // jAER's writeSurround also runs unconditionally). The ring cells are a
+    // precomputed offset list (jAER computeOffsets), so the splat touches
+    // only ring cells instead of iterating the full (2sr+1)^2 square and
+    // branch-skipping the center.
     bool spatialbp_pass(const Event& e) {
         const std::size_t idx = idx_of(e.x, e.y);
         const Metavision::timestamp st = surround_ts_[idx];
         const bool pass = (st == kSentinel) ||
                           (e.t - st > thr(sbp_dt_surround_us_));
-        const int sr = sbp_surround_;
-        const int cr = sbp_center_;
-        for (int dy = -sr; dy <= sr; ++dy) {
-            const int ny = e.y + dy;
+        for (const auto& off : sbp_offsets_) {
+            const int nx = e.x + off[0];
+            if (nx < 0 || nx >= width_) continue;
+            const int ny = e.y + off[1];
             if (ny < 0 || ny >= height_) continue;
-            for (int dx = -sr; dx <= sr; ++dx) {
-                if (dx == 0 && dy == 0) continue;
-                // Skip the square center region; splat only the surround ring.
-                if (dx >= -cr && dx <= cr && dy >= -cr && dy <= cr) continue;
-                const int nx = e.x + dx;
-                if (nx < 0 || nx >= width_) continue;
-                surround_ts_[idx_of(nx, ny)] = e.t;
-            }
+            surround_ts_[idx_of(nx, ny)] = e.t;
         }
         return pass;
+    }
+
+    void sbp_rebuild_offsets() {
+        sbp_offsets_.clear();
+        for (int dy = -sbp_surround_; dy <= sbp_surround_; ++dy) {
+            for (int dx = -sbp_surround_; dx <= sbp_surround_; ++dx) {
+                if (dx >= -sbp_center_ && dx <= sbp_center_ &&
+                    dy >= -sbp_center_ && dy <= sbp_center_) {
+                    continue;  // center region is not surround
+                }
+                sbp_offsets_.push_back({static_cast<std::int16_t>(dx),
+                                        static_cast<std::int16_t>(dy)});
+            }
+        }
     }
 
     // ✅ 移植自 dv-processing KNoiseFilter (Khodamoradi & Kastner 2021,
@@ -737,7 +766,12 @@ private:
     bool stcf_require_polarity_match_{true};
     bool stcf_allow_coincidence_{true}; // jAER: no coincidence exclusion
     Metavision::timestamp refractory_period_us_{1000};
-    int dwf_wlen_{512};           // jAER wLen (total window length, events)
+    int dwf_wlen_{64};           // jAER wLen (total window length, events);
+                                 // 512 (jAER pref default) costs an O(wLen)
+                                 // scan per noise event (~474 ns at 512) and
+                                 // saturates the SDK callback thread on this
+                                 // sensor's event rates — 64 keeps meaningful
+                                 // history at ~the STCF default's per-event cost
     int dwf_dis_thr_{5};          // jAER disThr (L1 distance threshold)
     int dwf_min_corr_{1};         // jAER numMustBeCorrelated
     bool dwf_double_mode_{true};  // jAER useDoubleMode
@@ -751,9 +785,16 @@ private:
     int rep_ratio_longer_{2};    // jAER RepetitiousFilter default
     int rep_averaging_samples_{3}; // jAER averagingSamples default
     int rep_min_dt_to_store_{1000};  // jAER minDtToStore default (us)
-    int sbp_center_{2};
-    int sbp_surround_{10};
+    int sbp_center_{0};          // jAER centerRadius default
+    int sbp_surround_{1};        // jAER surroundRadius default. The previous
+                                 // defaults (center 2 / surround 10) splatted
+                                 // 416 cells per event — 52x jAER's 8 — and
+                                 // capped the filter at ~2.4 Mev/s/core.
     Metavision::timestamp sbp_dt_surround_us_{8000}; // jAER dtSurround default
+    /// Precomputed surround-ring splat offsets (jAER computeOffsets): only
+    /// the ring cells, so the per-event loop skips no center cells and runs
+    /// no center-membership branches.
+    std::vector<std::array<std::int16_t, 2>> sbp_offsets_;
     // dv default is 2000 us, tuned on DAVIS240; the value below is calibrated
     // on algo/tests/sparklers.raw: keep-rate vs dt is 0.718@500us, 0.720@1ms,
     // 0.721@2-3ms, plateau 0.722 from ~5ms — the elbow is below 1 ms, so

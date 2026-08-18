@@ -358,29 +358,32 @@ std::vector<AlgoParamSpec> preproc_params() {
                "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP",
                "8=KNoise"}),
         // STCF (mode 1)
-        pfloat("preproc_filter_correlation_time_s", "Preproc STCF corr (s)", "0.005", "0.001", "0.1"),
+        pfloat("preproc_filter_correlation_time_s", "Preproc STCF corr (s)", "0.025", "0.001", "0.1"),
         pint("preproc_filter_min_neighbors", "Preproc STCF min nbr", "2", "1", "8"),
-        pbool("preproc_filter_require_polarity_match", "Preproc STCF pol match", "false"),
-        pbool("preproc_filter_allow_coincidence", "Preproc STCF coincide", "false"),
+        pbool("preproc_filter_require_polarity_match", "Preproc STCF pol match", "true"),
+        pbool("preproc_filter_allow_coincidence", "Preproc STCF coincide", "true"),
         // BAF (mode 0)
-        pint("preproc_filter_baf_dt_us", "Preproc BAF dt (us)", "1000", "1000", "100000"),
+        pint("preproc_filter_baf_dt_us", "Preproc BAF dt (us)", "25000", "1000", "100000"),
         pint("preproc_filter_baf_subsample_by", "Preproc BAF subsample", "0", "0", "4"),
         // Refractory (mode 2)
         pint("preproc_filter_refractory_us", "Preproc Refractory (us)", "1000", "100", "100000"),
         // DWF (mode 3)
         // dwf_window_length upper bound raised to 1024 (audit §5-B3): the
         // jAER/design working point is 512, unreachable with the old max 100.
-        pint("preproc_filter_dwf_window_length", "Preproc DWF win len", "2", "1", "1024"),
-        pint("preproc_filter_dwf_dist_threshold", "Preproc DWF dist", "2", "1", "1024"),
-        pint("preproc_filter_dwf_min_correlated", "Preproc DWF min corr", "2", "1", "8"),
-        pbool("preproc_filter_dwf_double_mode", "Preproc DWF double", "false"),
+        // Defaults mirror the NoiseFilter member defaults (win len 64: an
+        // O(wLen) scan per noise event makes 512 too slow at this sensor's
+        // event rates — see noise_filter.h).
+        pint("preproc_filter_dwf_window_length", "Preproc DWF win len", "64", "1", "1024"),
+        pint("preproc_filter_dwf_dist_threshold", "Preproc DWF dist", "5", "1", "1024"),
+        pint("preproc_filter_dwf_min_correlated", "Preproc DWF min corr", "1", "1", "8"),
+        pbool("preproc_filter_dwf_double_mode", "Preproc DWF double", "true"),
         // AgePolarity (mode 4)
-        pint("preproc_filter_agep_tau_us", "Preproc AgePol tau (us)", "3000", "1000", "100000"),
-        pfloat("preproc_filter_age_threshold", "Preproc AgePol thresh", "2.0", "0.0", "8.0"),
-        pint("preproc_filter_agep_radius", "Preproc AgePol radius", "2", "1", "5"),
+        pint("preproc_filter_agep_tau_us", "Preproc AgePol tau (us)", "10000", "1000", "100000"),
+        pfloat("preproc_filter_age_threshold", "Preproc AgePol thresh", "5.0", "0.0", "8.0"),
+        pint("preproc_filter_agep_radius", "Preproc AgePol radius", "1", "1", "5"),
         // Harmonic (mode 5)
         penum("preproc_filter_line_freq_hz", "Preproc Harmonic Hz", "50", {"50", "60"}),
-        pfloat("preproc_filter_notch_q", "Preproc Harmonic Q", "5.0", "0.1", "100.0"),
+        pfloat("preproc_filter_notch_q", "Preproc Harmonic Q", "3.0", "0.1", "100.0"),
         pfloat("preproc_filter_harmonic_threshold", "Preproc Harmonic thresh", "0.1", "0.0", "1.0"),
         // Repetitious (mode 6). rep_period_us/rep_tolerance_us are NOT
         // registered: the algo stores them but never uses them (audit §7.3).
@@ -392,10 +395,13 @@ std::vector<AlgoParamSpec> preproc_params() {
         pint("preproc_filter_rep_ratio_longer", "Preproc Rep ratio long", "2", "1", "100"),
         pint("preproc_filter_rep_min_dt_to_store_us", "Preproc Rep min dt (us)", "1000", "0", "1000000"),
         pint("preproc_filter_rep_averaging_samples", "Preproc Rep avg samples", "3", "1", "100"),
-        // SpatialBP (mode 7)
-        pint("preproc_filter_sbp_center_radius_px", "Preproc SBP center", "2", "1", "10"),
-        pint("preproc_filter_sbp_surround_radius_px", "Preproc SBP surround", "10", "5", "30"),
-        pint("preproc_filter_sbp_dt_surround_us", "Preproc SBP dt (us)", "10000", "100", "1000000"),
+        // SpatialBP (mode 7). Defaults are the cheap jAER working point
+        // (center 0 / surround 1 → 8 splat writes per event); the previous
+        // 2/10 splatted 416 cells per event and capped the filter at
+        // ~2.4 Mev/s/core (see noise_filter.h).
+        pint("preproc_filter_sbp_center_radius_px", "Preproc SBP center", "0", "0", "10"),
+        pint("preproc_filter_sbp_surround_radius_px", "Preproc SBP surround", "1", "1", "30"),
+        pint("preproc_filter_sbp_dt_surround_us", "Preproc SBP dt (us)", "8000", "100", "1000000"),
         // KNoise (mode 8) — dv-processing KNoiseFilter port; dt calibrated on
         // algo/tests/sparklers.raw (see algo/cv/noise_filter.h).
         pint("preproc_filter_knoise_dt_us", "Preproc KNoise dt (us)", "3000", "100", "100000"),
