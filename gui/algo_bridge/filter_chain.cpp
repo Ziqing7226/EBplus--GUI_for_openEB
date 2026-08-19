@@ -97,6 +97,7 @@ public:
         return false;
     }
     std::string name() const override { return "flip_x"; }
+    bool is_geometry() const override { return true; }
 private:
     Metavision::FlipXAlgorithm algo_;
 };
@@ -119,6 +120,7 @@ public:
         return false;
     }
     std::string name() const override { return "flip_y"; }
+    bool is_geometry() const override { return true; }
 private:
     Metavision::FlipYAlgorithm algo_;
 };
@@ -194,6 +196,25 @@ bool FilterChain::is_stage_enabled(const std::string& name) const {
 void FilterChain::process(const Metavision::EventCD* begin,
                           const Metavision::EventCD* end,
                           std::vector<Metavision::EventCD>& out) {
+    process_group(begin, end, out, Group::All);
+}
+
+void FilterChain::process_value(const Metavision::EventCD* begin,
+                                const Metavision::EventCD* end,
+                                std::vector<Metavision::EventCD>& out) {
+    process_group(begin, end, out, Group::ValueOnly);
+}
+
+void FilterChain::process_geometry(const Metavision::EventCD* begin,
+                                   const Metavision::EventCD* end,
+                                   std::vector<Metavision::EventCD>& out) {
+    process_group(begin, end, out, Group::GeometryOnly);
+}
+
+void FilterChain::process_group(const Metavision::EventCD* begin,
+                                const Metavision::EventCD* end,
+                                std::vector<Metavision::EventCD>& out,
+                                Group group) {
     std::lock_guard<std::mutex> lk(chain_mutex());
     out.clear();
     // Reuse the scratch buffers (safe under chain_mutex_) instead of
@@ -206,6 +227,8 @@ void FilterChain::process(const Metavision::EventCD* begin,
     for (const auto& name : order_) {
         auto* s = stages_[name].get();
         if (!s || !s->enabled()) continue;
+        if (group == Group::ValueOnly && s->is_geometry()) continue;
+        if (group == Group::GeometryOnly && !s->is_geometry()) continue;
         scratch_out_.clear();
         s->process(scratch_in_.data(), scratch_in_.data() + scratch_in_.size(),
                    scratch_out_);
@@ -214,10 +237,15 @@ void FilterChain::process(const Metavision::EventCD* begin,
     out.assign(scratch_in_.begin(), scratch_in_.end());
 }
 
-bool FilterChain::has_enabled() const {
+bool FilterChain::has_enabled() const { return has_enabled(Group::All); }
+
+bool FilterChain::has_enabled(Group group) const {
     std::lock_guard<std::mutex> lk(chain_mutex());
     for (const auto& kv : stages_) {
-        if (kv.second->enabled()) return true;
+        if (!kv.second->enabled()) continue;
+        if (group == Group::All) return true;
+        if (group == Group::ValueOnly && !kv.second->is_geometry()) return true;
+        if (group == Group::GeometryOnly && kv.second->is_geometry()) return true;
     }
     return false;
 }

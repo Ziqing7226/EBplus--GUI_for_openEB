@@ -38,6 +38,12 @@ public:
     virtual bool enabled() const { return enabled_; }
     virtual void set_enabled(bool e) { enabled_ = e; }
     virtual std::string name() const = 0;
+    /// @brief True if the stage changes event COORDINATES (mirroring). The
+    /// shared stream conditioner runs value-only stages before the noise
+    /// filter and geometry stages after undistort (a mirrored frame must be
+    /// undistorted with the physical K first), so the two groups are applied
+    /// at different pipeline points.
+    virtual bool is_geometry() const { return false; }
 
 protected:
     bool enabled_{false};
@@ -46,9 +52,14 @@ protected:
 /// @brief Ordered chain of event filters applied left-to-right.
 class FilterChain {
 public:
+    /// Which stage group a process call applies (see FilterStage::is_geometry).
+    enum class Group { All, ValueOnly, GeometryOnly };
+
     FilterChain();
 
-    /// @brief Sets the sensor geometry (needed by the flip stages).
+    /// @brief Sets the geometry the flip stages mirror within. Must match the
+    /// coordinate system of the events at the flip application point (sensor
+    /// dims for a full frame, ROI dims for an ROI-relative frame).
     void set_geometry(int width, int height);
 
     /// @brief Returns the named stage. The pointer is returned WITHOUT the
@@ -72,11 +83,25 @@ public:
     void process(const Metavision::EventCD* begin,
                  const Metavision::EventCD* end,
                  std::vector<Metavision::EventCD>& out);
+    /// @brief Applies only the enabled value-only (non-coordinate) stages.
+    void process_value(const Metavision::EventCD* begin,
+                       const Metavision::EventCD* end,
+                       std::vector<Metavision::EventCD>& out);
+    /// @brief Applies only the enabled geometry (coordinate-mirroring) stages.
+    void process_geometry(const Metavision::EventCD* begin,
+                          const Metavision::EventCD* end,
+                          std::vector<Metavision::EventCD>& out);
 
     /// @brief True if at least one stage is enabled.
     bool has_enabled() const;
+    /// @brief True if at least one enabled stage belongs to @p group.
+    bool has_enabled(Group group) const;
 
 private:
+    void process_group(const Metavision::EventCD* begin,
+                       const Metavision::EventCD* end,
+                       std::vector<Metavision::EventCD>& out, Group group);
+
     int width_{0};
     int height_{0};
     std::unordered_map<std::string, std::unique_ptr<FilterStage>> stages_;
