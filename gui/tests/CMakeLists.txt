@@ -116,3 +116,18 @@ target_compile_options(test_preproc_routing PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_preproc_routing
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# --- test_stream_conditioner: the shared conditioning pipeline (ROI ->
+# value stages -> noise filter -> thin -> undistort -> flips) ---
+add_executable(test_stream_conditioner
+    test_stream_conditioner.cpp
+)
+target_link_libraries(test_stream_conditioner PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_stream_conditioner PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_stream_conditioner
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
