@@ -170,6 +170,7 @@ add_executable(test_file_frame_generator
     test_file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/stream_conditioner.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
@@ -184,6 +185,7 @@ target_link_libraries(test_file_frame_generator PRIVATE
     MetavisionSDK::core
     MetavisionSDK::stream
     ${OpenCV_LIBS}
+    gui_algo
 )
 add_test(NAME file_frame_generator COMMAND test_file_frame_generator ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
@@ -194,6 +196,7 @@ add_executable(test_filter_in_render
     test_filter_in_render.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/stream_conditioner.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
     ${CMAKE_SOURCE_DIR}/algo/calibration/intrinsic.cpp
@@ -217,8 +220,10 @@ add_executable(test_filter_integration
     test_filter_integration.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/stream_conditioner.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
+    ${CMAKE_SOURCE_DIR}/algo/calibration/intrinsic.cpp
 )
 target_include_directories(test_filter_integration PRIVATE
     ${CMAKE_SOURCE_DIR}/gui
@@ -240,8 +245,10 @@ add_executable(test_loop_flip
     test_loop_flip.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/frame_mode_renderer.cpp
+    ${CMAKE_SOURCE_DIR}/gui/app/stream_conditioner.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
+    ${CMAKE_SOURCE_DIR}/algo/calibration/intrinsic.cpp
 )
 target_include_directories(test_loop_flip PRIVATE
     ${CMAKE_SOURCE_DIR}/gui

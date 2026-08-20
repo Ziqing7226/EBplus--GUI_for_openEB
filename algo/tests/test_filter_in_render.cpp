@@ -106,10 +106,10 @@ int main(int argc, char** argv) {
         gen2.set_geometry(W, H);
         gen2.set_fps(60);
         gen2.set_accumulation_time_us(1000);
-        gen2.set_display_preproc_param("preproc_filter_enabled", "true");
-        gen2.set_display_preproc_param("preproc_filter_mode", "1");  // STCF
-        gen2.set_display_preproc_param("preproc_filter_correlation_time_s", "0.001");
-        gen2.set_display_preproc_param("preproc_filter_min_neighbors", "1");
+        gen2.set_conditioner_param("preproc_filter_enabled", "true");
+        gen2.set_conditioner_param("preproc_filter_mode", "1");  // STCF
+        gen2.set_conditioner_param("preproc_filter_correlation_time_s", "0.001");
+        gen2.set_conditioner_param("preproc_filter_min_neighbors", "1");
 
         QImage rendered2;
         QObject::connect(&gen2, &FileFrameGenerator::frame_ready,
@@ -141,13 +141,18 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "FAIL: supported pair should pass the display filter\n");
             return 1;
         }
-        if (!emitted2 || emitted2->size() != 3) {
-            std::fprintf(stderr, "FAIL: events_window_ready must stay un-noise-filtered "
-                                 "(expected 3 events, got %zu)\n",
+        // 2026-08-19 rework: events_window_ready carries the SAME conditioned
+        // stream the display rendered — the isolated event is dropped
+        // everywhere (one conditioning pass for every consumer).
+        // Only the second pair event passes STCF: (60,60) fires first with
+        // no prior support; (61,60) then sees (60,60) within the window.
+        if (!emitted2 || emitted2->size() != 1) {
+            std::fprintf(stderr, "FAIL: events_window_ready must carry the "
+                                 "conditioned stream (expected 1 event, got %zu)\n",
                          emitted2 ? emitted2->size() : 0);
             return 1;
         }
-        std::fprintf(stderr, "PASS: display noise filter — render filtered, algo stream kept\n");
+        std::fprintf(stderr, "PASS: shared noise filter — render and algo stream both filtered\n");
     }
 
     // --- Test 4: display-path undistort (Phase 2.5 step 3) ---
@@ -170,8 +175,8 @@ int main(int argc, char** argv) {
         gen3.set_geometry(W, H);
         gen3.set_fps(60);
         gen3.set_accumulation_time_us(1000);
-        gen3.set_display_preproc_param("preproc_undistort_path", yml);
-        gen3.set_display_preproc_param("preproc_undistort_enabled", "true");
+        gen3.set_conditioner_param("preproc_undistort_path", yml);
+        gen3.set_conditioner_param("preproc_undistort_enabled", "true");
 
         QImage rendered3;
         QObject::connect(&gen3, &FileFrameGenerator::frame_ready,
@@ -200,15 +205,15 @@ int main(int argc, char** argv) {
                      gx, gy);
     }
 
-    // --- Test 5: display-path downsample as a thinning filter (Phase 2.5
-    // step 4): only even-parity coordinates render (positions unchanged,
-    // no coordinate halving); events_window_ready keeps the full stream.
+    // --- Test 5: shared downsample as a thinning stage: only even-parity
+    // coordinates survive for EVERY consumer (positions unchanged, no
+    // coordinate halving here — halving backends shift downstream).
     {
         FileFrameGenerator gen4;
         gen4.set_geometry(W, H);
         gen4.set_fps(60);
         gen4.set_accumulation_time_us(1000);
-        gen4.set_display_preproc_param("preproc_downsample", "true");
+        gen4.set_conditioner_param("preproc_downsample", "true");
 
         QImage rendered4;
         QObject::connect(&gen4, &FileFrameGenerator::frame_ready,
@@ -242,14 +247,17 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "FAIL: odd-coordinate events must be thinned\n");
             return 1;
         }
-        if (!emitted4 || emitted4->size() != 5) {
-            std::fprintf(stderr, "FAIL: events_window_ready must stay complete "
-                                 "(expected 5 events, got %zu)\n",
+        // 2026-08-19 rework: events_window_ready carries the THINNED stream —
+        // halving backends shift coordinates themselves, non-halving
+        // consumers use it as-is.
+        if (!emitted4 || emitted4->size() != 2) {
+            std::fprintf(stderr, "FAIL: events_window_ready must carry the thinned "
+                                 "stream (expected 2 events, got %zu)\n",
                          emitted4 ? emitted4->size() : 0);
             return 1;
         }
-        std::fprintf(stderr, "PASS: display downsample — even-parity rendered at "
-                             "original coordinates, algo stream kept complete\n");
+        std::fprintf(stderr, "PASS: shared downsample — even-parity kept at "
+                             "original coordinates for every consumer\n");
     }
 
     std::fprintf(stderr, "PASS: flip_x correctly applied in render_frame() and events_window_ready\n");

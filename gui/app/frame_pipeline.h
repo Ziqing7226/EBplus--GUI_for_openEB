@@ -34,7 +34,6 @@
 #include <metavision/sdk/base/events/event_cd.h>
 
 #include "algo/common/frame_generator.h"
-#include "algo_bridge/backends/backend_common.h"
 #include "file_frame_generator.h"
 #include "frame_mode_renderer.h"
 
@@ -84,22 +83,23 @@ public:
     /// start_file() to ensure the pointer is available when rendering begins.
     void set_file_filter_chain(FilterChain* fc);
 
-    /// @brief Applies a display-path preprocessing parameter (Phase 2.5):
-    /// the SAME settings as the AlgorithmsPanel Preprocessing stage, applied
-    /// to the DISPLAY event stream only (live: in add_events before the
-    /// CDFrameGenerator; file: in render_frame after the FilterChain).
-    /// Algorithm feeds are unchanged — each algorithm keeps its own
-    /// Preprocessor stage. Thread-safe (the live path runs on the SDK thread).
-    void set_display_preproc_param(const std::string& key, const std::string& value);
+    /// @brief Forwards a preproc_* conditioning parameter to the FILE
+    /// generator's StreamConditioner (the live conditioner is fed directly by
+    /// CameraController::set_conditioner_param).
+    void set_file_conditioner_param(const std::string& key,
+                                    const std::string& value) {
+        file_generator_.set_conditioner_param(key, value);
+    }
 
-    /// @brief Clears the display filter's temporal state (camera restart,
-    /// file seek/loop — event time jumps backward and stale timestamp
-    /// surfaces would suppress events).
-    void reset_display_preproc_filter();
+    /// @brief Clears the file conditioner's temporal state (seek/loop).
+    void reset_file_conditioner() { file_generator_.reset_conditioner(); }
 
-    /// @brief True when any display-path preprocessing stage is enabled.
-    /// Used by RecorderController to choose processed-stream recording.
-    bool display_preproc_active() const { return display_preproc_.active(); }
+    /// @brief Resizes the display geometry (live mode: recreates the
+    /// CDFrameGenerator + frame-mode renderer; file mode: the generator sizes
+    /// its own frames from its conditioner). Called when the unified ROI
+    /// changes the conditioner's OUTPUT geometry: in ROI mode every consumer
+    /// sees the ROI-relative stream, so the display frame IS the ROI.
+    void set_display_geometry(long width, long height);
 
     /// @brief Sets the file-mode software ROI (Phase 2.6): same semantics as
     /// the hardware ROI — the FileFrameGenerator only renders/emits events
@@ -117,15 +117,15 @@ public:
     /// @brief True when the file-mode software ROI is in RONI mode.
     bool file_roi_roni() const { return file_generator_.display_roi_roni(); }
 
-    /// @brief Registers a listener for the display-path-processed event
-    /// stream (Phase 2.5 step 5, processed-stream recording). The listener
-    /// receives every batch AFTER preprocessing (the raw span when all
-    /// stages are off, so recording stays continuous across toggles), on
-    /// the SDK CD thread under display_preproc_mutex_. Live mode only
-    /// (file-source recording is blocked upstream).
+    /// @brief Registers a listener for the display-path event stream
+    /// (processed-stream recording). The listener receives every batch the
+    /// display sees — the conditioned span (raw when no stage is active, so
+    /// recording stays continuous across toggles), on the SDK CD thread
+    /// under processed_mutex_. Live mode only (file-source recording is
+    /// blocked upstream).
     void set_processed_events_listener(
         std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)> cb) {
-        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
+        std::lock_guard<std::mutex> lk(processed_mutex_);
         processed_listener_ = std::move(cb);
     }
 
@@ -217,14 +217,10 @@ private:
     /// the frame timestamp by the live mode tick (GUI thread).
     std::atomic<Metavision::timestamp> last_ev_ts_{0};
 
-    // Display-path preprocessing (Phase 2.5). The live-mode instance is used
-    // in add_events() on the SDK thread (mutex-guarded); the file-mode
-    // instance lives inside FileFrameGenerator (GUI thread). Both receive the
-    // same parameters via set_display_preproc_param().
-    gui::backend_detail::Preprocessor display_preproc_;
-    std::mutex display_preproc_mutex_;
     /// Processed-stream listener (processed-stream recording), invoked under
-    /// display_preproc_mutex_.
+    /// processed_mutex_. Events arrive already conditioned
+    /// (CameraController::conditioner_).
+    std::mutex processed_mutex_;
     std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)>
         processed_listener_;
 };

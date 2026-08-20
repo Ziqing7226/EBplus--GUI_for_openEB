@@ -257,8 +257,9 @@ private:
     /// user can adjust any parameter (including the 5 ROI params) at runtime.
     QHash<std::string, QPointer<AlgoWindow>> algo_windows_;
 
-    // Algorithm event/result pipeline.
-    std::optional<Metavision::CallbackId> algo_cd_cb_id_;
+    // Algorithm event/result pipeline. The live event feed is the
+    // conditioned-stream listener on CameraController (install_algo_callback)
+    // — no per-camera SDK callback ID is held here anymore.
     std::atomic<Metavision::timestamp> algo_last_xyt_post_us_{0};
     FrameAnnotator annotator_;
     Metavision::timestamp prev_frame_ts_{0};

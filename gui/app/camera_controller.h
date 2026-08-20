@@ -29,6 +29,7 @@
 #include <metavision/sdk/stream/camera.h>
 
 #include "frame_pipeline.h"
+#include "stream_conditioner.h"
 #include "statistics_controller.h"
 #include "algo_bridge/filter_chain.h"
 
@@ -145,6 +146,35 @@ public:
     /// copy cost while a consumer is actively listening.
     void set_cd_broadcast(bool enabled);
 
+    /// @brief Conditioned-listener signature: raw span [rb,re) as delivered
+    /// by the SDK, plus the conditioned span [cb,ce) (ROI → polarity stages →
+    /// noise filter → thin → undistort → flips — see StreamConditioner).
+    using ConditionedListener = std::function<void(
+        const Metavision::EventCD* rb, const Metavision::EventCD* re,
+        const Metavision::EventCD* cb, const Metavision::EventCD* ce)>;
+
+    /// @brief Registers the live-mode consumer of the conditioned stream
+    /// (algorithm feeding, XYT display). Invoked on the SDK CD thread AFTER
+    /// the display pipeline received the same span — one conditioning pass
+    /// for everyone. File sources never invoke it (file playback feeds
+    /// algorithms via FramePipeline::events_window_ready, synchronized with
+    /// the displayed frame).
+    void set_conditioned_listener(ConditionedListener cb);
+
+    /// @brief Single entry for the panel's preproc_* parameters: forwards to
+    /// the live conditioner AND the file generator's conditioner. Same keys
+    /// as AlgorithmsPanel::apply_global_preproc emits.
+    bool set_conditioner_param(const std::string& key, const std::string& value);
+
+    /// @brief Clears the conditioners' temporal state (source restart, file
+    /// seek/loop — event time jumps backward and stale timestamp surfaces
+    /// would suppress events).
+    void reset_conditioner();
+
+    /// @brief True when any conditioning stage would modify the stream.
+    /// Used by RecorderController to choose processed-stream recording.
+    bool conditioner_active() const;
+
 signals:
     void connected(const SensorInfo& info);
     void disconnected();
@@ -188,6 +218,14 @@ private:
     FramePipeline frame_pipeline_;
     StatisticsController statistics_;
     FilterChain filter_chain_;
+    /// Shared conditioning (live batches). The file source's conditioner
+    /// lives inside FileFrameGenerator; only one is ever active.
+    StreamConditioner conditioner_;
+    /// Conditioned-stream listener (live mode), guarded by
+    /// conditioned_mutex_. Copied into a local before invocation so a
+    /// set_conditioned_listener() during a callback cannot race.
+    ConditionedListener conditioned_listener_;
+    std::mutex conditioned_mutex_;
     /// @brief When true, the CD callback emits cd_events_ready() with a copy
     /// of every batch. Off by default so non-calibration usage pays nothing.
     std::atomic<bool> cd_broadcast_{false};

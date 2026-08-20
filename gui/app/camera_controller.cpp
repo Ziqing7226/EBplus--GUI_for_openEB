@@ -239,6 +239,18 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
     } catch (const std::exception&) {
         return false;
     }
+    // Conditioner + display geometry follow the ROI (highest priority).
+    // ROI mode → crop+shift, the display frame becomes ROI-sized; RONI or
+    // disabled → absolute coordinates, full frame.
+    conditioner_.set_roi(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_,
+                         roi_roni_);
+    if (!roi_enabled_ || roi_roni_) {
+        frame_pipeline_.set_display_geometry(sensor_info_.width,
+                                             sensor_info_.height);
+    } else {
+        frame_pipeline_.set_display_geometry(roi_x1_ - roi_x0_,
+                                             roi_y1_ - roi_y0_);
+    }
     emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
     return true;
 }
@@ -275,6 +287,29 @@ facility::TriggerOut* CameraController::trigger_out_facility() {
 facility::CameraSync* CameraController::camera_sync_facility() {
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::CameraSync>();
+}
+
+void CameraController::set_conditioned_listener(ConditionedListener cb) {
+    std::lock_guard<std::mutex> lk(conditioned_mutex_);
+    conditioned_listener_ = std::move(cb);
+}
+
+bool CameraController::set_conditioner_param(const std::string& key,
+                                             const std::string& value) {
+    // Live conditioner + the file generator's conditioner (only one is ever
+    // active; the inactive one just stores the value).
+    const bool ok = conditioner_.set_param(key, value);
+    frame_pipeline_.set_file_conditioner_param(key, value);
+    return ok;
+}
+
+void CameraController::reset_conditioner() {
+    conditioner_.reset_temporal();
+    frame_pipeline_.reset_file_conditioner();
+}
+
+bool CameraController::conditioner_active() const {
+    return conditioner_.active();
 }
 
 void CameraController::set_cd_broadcast(bool enabled) {
@@ -370,34 +405,41 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     // CD callback: forward events to the frame pipeline + statistics.
     // The SDK dispatches this callback on its streaming/decoding thread with
     // NO try/catch, so an exception escaping the lambda would call
-    // std::terminate and crash the whole GUI with no diagnostic. The filter
-    // chain allocates a copy of every batch (and each OpenEB algorithm may
-    // reallocate its output), so std::bad_alloc at high event rates is
-    // plausible. Wrap the body and surface failures to the GUI thread.
+    // std::terminate and crash the whole GUI with no diagnostic. The
+    // conditioner may reallocate its buffers, so std::bad_alloc at high event
+    // rates is plausible. Wrap the body and surface failures to the GUI
+    // thread.
     cd_cb_id_ = camera_->cd().add_callback(
         [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             try {
                 statistics_.add_events(b, e);
-                // File mode: buffer RAW events — FilterChain is applied
-                // per-frame in FileFrameGenerator::render_frame() so that
-                // filter toggles take effect immediately during playback.
-                // Live mode: apply FilterChain here (CD callback) as before.
-                if (!is_file_ && filter_chain_.has_enabled()) {
-                    std::vector<Metavision::EventCD> filtered;
-                    filter_chain_.process(b, e, filtered);
-                    if (!filtered.empty()) {
-                        frame_pipeline_.add_events(filtered.data(),
-                                                   filtered.data() + filtered.size());
-                    }
-                } else {
+                if (is_file_) {
+                    // File mode: buffer RAW events — conditioning happens
+                    // per-frame in FileFrameGenerator::render_frame() so
+                    // toggles take effect immediately during playback.
                     frame_pipeline_.add_events(b, e);
+                } else {
+                    // Live mode: condition ONCE (unified ROI → polarity
+                    // stages → noise filter → thin → undistort → flips).
+                    // Display, processed recording and the algorithm
+                    // listener all consume the SAME output span.
+                    const auto [cb, cn] = conditioner_.apply(b, e);
+                    const auto* ce = cb + cn;
+                    frame_pipeline_.add_events(cb, ce);
+                    ConditionedListener listener;
+                    {
+                        std::lock_guard<std::mutex> lk(conditioned_mutex_);
+                        listener = conditioned_listener_;
+                    }
+                    if (listener) listener(b, e, cb, ce);
                 }
-                // Optional CD broadcast for calibration tools. The atomic
-                // check is cheap; the buffer comes from the reusable pool
-                // (no allocation in steady state) and only happens when a
-                // listener has explicitly opted in via set_cd_broadcast(true).
-                // The emit crosses to the GUI thread via Qt's queued-connection
-                // machinery (the shared_ptr is captured by value).
+                // Optional CD broadcast for calibration tools — always the
+                // RAW span. The atomic check is cheap; the buffer comes from
+                // the reusable pool (no allocation in steady state) and only
+                // happens when a listener has explicitly opted in via
+                // set_cd_broadcast(true). The emit crosses to the GUI thread
+                // via Qt's queued-connection machinery (the shared_ptr is
+                // captured by value).
                 if (cd_broadcast_.load(std::memory_order_relaxed) && b != e) {
                     auto batch = broadcast_pool_.acquire();
                     batch->assign(b, e);
@@ -415,6 +457,12 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
 
     statistics_.reset();
     filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
+    // Conditioner: live batches only (the file source conditions per-frame
+    // in FileFrameGenerator). reset() clears temporal state so a reconnect's
+    // timestamps never see stale surfaces.
+    conditioner_.init(sensor_info_.width, sensor_info_.height);
+    conditioner_.set_filter_chain(&filter_chain_);
+    conditioner_.reset_temporal();
 
     // Start the frame pipeline for the new sensor geometry. File sources use
     // FileFrameGenerator (buffers events, controls playback rate via QTimer);

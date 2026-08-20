@@ -60,11 +60,13 @@ void FileFrameGenerator::add_events(const Metavision::EventCD* begin,
 
 void FileFrameGenerator::set_geometry(long width, long height) {
     if (width <= 0 || height <= 0) return;
-    if (width_ == width && height_ == height && !frame_.empty()) return;
+    const bool changed = width_ != width || height_ != height;
     width_ = width;
     height_ = height;
-    frame_.create(static_cast<int>(height_), static_cast<int>(width_), CV_8UC3);
-    display_preproc_.init(static_cast<int>(width), static_cast<int>(height));
+    if (changed || frame_.empty()) {
+        frame_.create(static_cast<int>(height_), static_cast<int>(width_), CV_8UC3);
+    }
+    conditioner_.init(static_cast<int>(width), static_cast<int>(height));
     // Recompute the software ROI rect against the new sensor size.
     set_display_roi(roi_enabled_, roi_x_, roi_y_, roi_w_, roi_h_, roi_roni_);
 }
@@ -83,8 +85,21 @@ void FileFrameGenerator::set_display_roi(bool enabled, int x, int y, int w, int 
     const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
     const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
     roi_x0_ = rx; roi_y0_ = ry;
-    roi_x1_ = std::min(rx + rw, sw);
-    roi_y1_ = std::min(ry + rh, sh);
+    roi_x1_ = rx + rw; roi_y1_ = ry + rh;
+    conditioner_.set_roi(enabled, roi_x0_, roi_y0_, roi_x1_, roi_y1_, roni);
+    // The conditioner's output geometry is the render geometry: in ROI mode
+    // the displayed frame IS the ROI (ROI-relative coordinates), otherwise
+    // the full frame. Resize the frame and the shared frame-mode renderer so
+    // the conditioned events land on a matching grid.
+    const int out_w = (enabled && !roni) ? rw : sw;
+    const int out_h = (enabled && !roni) ? rh : sh;
+    if (frame_.rows != out_h || frame_.cols != out_w) {
+        frame_.create(out_h, out_w, CV_8UC3);
+    }
+    if (frame_mode_renderer_) {
+        frame_mode_renderer_->set_geometry(out_w, out_h);
+        frame_mode_renderer_->reset();
+    }
 }
 
 void FileFrameGenerator::set_fps(std::uint16_t fps) {
@@ -148,7 +163,7 @@ void FileFrameGenerator::seek(Metavision::timestamp t_us) {
     cursor_us_ = t_us;
     // Display filter temporal state must not span a backward time jump
     // (Phase 2.5) — stale timestamp surfaces would suppress events.
-    display_preproc_.reset_filter();
+    conditioner_.reset_temporal();
     // Notify listeners so stateful algorithms can reset their temporal state
     // before the new (possibly earlier) events arrive. Without this, a
     // backward seek leaves algorithm timestamps ahead of the new events,
@@ -229,7 +244,7 @@ void FileFrameGenerator::on_timer() {
             cursor_us_ = 0;
             // Display filter temporal state must not span the loop wrap
             // (Phase 2.5) — event time jumps back to the start of the file.
-            display_preproc_.reset_filter();
+            conditioner_.reset_temporal();
             emit looped();
         } else {
             timer_.stop();
@@ -276,10 +291,9 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
     const cv::Vec3b off  = Metavision::get_bgr_color(palette_, Metavision::ColorType::Negative);
     frame_.setTo(cv::Scalar(bg[0], bg[1], bg[2]));
 
-    // Collect the RAW events in [start_us, end_us). These are used both for
-    // rendering (after FilterChain transformation) and for feeding algorithm
-    // instances (RAW, unfiltered — matching live mode where the algo CD
-    // callback is separate from the CameraController's FilterChain callback).
+    // Collect the buffered events in [start_us, end_us) — raw; conditioning
+    // (ROI / FilterChain / noise filter / downsample / undistort) runs below,
+    // once, for BOTH the rendered pixels and the algorithm feed.
     auto window_events = std::make_shared<std::vector<Metavision::EventCD>>();
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -300,61 +314,22 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
         }
     }
 
-    // Software ROI (Phase 2.6): drop events outside the rect so the rendered
-    // frame AND the algorithm feed (events_window_ready) both see the same
-    // ROI-limited stream — identical semantics to a live source with the
-    // hardware ROI enabled. RONI mode (Phase 2.6 debug D-5) inverts the
-    // predicate: keep events OUTSIDE the rect (hardware drops inside).
-    if (roi_enabled_) {
-        auto& evs = *window_events;
-        std::size_t kept = 0;
-        for (std::size_t i = 0; i < evs.size(); ++i) {
-            const auto& ev = evs[i];
-            const bool inside = ev.x >= roi_x0_ && ev.x < roi_x1_ &&
-                                ev.y >= roi_y0_ && ev.y < roi_y1_;
-            if (inside != roi_roni_) {
-                evs[kept++] = ev;
-            }
-        }
-        evs.resize(kept);
-    }
+    // Shared conditioning (2026-08-19): ONE pass per rendered window —
+    // unified ROI (crop+shift / RONI drop-inside) → FilterChain value stages
+    // → noise filter → 1/4 thin → undistort → FilterChain flips. The SAME
+    // output feeds the rendered pixels AND events_window_ready; algorithm
+    // instances no longer re-run the filter per instance.
+    const auto [cond_p, cond_n] = conditioner_.apply(
+        window_events->data(), window_events->data() + window_events->size());
+    // The conditioned span points into the conditioner's buffers — copy back
+    // into the shared_ptr the signal owns.
+    window_events->assign(cond_p, cond_p + cond_n);
 
-    // Apply FilterChain to the window events for BOTH display rendering and
-    // algorithm feeding. This ensures flip/etc. take effect immediately
-    // during file playback (events are buffered raw and filtered per-frame),
-    // AND that algorithm output is also flipped — ReplaceStrategy replaces
-    // the display frame with the algorithm's output, so if algorithms receive
-    // raw (unflipped) events, the flip would be invisible when a Replace-mode
-    // algorithm is running.
-    //
-    // NOTE: process() clears its output vector before filling it. We must NOT
-    // pass *window_events as both input (begin/end) and output — out.clear()
-    // would invalidate the input iterators (aliasing UB). Use a separate
-    // vector and move the result back.
-    const int h = static_cast<int>(height_);
-    const int w = static_cast<int>(width_);
-    if (filter_chain_ && filter_chain_->has_enabled()) {
-        std::vector<Metavision::EventCD> filtered;
-        filter_chain_->process(window_events->data(),
-                               window_events->data() + window_events->size(),
-                               filtered);
-        *window_events = std::move(filtered);
-    }
-    // Display-path preprocessing (Phase 2.5): apply the Preprocessing panel's
-    // noise filter to the RENDERED pixels only. The events emitted to
-    // algorithm instances below are intentionally NOT noise-filtered here —
-    // each algorithm owns its Preprocessor stage with the same config.
     const std::vector<Metavision::EventCD>* draw_events = window_events.get();
-    std::vector<Metavision::EventCD> display_filtered;
-    if (display_preproc_.active() && !window_events->empty()) {
-        auto [p, m] = display_preproc_.apply(
-            reinterpret_cast<const gui_algo::Event*>(window_events->data()),
-            window_events->size());
-        display_filtered.assign(
-            reinterpret_cast<const Metavision::EventCD*>(p),
-            reinterpret_cast<const Metavision::EventCD*>(p) + m);
-        draw_events = &display_filtered;
-    }
+    // Draw bounds follow the CONDITIONER output geometry (frame_ is resized
+    // to it in set_display_roi / set_geometry).
+    const int h = static_cast<int>(frame_.rows);
+    const int w = static_cast<int>(frame_.cols);
     // Non-integration frame modes: feed the window events to the shared
     // frame-mode renderer and use its generated frame for display. Otherwise
     // keep the palette event render (Integration mode).
@@ -374,9 +349,10 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
         }
     }
 
-    // Emit the (filtered) events in this window so algorithm instances can
-    // process them synchronously with the displayed frame. Emitted before
-    // frame_ready so results are ready when the frame is displayed.
+    // Emit the CONDITIONED events in this window so algorithm instances can
+    // process them synchronously with the displayed frame — the same stream
+    // the display rendered (one conditioning pass for everyone). Emitted
+    // before frame_ready so results are ready when the frame is displayed.
     emit events_window_ready(window_events, start_us);
 }
 

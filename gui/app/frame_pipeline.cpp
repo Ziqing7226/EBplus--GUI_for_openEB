@@ -64,13 +64,6 @@ bool FramePipeline::start(long width, long height,
     fps_    = clamp_fps(fps);
     accumulation_us_ = accumulation_time_us;
     file_mode_ = false;
-    {
-        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
-        display_preproc_.init(static_cast<int>(width_), static_cast<int>(height_));
-        // Source restart: temporal state of the display filter must not
-        // carry over (timestamps may jump backward).
-        display_preproc_.reset_filter();
-    }
     generator_ = std::make_unique<gui_algo::FrameGenerator>(width_, height_);
     recreate_window();
     frame_mode_renderer_.set_geometry(static_cast<int>(width_),
@@ -167,52 +160,43 @@ void FramePipeline::add_events(const Metavision::EventCD* begin,
     if (file_mode_) {
         file_generator_.add_events(begin, end);
     } else if (generator_) {
-        // Display-path preprocessing (Phase 2.5): apply the Preprocessing
-        // panel's stages to the DISPLAY stream. gui_algo::Event and
-        // Metavision::EventCD are layout-compatible (static_assert in
-        // algo/common/event.h), so the reinterpret_cast is safe.
-        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
-        const Metavision::EventCD* out_b = begin;
-        const Metavision::EventCD* out_e = end;
-        if (display_preproc_.active()) {
-            const auto n = static_cast<std::size_t>(end - begin);
-            auto [p, m] = display_preproc_.apply(
-                reinterpret_cast<const gui_algo::Event*>(begin), n);
-            out_b = reinterpret_cast<const Metavision::EventCD*>(p);
-            out_e = reinterpret_cast<const Metavision::EventCD*>(p) + m;
-        }
-        // Processed-stream recording (Phase 2.5 step 5): the listener gets
-        // the same span the display sees (raw when all stages are off, so
-        // the recording stays continuous across preproc toggles).
-        if (processed_listener_) processed_listener_(out_b, out_e);
+        // Live mode: events arrive ALREADY conditioned (unified ROI →
+        // polarity stages → noise filter → thin → undistort → flips —
+        // CameraController::conditioner_). The same span feeds the
+        // processed-stream recorder, the frame-mode renderer and the
+        // CDFrameGenerator — no per-consumer preprocessing here.
+        std::lock_guard<std::mutex> lk(processed_mutex_);
+        if (processed_listener_) processed_listener_(begin, end);
         // Non-integration frame modes feed the frame-mode renderer (their
         // tick emits frame_ready); the CDFrameGenerator path is bypassed.
         if (frame_mode_ != FrameMode::Integration) {
-            frame_mode_renderer_.add_events(out_b, out_e);
-            if (out_e > out_b) {
-                last_ev_ts_.store((out_e - 1)->t, std::memory_order_relaxed);
+            frame_mode_renderer_.add_events(begin, end);
+            if (end > begin) {
+                last_ev_ts_.store((end - 1)->t, std::memory_order_relaxed);
             }
         } else {
-            generator_->add_events(out_b, out_e);
+            generator_->add_events(begin, end);
         }
     }
 }
 
-void FramePipeline::set_display_preproc_param(const std::string& key,
-                                              const std::string& value) {
-    {
-        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
-        display_preproc_.set_param(key, value);
+void FramePipeline::set_display_geometry(long width, long height) {
+    if (width <= 0 || height <= 0) return;
+    if (width == width_ && height == height_) return;
+    width_ = width;
+    height_ = height;
+    if (file_mode_) {
+        file_generator_.set_geometry(width_, height_);
+    } else if (generator_) {
+        // CDFrameGenerator is sized at construction — recreate it (and its
+        // window) at the new geometry, mirroring start().
+        generator_ = std::make_unique<gui_algo::FrameGenerator>(width_, height_);
+        generator_->set_color_palette(palette_);
+        recreate_window();
     }
-    file_generator_.set_display_preproc_param(key, value);
-}
-
-void FramePipeline::reset_display_preproc_filter() {
-    {
-        std::lock_guard<std::mutex> lk(display_preproc_mutex_);
-        display_preproc_.reset_filter();
-    }
-    file_generator_.reset_display_preproc_filter();
+    frame_mode_renderer_.set_geometry(static_cast<int>(width_),
+                                      static_cast<int>(height_));
+    frame_mode_renderer_.reset();
 }
 
 void FramePipeline::set_accumulation_time_us(Metavision::timestamp us) {

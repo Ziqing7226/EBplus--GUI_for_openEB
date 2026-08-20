@@ -36,7 +36,8 @@
 
 #include <metavision/sdk/base/utils/timestamp.h>
 
-#include "algo_bridge/backends/backend_common.h"
+#include "algo_bridge/filter_chain.h"
+#include "app/stream_conditioner.h"
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/core/utils/colors.h>
 
@@ -86,7 +87,10 @@ public:
     /// BOTH the display rendering and the events emitted via
     /// events_window_ready, so that transforms take effect immediately
     /// and algorithm output is also transformed. nullptr = no filtering.
-    void set_filter_chain(FilterChain* fc) { filter_chain_ = fc; }
+    void set_filter_chain(FilterChain* fc) {
+        filter_chain_ = fc;
+        conditioner_.set_filter_chain(fc);
+    }
 
     /// @brief Sets the shared frame-mode renderer (non-integration display
     /// modes). render_frame() feeds each window's (filtered) events to it and
@@ -225,29 +229,28 @@ private:
     // frame for display when the renderer is active.
     FrameModeRenderer* frame_mode_renderer_{nullptr};
 
-    // Display-path preprocessing (Phase 2.5). Applied in render_frame() to
-    // the RENDERED pixels only — events_window_ready keeps the un-noise-
-    // filtered stream for algorithm instances (they own their Preprocessor
-    // stage). GUI thread only (render_frame runs there).
-    gui::backend_detail::Preprocessor display_preproc_;
+    // Shared conditioning (Phase 2.5 rework 2026-08-19): applied ONCE per
+    // rendered window in render_frame(). The SAME output feeds the rendered
+    // pixels AND events_window_ready — algorithm instances no longer re-run
+    // the noise filter per instance (the old display-only display_preproc_
+    // plus per-backend Preprocessors collapsed into this one pass).
+    // GUI thread only (render_frame runs there).
+    StreamConditioner conditioner_;
 
-    // Software ROI (Phase 2.6). Computed rect [x0,x1) × [y0,y1); applied in
-    // render_frame to BOTH the rendered pixels and events_window_ready so
-    // display and algorithms see the same ROI-limited stream (mirrors the
-    // hardware ROI semantics of a live source). roi_roni_ (Phase 2.6 debug
-    // D-5) inverts the semantics: RONI keeps events OUTSIDE the rect
-    // (hardware I_ROI::Mode::RONI drops inside).
+    // Software ROI (Phase 2.6). The resolved rect feeds conditioner_ (which
+    // crops+shifts); roi_roni_ (Phase 2.6 debug D-5) inverts the predicate:
+    // RONI keeps events OUTSIDE the rect with absolute coordinates.
     bool roi_enabled_{false};
     bool roi_roni_{false};
     int roi_x_{-1}, roi_y_{-1}, roi_w_{0}, roi_h_{0};
     int roi_x0_{0}, roi_y0_{0}, roi_x1_{0}, roi_y1_{0};
 public:
-    /// @brief Applies a display-path preprocessing parameter (Phase 2.5).
-    void set_display_preproc_param(const std::string& key, const std::string& value) {
-        display_preproc_.set_param(key, value);
+    /// @brief Applies a conditioning parameter (preproc_* keys).
+    void set_conditioner_param(const std::string& key, const std::string& value) {
+        conditioner_.set_param(key, value);
     }
-    /// @brief Clears the display filter's temporal state (seek/loop).
-    void reset_display_preproc_filter() { display_preproc_.reset_filter(); }
+    /// @brief Clears the conditioner's temporal state (seek/loop).
+    void reset_conditioner() { conditioner_.reset_temporal(); }
 
     /// @brief Sets the file-mode software ROI (Phase 2.6). Events outside the
     /// rect are dropped from BOTH the rendered frame and events_window_ready

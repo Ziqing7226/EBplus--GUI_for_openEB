@@ -210,11 +210,11 @@ private:
     static constexpr int kFloodStrikes = 4;
     std::function<void()> overload_callback_;
 
-    // Unified ROI state (Phase 2.6). When enabled, push_events() delivers an
-    // ROI-cropped, ROI-relative copy instead of the raw span.
+    // Unified ROI state (Phase 2.6). The crop+shift itself moved to the
+    // shared StreamConditioner; this state only drives the backend RESIZE
+    // (set_unified_roi) so backend dims match the ROI-relative stream.
     bool uroi_enabled_{false};
     int uroi_x0_{0}, uroi_y0_{0}, uroi_x1_{0}, uroi_y1_{0};
-    std::vector<Metavision::EventCD> uroi_buf_;
 
     // --- Drop-rate telemetry (design §5.6.7) ----------------------------
     // total_pushed_ = events received via push_events (the denominator).

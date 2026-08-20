@@ -101,6 +101,12 @@ public:
     }
     void set_preproc_downsample(bool on);
 
+    /// @brief Pushes every preproc parameter row's current GUI value to the
+    /// bridge and the shared conditioners. Public so MainWindow can push
+    /// after a config load synced the widgets (config restore drives the
+    /// bridge route directly; the conditioner route starts at the panel).
+    void push_all_preproc_params();
+
 signals:
     /// @brief Emitted when an algorithm's enable state changes.
     void algorithm_toggled(const QString& name, bool enabled);
@@ -155,14 +161,6 @@ private:
     /// Harmonic/Repetitious/SpatialBP/KNoise) has its own parameter set; only the
     /// rows matching the current mode are shown.
     void refresh_preproc_params();
-
-    /// @brief Pushes every preproc parameter row's current GUI value to the
-    /// bridge (and display path). Called when the noise filter is toggled or
-    /// the filter mode changes: the per-row widgets only push on user edit,
-    /// so without this the backend keeps its built-in defaults — which had
-    /// silently diverged from the values shown in the panel (e.g. DWF window
-    /// showed 2 while the filter ran 512).
-    void push_all_preproc_params();
     /// Shows/hides mode-scoped parameter rows for @p algo_name based on the
     /// currently selected index of its "mode" enum combobox. Params whose
     /// AlgoParamSpec::mode_filter does not contain the current mode index are

@@ -266,8 +266,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     camera_.disconnect();     // stops the data thread + frame pipeline
 
     // ---- Phase 2: delete lazily-created child windows. ----
-    // Their destroyed() handlers access MainWindow members (e.g. camera_,
-    // algo_cd_cb_id_) that would already be gone by the time ~QWidget
+    // Their destroyed() handlers access MainWindow members (e.g. camera_)
+    // that would already be gone by the time ~QWidget
     // runs its automatic child cleanup.
     if (calibration_wizard_) {
         delete calibration_wizard_;
@@ -461,9 +461,14 @@ void MainWindow::build_menus() {
             }
             // apply_algo_state wrote instances/caches directly — re-sync the
             // panel controls so the displayed values match the loaded ones
-            // (audit §5.9-疑点4).
+            // (audit §5.9-疑点4), then push the preproc rows so the shared
+            // conditioners receive the restored values too (config load
+            // drives the bridge route only; the conditioner route starts at
+            // the panel — without this push it would keep the pre-load state
+            // until the next user edit).
             if (ap) {
                 ap->refresh_param_values();
+                ap->push_all_preproc_params();
             }
             statusBar()->showMessage(tr("Algorithm params loaded from %1").arg(path), 3000);
         } else if (!err.isEmpty()) {
@@ -821,15 +826,10 @@ void MainWindow::wire_signals() {
         if (xyt_display_) {
             xyt_display_->clear();
         }
-        // Reset any stale algo_cd_cb_id_ from a previous camera. The
-        // connect_*() paths (connect_file/serial/first_available) call
-        // teardown() which destroys the old camera — and with it the old CD
-        // callback — but never emits disconnected(), so remove_algo_callback()
-        // (which lives in the disconnected handler) never ran. Without this
-        // reset, install_algo_callback() short-circuits on the stale ID and
-        // the new camera's CD callback is never installed (algorithms
-        // receive no events after a source switch).
-        algo_cd_cb_id_.reset();
+        // Re-install the conditioned-stream listener for the new source. The
+        // old SDK callback lifecycle concerns are gone: the listener is a
+        // plain std::function on the (long-lived) CameraController, not a
+        // per-camera callback ID — re-registering unconditionally is safe.
         install_algo_callback();
         camera_.start();
         // Sync UI to FramePipeline's current (persisted) values so the
@@ -1182,15 +1182,14 @@ void MainWindow::wire_signals() {
     if (auto* ap = settings_->algorithms_panel()) {
         connect(ap, &AlgorithmsPanel::info_message, this,
                 [forward](const QString& m) { forward(m, false); });
-        // Display-path preprocessing (Phase 2.5): every Preprocessing panel
-        // change is also forwarded to FramePipeline so the main display's
-        // rendered stream gets the same noise filter (algorithm feeds are
-        // unchanged — each instance owns its Preprocessor stage).
+        // Conditioned-stream params (2026-08-19 rework): every Preprocessing
+        // panel change goes to CameraController::set_conditioner_param, which
+        // feeds the live conditioner AND the file generator's — the shared
+        // conditioning pass every consumer (display + algorithms) consumes.
         connect(ap, &AlgorithmsPanel::preproc_display_param_changed, this,
                 [this](const QString& key, const QString& value) {
-                    if (auto* fp = camera_.frame_pipeline()) {
-                        fp->set_display_preproc_param(key.toStdString(), value.toStdString());
-                    }
+                        camera_.set_conditioner_param(key.toStdString(),
+                                                      value.toStdString());
                 });
         // Unified ROI (Phase 2.6 debug D-6): the Algorithms page and the
         // Hardware page each expose an "Enable ROI" checkbox + a "ROI
@@ -1556,11 +1555,11 @@ void MainWindow::do_record_start(const QString& path, bool save_biases) {
             }
         }
     }
-    // Processed-stream recording (Phase 2.5 step 5): when any display-path
-    // preprocessing stage is active, record the PROCESSED event stream
-    // (what the display sees); otherwise keep the SDK raw log.
+    // Processed-stream recording (Phase 2.5 step 5): when any conditioning
+    // stage is active, record the PROCESSED event stream (what the display
+    // sees); otherwise keep the SDK raw log.
     auto* fp = camera_.frame_pipeline();
-    if (fp && fp->display_preproc_active()) {
+    if (fp && camera_.conditioner_active()) {
         recorder_.start_processed(&camera_, path, fp);
     } else {
         recorder_.start(&camera_, path);
@@ -1605,62 +1604,39 @@ void MainWindow::on_export_dialog() {
 // ---------------------------------------------------------------------------
 
 void MainWindow::install_algo_callback() {
-    if (algo_cd_cb_id_) return;              // already installed
-    auto* cam = camera_.camera_handle();
-    if (!cam) return;
-    // For file sources, the SDK CD callback delivers ALL events in ~10ms
-    // (real_time_playback(false)), which is completely out of sync with the
-    // FileFrameGenerator's timer-based frame playback. Algorithms would
-    // process everything before the first frame is even shown. Instead, file
-    // sources feed events to algorithms via the FramePipeline::events_window_ready
-    // signal (see on_events_window_ready), synchronized with each displayed
-    // frame. We still install the SDK callback here so the event buffer in
-    // FileFrameGenerator gets filled (FramePipeline::add_events forwards to it).
-    const bool file_source = camera_.is_file_source();
-    algo_cd_cb_id_ = cam->cd().add_callback(
-        [this, file_source](const Metavision::EventCD* b, const Metavision::EventCD* e) {
-            if (b == nullptr || e == nullptr || b >= e) return;
-            // Only the live-camera path feeds algorithms from the SDK thread.
-            // File playback feeds algorithms from the GUI thread via
-            // events_window_ready (synchronous with frame display).
-            if (!file_source) {
-                // Apply FilterChain so algorithms AND the XYT display receive
-                // the same orientation (flip/etc.) as the display
-                // pipeline. Without this, Replace-mode algorithms overwrite
-                // the flipped display frame with an unflipped output, making
-                // the flip invisible (same issue fixed for file mode in
-                // FileFrameGenerator::render_frame).
-                //
-                // Thread safety: FilterChain::process() and has_enabled()
-                // both acquire chain_mutex(), which serialises with GUI-thread
-                // mutations (set_stage_enabled / set_stage_param).  No data
-                // race.
-                const Metavision::EventCD* pb = b;
-                const Metavision::EventCD* pe = e;
-                std::vector<Metavision::EventCD> filtered;
-                auto* fc = camera_.filter_chain();
-                if (fc && fc->has_enabled()) {
-                    fc->process(b, e, filtered);
-                    if (filtered.empty()) {
-                        // All events filtered out — still tick the profiler
-                        // with the raw count so the event rate is accurate.
-                        perf_meter_.tick_events(static_cast<std::size_t>(e - b),
-                                                (e - 1)->t);
-                        return;
-                    }
-                    pb = filtered.data();
-                    pe = pb + filtered.size();
-                }
+    // Algorithms (and the XYT feed) consume the SHARED conditioned stream:
+    // CameraController conditions each live batch ONCE (unified ROI →
+    // polarity stages → noise filter → 1/4 thin → undistort → flips) and
+    // hands the same span to the display pipeline and to this listener.
+    // This used to be a second SDK callback that re-ran the FilterChain and
+    // left the noise filter/downsample/undistort to each backend's own
+    // Preprocessor — duplicate computation per consumer.
+    // File sources never invoke the listener: file playback feeds algorithms
+    // via the FramePipeline::events_window_ready signal (see
+    // on_events_window_ready), synchronized with each displayed frame.
+    camera_.set_conditioned_listener(
+        [this](const Metavision::EventCD* rb, const Metavision::EventCD* re,
+               const Metavision::EventCD* cb, const Metavision::EventCD* ce) {
+            // Conditioned-empty (or empty raw) batch: still tick the profiler
+            // with the RAW count so the event rate reflects camera output.
+            if (rb == nullptr || re == nullptr || rb >= re) return;
+            if (cb == nullptr || ce == nullptr || cb >= ce) {
+                perf_meter_.tick_events(static_cast<std::size_t>(re - rb),
+                                         (re - 1)->t);
+                return;
+            }
+            {
                 try {
-                    // Push (filtered) events to every live algorithm instance.
-                    // AlgoInstance is internally mutex-guarded, so this is safe
-                    // from the SDK data thread. The reinterpret_cast inside
-                    // AlgoBackend is valid because gui_algo::Event is
-                    // layout-compatible with Metavision::EventCD (POD x,y,p,t).
+                    // Push the conditioned events to every live algorithm
+                    // instance. AlgoInstance is internally mutex-guarded, so
+                    // this is safe from the SDK data thread. The
+                    // reinterpret_cast inside AlgoBackend is valid because
+                    // gui_algo::Event is layout-compatible with
+                    // Metavision::EventCD (POD x,y,p,t).
                     auto instances = algo_bridge_.list_live();
                     for (auto& inst : instances) {
                         if (inst->is_enabled()) {
-                            inst->push_events(pb, pe);
+                            inst->push_events(cb, ce);
                         }
                     }
                 } catch (const std::exception& e) {
@@ -1682,17 +1658,17 @@ void MainWindow::install_algo_callback() {
                 // Feed the performance profiler for live-camera latency measurement.
                 // Uses the RAW event count/timestamp so the rate reflects camera
                 // output, not the post-filter count.
-                perf_meter_.tick_events(static_cast<std::size_t>(e - b), (e - 1)->t);
+                perf_meter_.tick_events(static_cast<std::size_t>(re - rb), (re - 1)->t);
 
                 // Throttled, downsampled feed to the XYT 3D window. The
                 // SpaceTimeDisplay is a QOpenGLWidget and must only be touched
                 // from the GUI thread, so we marshal via QMetaObject::invokeMethod.
                 // For file sources the XYT feed is driven by events_window_ready
                 // instead (synchronized with playback), so skip it here.
-                // Uses the filtered pointers (pb/pe) so the 3D point cloud
+                // Uses the conditioned pointers (cb/ce) so the 3D point cloud
                 // matches the display orientation.
                 if (xyt_display_) {
-                    const Metavision::timestamp cur_ts = (pe - 1)->t;
+                    const Metavision::timestamp cur_ts = (ce - 1)->t;
                     const Metavision::timestamp last =
                         algo_last_xyt_post_us_.load(std::memory_order_relaxed);
                     // 8ms post cadence (halved from 16ms): batches posted
@@ -1700,16 +1676,16 @@ void MainWindow::install_algo_callback() {
                     // t-axis gap between point-cloud sheets in live mode.
                     if (cur_ts - last >= 8000) {
                         algo_last_xyt_post_us_.store(cur_ts, std::memory_order_relaxed);
-                        const std::size_t count = static_cast<std::size_t>(pe - pb);
+                        const std::size_t count = static_cast<std::size_t>(ce - cb);
                         auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
                         if (count > 5000) {
                             const std::size_t stride = count / 5000;
                             copy->reserve(count / stride + 1);
                             for (std::size_t i = 0; i < count; i += stride) {
-                                copy->push_back(pb[i]);
+                                copy->push_back(cb[i]);
                             }
                         } else {
-                            copy->assign(pb, pe);
+                            copy->assign(cb, ce);
                         }
                         QMetaObject::invokeMethod(this, [this, copy]() {
                             if (xyt_display_) {
@@ -1884,11 +1860,7 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
 }
 
 void MainWindow::remove_algo_callback() {
-    if (!algo_cd_cb_id_) return;
-    if (auto* cam = camera_.camera_handle()) {
-        try { cam->cd().remove_callback(*algo_cd_cb_id_); } catch (...) {}
-    }
-    algo_cd_cb_id_.reset();
+    camera_.set_conditioned_listener(nullptr);
 }
 
 void MainWindow::process_algo_results(QImage& frame) {

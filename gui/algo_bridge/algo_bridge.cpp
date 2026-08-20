@@ -207,26 +207,13 @@ void AlgoInstance::push_events(const Metavision::EventCD* begin,
                 rate_window_start_ = now;
             }
             if (!overloaded_) {
-                // Unified ROI (Phase 2.6): when active, deliver an ROI-cropped,
-                // ROI-relative copy — the backend was resized to the ROI dims
-                // by set_unified_roi, so survivors must land inside [0,rw)×[0,rh).
-                if (uroi_enabled_) {
-                    uroi_buf_.clear();
-                    uroi_buf_.reserve(n);
-                    for (const auto* p = begin; p != end; ++p) {
-                        if (p->x >= uroi_x0_ && p->x < uroi_x1_ &&
-                            p->y >= uroi_y0_ && p->y < uroi_y1_) {
-                            Metavision::EventCD ev = *p;
-                            ev.x = static_cast<std::uint16_t>(ev.x - uroi_x0_);
-                            ev.y = static_cast<std::uint16_t>(ev.y - uroi_y0_);
-                            uroi_buf_.push_back(ev);
-                        }
-                    }
-                    backend_->push_events(uroi_buf_.data(),
-                                          uroi_buf_.data() + uroi_buf_.size());
-                } else {
-                    backend_->push_events(begin, end);
-                }
+                // Events arrive ROI-relative and conditioned from the shared
+                // StreamConditioner (live: CameraController's CD callback;
+                // file: FileFrameGenerator::render_frame) — the per-instance
+                // crop+shift that used to live here computed the same
+                // translation again for every backend. set_unified_roi still
+                // resizes backends to the ROI dims.
+                backend_->push_events(begin, end);
             }
         } else {
             // OpenEB 包装算法：透传（由 filter_chain 处理）。

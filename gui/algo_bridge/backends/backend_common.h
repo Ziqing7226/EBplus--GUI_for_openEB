@@ -164,130 +164,48 @@ inline std::string get_noise_filter_param(const gui_algo::NoiseFilter& nf,
     return {};
 }
 
-/// @brief Stackable preprocessing chain: noise filter + 1/4 downsample + undistort.
+/// @brief Per-consumer residual of the former preprocessing chain (2026-08-19
+/// rework): coordinate HALVING only. The noise filter, 1/4 thinning and
+/// undistort moved to the shared StreamConditioner (one conditioning pass per
+/// event source, consumed by display + every algorithm); events arrive
+/// already conditioned (ROI-relative, filtered, thinned). Backends with
+/// halve_coords_ (E2VID/ISI/TimeSurface/Hough) still shift coordinates right
+/// by one because they run at half resolution — a consumer-side coordinate
+/// convention, not repeated computation. The remaining preproc_* keys are
+/// STORED (not computed) so per-algorithm configs keep round-tripping the
+/// global conditioning state (ConfigManager captures via get_param).
 struct Preprocessor {
-    bool filter_enabled_{false};
     bool downsample_enabled_{false};
     bool halve_coords_{false};
-    int filter_w_{0}, filter_h_{0};
+    /// Round-trip storage for the conditioner-owned keys.
+    bool filter_enabled_{false};
+    bool undistort_enabled_{false};
+    std::string undistort_path_;
     gui_algo::NoiseFilter::Mode filter_mode_{gui_algo::NoiseFilter::Mode::KNoise};
-    std::unique_ptr<gui_algo::NoiseFilter> filter_;
     std::unordered_map<std::string, std::string> filter_params_;
     std::vector<gui_algo::Event> buf_;
 
-    // Undistort stage (applied AFTER filter + downsample). The LUT is built
-    // at (filter_w_/factor, filter_h_/factor) with K adjusted for the ROI
-    // origin and downsample factor, so it maps distorted event addresses to
-    // undistorted addresses in the same coordinate system the algorithm sees.
-    bool undistort_enabled_{false};
-    std::string undistort_path_;
-    cv::Mat undistort_K_;          ///< Loaded from YAML (sensor resolution, CV_64F 3x3)
-    cv::Mat undistort_dist_;       ///< Loaded from YAML (CV_64F 1xN)
-    cv::Size undistort_image_size_{0, 0};
-    std::vector<cv::Point2f> undistort_lut_;  ///< Forward LUT, row-major [y*eff_w + x]
-    int undistort_eff_w_{0}, undistort_eff_h_{0};
-    int last_roi_x_{-1}, last_roi_y_{-1}, last_factor_{-1};
-    /// Circuit breaker for repeated LUT rebuild failures (audit §五-F3
-    /// follow-up): while set, apply() does not retry rebuild_undistort_lut.
-    /// Cleared when any rebuild input changes (path/K via set_param,
-    /// downsample factor, ROI origin) so a fixed config gets ONE retry.
-    bool undistort_lut_failed_{false};
-    bool undistort_lut_valid_{false};
+    /// Geometry now lives in the conditioner; kept for the RoiFilter/backend
+    /// init() call sites.
+    void init(int, int) {}
 
-    void init(int w, int h) {
-        filter_w_ = w; filter_h_ = h;
-        rebuild_filter();
-        undistort_lut_valid_ = false;  // geometry changed → LUT needs rebuild
-    }
-    /// @brief Clears the noise filter's temporal state (timestamp surfaces).
-    /// Required when the event stream jumps backward in time (file seek/loop,
-    /// source restart) — otherwise stale future timestamps suppress events.
-    void reset_filter() {
-        if (filter_) filter_->reset();
-    }
-    void rebuild_filter() {
-        if (filter_enabled_ && filter_w_ > 0 && filter_h_ > 0) {
-            filter_ = std::make_unique<gui_algo::NoiseFilter>(
-                filter_w_, filter_h_, filter_mode_);
-            for (const auto& kv : filter_params_) {
-                apply_noise_filter_param(*filter_, kv.first, kv.second);
-            }
-        } else {
-            filter_.reset();
-        }
-    }
-    /// @brief Rebuilds the forward undistort LUT for the current ROI origin
-    ///        and downsample factor. Defined in backend_common.cpp (uses
-    ///        cv::undistortPoints from opencv2/calib3d.hpp).
-    void rebuild_undistort_lut(int roi_x, int roi_y, int factor);
+    int factor() const { return (downsample_enabled_ && halve_coords_) ? 2 : 1; }
+    bool active() const { return downsample_enabled_ && halve_coords_; }
+
     bool set_param(const std::string& k, const std::string& v) {
-        if (k == "preproc_filter_enabled") {
-            filter_enabled_ = to_b(v);
-            rebuild_filter();
-            return true;
-        }
-        if (k == "preproc_downsample") {
-            downsample_enabled_ = to_b(v);
-            undistort_lut_valid_ = false;  // factor may have changed
-            return true;
-        }
-        if (k == "preproc_undistort_enabled") {
-            undistort_enabled_ = to_b(v);
-            undistort_lut_failed_ = false;  // re-arm on toggle
-            // Enabling without loadable intrinsics is a silent no-op in
-            // apply() (the empty-K guard skips the stage) — say so here
-            // (audit §五-F3): the checkbox is on but nothing is undistorted.
-            if (undistort_enabled_ && undistort_K_.empty()) {
-                std::fprintf(stderr,
-                             "Preprocessor: undistort enabled but no intrinsics "
-                             "loaded from '%s' — stage is a no-op until a valid "
-                             "calibration file is set\n",
-                             undistort_path_.c_str());
-            }
-            return true;
-        }
-        if (k == "preproc_undistort_path") {
-            undistort_path_ = v;
-            cv::Mat K, dist;
-            cv::Size sz;
-            if (gui_algo::load_intrinsics_yml(v, K, dist, sz)) {
-                undistort_K_ = K;
-                undistort_dist_ = dist;
-                undistort_image_size_ = sz;
-            } else {
-                // Surface the failure instead of silently clearing K — without
-                // this the user believes undistort is active while it is a
-                // no-op (audit §五-F3). EXCEPTION: a MISSING file while
-                // undistort is still disabled is the normal uncalibrated
-                // state (the shared default is forwarded to every
-                // Preprocessor at startup) — stay silent there.
-                const bool silent =
-                    !undistort_enabled_ && !v.empty() && !std::filesystem::exists(v);
-                if (!silent) {
-                    std::fprintf(stderr,
-                                 "Preprocessor: failed to load intrinsics from '%s'"
-                                 " — undistort disabled\n", v.c_str());
-                }
-                undistort_K_.release();
-                undistort_dist_.release();
-                undistort_image_size_ = cv::Size(0, 0);
-            }
-            undistort_lut_valid_ = false;
-            undistort_lut_failed_ = false;  // new K gets a fresh attempt
-            return true;
-        }
+        if (k == "preproc_filter_enabled") { filter_enabled_ = to_b(v); return true; }
+        if (k == "preproc_downsample") { downsample_enabled_ = to_b(v); return true; }
+        if (k == "preproc_undistort_enabled") { undistort_enabled_ = to_b(v); return true; }
+        if (k == "preproc_undistort_path") { undistort_path_ = v; return true; }
         static const std::string pfp = "preproc_filter_";
         if (k.size() > pfp.size() && k.compare(0, pfp.size(), pfp) == 0) {
             const std::string bare = k.substr(pfp.size());
             filter_params_[bare] = v;
             if (bare == "mode") {
-                int m = to_i(v);
+                const int m = to_i(v);
                 if (m >= 0 && m <= 8) {
                     filter_mode_ = static_cast<gui_algo::NoiseFilter::Mode>(m);
-                    rebuild_filter();
                 }
-            } else if (filter_) {
-                apply_noise_filter_param(*filter_, bare, v);
             }
             return true;
         }
@@ -303,113 +221,25 @@ struct Preprocessor {
             const std::string bare = k.substr(pfp.size());
             auto it = filter_params_.find(bare);
             if (it != filter_params_.end()) return it->second;
-            if (filter_) return get_noise_filter_param(*filter_, bare);
+            if (bare == "mode") {
+                return from_i(static_cast<int>(filter_mode_));
+            }
         }
         return {};
     }
-    int factor() const { return (downsample_enabled_ && halve_coords_) ? 2 : 1; }
-    bool active() const {
-        return filter_enabled_ || downsample_enabled_ ||
-               (undistort_enabled_ && !undistort_K_.empty());
-    }
 
+    /// @brief Halves coordinates (events arrive pre-thinned by the
+    /// conditioner — every event is even-even, so all survive). The legacy
+    /// roi_x/roi_y arguments are ignored (undistort lives upstream).
     std::pair<const gui_algo::Event*, std::size_t> apply(
-        const gui_algo::Event* src, std::size_t n,
-        int roi_x = 0, int roi_y = 0) {
+        const gui_algo::Event* src, std::size_t n, int = 0, int = 0) {
         if (!active() || n == 0) return {src, n};
-        const gui_algo::Event* p = src;
-        std::size_t m = n;
-        if (filter_) {
-            buf_.assign(src, src + n);
-            m = filter_->filter(buf_.data(), n);
-            p = buf_.data();
+        buf_.assign(src, src + n);
+        for (std::size_t i = 0; i < n; ++i) {
+            buf_[i].x = static_cast<std::uint16_t>(buf_[i].x >> 1);
+            buf_[i].y = static_cast<std::uint16_t>(buf_[i].y >> 1);
         }
-        if (downsample_enabled_) {
-            if (p != buf_.data()) {
-                buf_.assign(p, p + m);
-                p = buf_.data();
-            }
-            std::size_t kept = 0;
-            if (halve_coords_) {
-                for (std::size_t i = 0; i < m; ++i) {
-                    if ((buf_[i].x & 1) == 0 && (buf_[i].y & 1) == 0) {
-                        buf_[kept] = buf_[i];
-                        buf_[kept].x = static_cast<std::uint16_t>(buf_[i].x >> 1);
-                        buf_[kept].y = static_cast<std::uint16_t>(buf_[i].y >> 1);
-                        ++kept;
-                    }
-                }
-            } else {
-                for (std::size_t i = 0; i < m; ++i) {
-                    if ((buf_[i].x & 1) == 0 && (buf_[i].y & 1) == 0) {
-                        buf_[kept] = buf_[i];
-                        ++kept;
-                    }
-                }
-            }
-            m = kept;
-        }
-        // Undistort is the last stage (order: ROI → filter → downsample → undistort).
-        // The LUT is indexed by the post-downsample coordinate system the
-        // algorithm sees, so it must be rebuilt whenever the ROI origin or
-        // downsample factor changes. Out-of-bounds results drop the event
-        // (mirrors JAER SingleCameraCalibration.undistortEvent).
-        if (undistort_enabled_ && !undistort_K_.empty() && !undistort_dist_.empty()) {
-            const int f = factor();
-            // A geometry change re-arms the circuit breaker: the new inputs
-            // get exactly one rebuild attempt.
-            if (roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_) {
-                undistort_lut_failed_ = false;
-            }
-            if (!undistort_lut_failed_ &&
-                (!undistort_lut_valid_ ||
-                 roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_)) {
-                // cv::undistortPoints can throw on malformed K/dist; without a
-                // guard the exception escapes into the event pipeline and is
-                // swallowed by a catch(...) upstream, silently killing the
-                // stream (audit §五-F3). A failure latches
-                // undistort_lut_failed_ so a deterministically-bad K doesn't
-                // retry + throw + log on every event batch.
-                try {
-                    rebuild_undistort_lut(roi_x, roi_y, f);
-                } catch (const cv::Exception& e) {
-                    std::fprintf(stderr,
-                                 "Preprocessor: undistort LUT rebuild failed: %s\n",
-                                 e.what());
-                    undistort_lut_valid_ = false;
-                    undistort_lut_failed_ = true;
-                    // Anchor the geometry so the same inputs are not retried.
-                    last_roi_x_ = roi_x;
-                    last_roi_y_ = roi_y;
-                    last_factor_ = f;
-                }
-            }
-            if (undistort_lut_valid_ && undistort_eff_w_ > 0 && undistort_eff_h_ > 0) {
-                if (p != buf_.data()) {
-                    buf_.assign(p, p + m);
-                    p = buf_.data();
-                }
-                const int eff_w = undistort_eff_w_;
-                const int eff_h = undistort_eff_h_;
-                std::size_t kept = 0;
-                for (std::size_t i = 0; i < m; ++i) {
-                    const int x = buf_[i].x;
-                    const int y = buf_[i].y;
-                    if (x < 0 || y < 0 || x >= eff_w || y >= eff_h) continue;
-                    const cv::Point2f& mapped = undistort_lut_[
-                        static_cast<std::size_t>(y) * eff_w + x];
-                    const int nx = static_cast<int>(std::lround(mapped.x));
-                    const int ny = static_cast<int>(std::lround(mapped.y));
-                    if (nx < 0 || ny < 0 || nx >= eff_w || ny >= eff_h) continue;
-                    buf_[kept] = buf_[i];
-                    buf_[kept].x = static_cast<std::uint16_t>(nx);
-                    buf_[kept].y = static_cast<std::uint16_t>(ny);
-                    ++kept;
-                }
-                m = kept;
-            }
-        }
-        return {p, m};
+        return {buf_.data(), n};
     }
 };
 
