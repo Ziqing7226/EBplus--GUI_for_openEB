@@ -244,6 +244,14 @@ private:
     bool roi_roni_{false};
     int roi_x_{-1}, roi_y_{-1}, roi_w_{0}, roi_h_{0};
     int roi_x0_{0}, roi_y0_{0}, roi_x1_{0}, roi_y1_{0};
+
+    // Display placement: origin added back to the conditioned ROI-relative
+    // events for RENDERING only (full-sensor frame, pre-rework visuals).
+    // Set by set_display_roi / FramePipeline::set_display_roi_origin.
+    bool render_origin_active_{false};
+    int render_origin_x_{0};
+    int render_origin_y_{0};
+    std::vector<Metavision::EventCD> render_shift_buf_;
 public:
     /// @brief Applies a conditioning parameter (preproc_* keys).
     void set_conditioner_param(const std::string& key, const std::string& value) {
@@ -251,6 +259,13 @@ public:
     }
     /// @brief Clears the conditioner's temporal state (seek/loop).
     void reset_conditioner() { conditioner_.reset_temporal(); }
+    /// @brief Display-side ROI origin (rendering only; canonical emitted
+    /// stream stays ROI-relative).
+    void set_render_origin(bool active, int x, int y) {
+        render_origin_active_ = active;
+        render_origin_x_ = x;
+        render_origin_y_ = y;
+    }
 
     /// @brief Sets the file-mode software ROI (Phase 2.6). Events outside the
     /// rect are dropped from BOTH the rendered frame and events_window_ready

@@ -239,18 +239,16 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
     } catch (const std::exception&) {
         return false;
     }
-    // Conditioner + display geometry follow the ROI (highest priority).
-    // ROI mode → crop+shift, the display frame becomes ROI-sized; RONI or
-    // disabled → absolute coordinates, full frame.
+    // Conditioner follows the ROI (highest priority): ROI mode → crop+shift
+    // to ROI-relative (canonical for algorithms); RONI → drop-inside,
+    // absolute coordinates. The DISPLAY keeps the full-sensor frame (content
+    // shifted back to its absolute position by FramePipeline; the rest stays
+    // the palette background) — the overlay / Zoom-to-ROI / Replace-composite
+    // strategies are built around full frames.
     conditioner_.set_roi(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_,
                          roi_roni_);
-    if (!roi_enabled_ || roi_roni_) {
-        frame_pipeline_.set_display_geometry(sensor_info_.width,
-                                             sensor_info_.height);
-    } else {
-        frame_pipeline_.set_display_geometry(roi_x1_ - roi_x0_,
-                                             roi_y1_ - roi_y0_);
-    }
+    frame_pipeline_.set_display_roi_origin(roi_enabled_ && !roi_roni_,
+                                           roi_x0_, roi_y0_);
     emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
     return true;
 }

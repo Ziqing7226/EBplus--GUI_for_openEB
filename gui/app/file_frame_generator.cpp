@@ -87,19 +87,12 @@ void FileFrameGenerator::set_display_roi(bool enabled, int x, int y, int w, int 
     roi_x0_ = rx; roi_y0_ = ry;
     roi_x1_ = rx + rw; roi_y1_ = ry + rh;
     conditioner_.set_roi(enabled, roi_x0_, roi_y0_, roi_x1_, roi_y1_, roni);
-    // The conditioner's output geometry is the render geometry: in ROI mode
-    // the displayed frame IS the ROI (ROI-relative coordinates), otherwise
-    // the full frame. Resize the frame and the shared frame-mode renderer so
-    // the conditioned events land on a matching grid.
-    const int out_w = (enabled && !roni) ? rw : sw;
-    const int out_h = (enabled && !roni) ? rh : sh;
-    if (frame_.rows != out_h || frame_.cols != out_w) {
-        frame_.create(out_h, out_w, CV_8UC3);
-    }
-    if (frame_mode_renderer_) {
-        frame_mode_renderer_->set_geometry(out_w, out_h);
-        frame_mode_renderer_->reset();
-    }
+    // Display placement: the frame stays FULL-sensor (ROI content shifted
+    // back to its absolute position for rendering; the rest stays the
+    // palette background — pre-rework visuals the overlay / Zoom-to-ROI /
+    // Replace-composite strategies are built around). RONI keeps absolute
+    // coordinates, so no shift there.
+    set_render_origin(enabled && !roni, roi_x0_, roi_y0_);
 }
 
 void FileFrameGenerator::set_fps(std::uint16_t fps) {
@@ -322,14 +315,30 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
     const auto [cond_p, cond_n] = conditioner_.apply(
         window_events->data(), window_events->data() + window_events->size());
     // The conditioned span points into the conditioner's buffers — copy back
-    // into the shared_ptr the signal owns.
+    // into the shared_ptr the signal owns. This vector is the CANONICAL
+    // (ROI-relative) stream the algorithm feed emits.
     window_events->assign(cond_p, cond_p + cond_n);
 
+    // DISPLAY placement: the frame stays FULL-sensor; shift the conditioned
+    // events back by the ROI origin for rendering only (no-op when the ROI
+    // is off or in RONI mode). The rest of the frame keeps the palette
+    // background — the pre-rework visuals the ROI overlay / Zoom-to-ROI
+    // crop / Replace-composite strategies are built around.
     const std::vector<Metavision::EventCD>* draw_events = window_events.get();
-    // Draw bounds follow the CONDITIONER output geometry (frame_ is resized
-    // to it in set_display_roi / set_geometry).
-    const int h = static_cast<int>(frame_.rows);
-    const int w = static_cast<int>(frame_.cols);
+    if (render_origin_active_ && !window_events->empty()) {
+        render_shift_buf_.clear();
+        render_shift_buf_.reserve(window_events->size());
+        const std::uint16_t ox = static_cast<std::uint16_t>(render_origin_x_);
+        const std::uint16_t oy = static_cast<std::uint16_t>(render_origin_y_);
+        for (const auto& ev : *window_events) {
+            render_shift_buf_.push_back(ev);
+            render_shift_buf_.back().x = ev.x + ox;
+            render_shift_buf_.back().y = ev.y + oy;
+        }
+        draw_events = &render_shift_buf_;
+    }
+    const int h = static_cast<int>(height_);
+    const int w = static_cast<int>(width_);
     // Non-integration frame modes: feed the window events to the shared
     // frame-mode renderer and use its generated frame for display. Otherwise
     // keep the palette event render (Integration mode).
@@ -349,10 +358,11 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
         }
     }
 
-    // Emit the CONDITIONED events in this window so algorithm instances can
-    // process them synchronously with the displayed frame — the same stream
-    // the display rendered (one conditioning pass for everyone). Emitted
-    // before frame_ready so results are ready when the frame is displayed.
+    // Emit the CONDITIONED (canonical, ROI-relative) events in this window
+    // so algorithm instances can process them synchronously with the
+    // displayed frame — backends run at ROI dims, so unlike the display
+    // feed above these are NOT shifted back. Emitted before frame_ready so
+    // results are ready when the frame is displayed.
     emit events_window_ready(window_events, start_us);
 }
 

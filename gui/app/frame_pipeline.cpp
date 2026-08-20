@@ -161,42 +161,57 @@ void FramePipeline::add_events(const Metavision::EventCD* begin,
         file_generator_.add_events(begin, end);
     } else if (generator_) {
         // Live mode: events arrive ALREADY conditioned (unified ROI →
-        // polarity stages → noise filter → thin → undistort → flips —
-        // CameraController::conditioner_). The same span feeds the
-        // processed-stream recorder, the frame-mode renderer and the
-        // CDFrameGenerator — no per-consumer preprocessing here.
+        // polarity stages → noise filter → 1/4 thin → undistort → flips —
+        // CameraController::conditioner_), in ROI-RELATIVE coordinates when
+        // the unified ROI is active. The DISPLAY renders on the full-sensor
+        // frame (ROI content at its absolute position, the rest stays
+        // background — the Zoom-to-ROI checkbox crops the finished frame),
+        // so shift events back by the ROI origin for the display feed.
+        const Metavision::EventCD* out_b = begin;
+        const Metavision::EventCD* out_e = end;
+        if (display_roi_active_) {
+            const std::uint16_t ox = static_cast<std::uint16_t>(display_roi_x0_);
+            const std::uint16_t oy = static_cast<std::uint16_t>(display_roi_y0_);
+            const int fw = static_cast<int>(width_);
+            const int fh = static_cast<int>(height_);
+            display_shift_buf_.clear();
+            display_shift_buf_.reserve(static_cast<std::size_t>(end - begin));
+            for (const auto* p = begin; p != end; ++p) {
+                const int nx = p->x + ox;
+                const int ny = p->y + oy;
+                // A rect change can race one batch against the new origin —
+                // skip events that would land outside the frame (the SDK
+                // generator has no per-event bounds check).
+                if (nx < 0 || nx >= fw || ny < 0 || ny >= fh) continue;
+                display_shift_buf_.push_back(*p);
+                display_shift_buf_.back().x = static_cast<std::uint16_t>(nx);
+                display_shift_buf_.back().y = static_cast<std::uint16_t>(ny);
+            }
+            out_b = display_shift_buf_.data();
+            out_e = display_shift_buf_.data() + display_shift_buf_.size();
+        }
+        // Processed-stream recording + the frame renderers all see the same
+        // ABSOLUTE-coordinate display span (pre-rework recording semantics).
         std::lock_guard<std::mutex> lk(processed_mutex_);
-        if (processed_listener_) processed_listener_(begin, end);
+        if (processed_listener_) processed_listener_(out_b, out_e);
         // Non-integration frame modes feed the frame-mode renderer (their
         // tick emits frame_ready); the CDFrameGenerator path is bypassed.
         if (frame_mode_ != FrameMode::Integration) {
-            frame_mode_renderer_.add_events(begin, end);
-            if (end > begin) {
-                last_ev_ts_.store((end - 1)->t, std::memory_order_relaxed);
+            frame_mode_renderer_.add_events(out_b, out_e);
+            if (out_e > out_b) {
+                last_ev_ts_.store((out_e - 1)->t, std::memory_order_relaxed);
             }
         } else {
-            generator_->add_events(begin, end);
+            generator_->add_events(out_b, out_e);
         }
     }
 }
 
-void FramePipeline::set_display_geometry(long width, long height) {
-    if (width <= 0 || height <= 0) return;
-    if (width == width_ && height == height_) return;
-    width_ = width;
-    height_ = height;
-    if (file_mode_) {
-        file_generator_.set_geometry(width_, height_);
-    } else if (generator_) {
-        // CDFrameGenerator is sized at construction — recreate it (and its
-        // window) at the new geometry, mirroring start().
-        generator_ = std::make_unique<gui_algo::FrameGenerator>(width_, height_);
-        generator_->set_color_palette(palette_);
-        recreate_window();
-    }
-    frame_mode_renderer_.set_geometry(static_cast<int>(width_),
-                                      static_cast<int>(height_));
-    frame_mode_renderer_.reset();
+void FramePipeline::set_display_roi_origin(bool active, int x0, int y0) {
+    display_roi_active_ = active;
+    display_roi_x0_ = x0;
+    display_roi_y0_ = y0;
+    file_generator_.set_render_origin(active, x0, y0);
 }
 
 void FramePipeline::set_accumulation_time_us(Metavision::timestamp us) {

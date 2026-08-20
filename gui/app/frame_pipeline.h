@@ -94,12 +94,16 @@ public:
     /// @brief Clears the file conditioner's temporal state (seek/loop).
     void reset_file_conditioner() { file_generator_.reset_conditioner(); }
 
-    /// @brief Resizes the display geometry (live mode: recreates the
-    /// CDFrameGenerator + frame-mode renderer; file mode: the generator sizes
-    /// its own frames from its conditioner). Called when the unified ROI
-    /// changes the conditioner's OUTPUT geometry: in ROI mode every consumer
-    /// sees the ROI-relative stream, so the display frame IS the ROI.
-    void set_display_geometry(long width, long height);
+    /// @brief Tells the display path where the unified ROI sits. When the
+    /// ROI is active the display renders on the FULL-sensor frame (ROI
+    /// content shifted back to its absolute position; the rest stays the
+    /// palette background — pre-rework visuals, kept because the ROI
+    /// overlay / Zoom-to-ROI crop / Replace-composite strategies are all
+    /// built around full frames). The canonical conditioned stream (what
+    /// algorithms and the conditioner itself use) stays ROI-relative — the
+    /// shift is display-only. No-op semantics for RONI (absolute already).
+    /// Live: applied in add_events(); file: forwarded to the generator.
+    void set_display_roi_origin(bool active, int x0, int y0);
 
     /// @brief Sets the file-mode software ROI (Phase 2.6): same semantics as
     /// the hardware ROI — the FileFrameGenerator only renders/emits events
@@ -216,6 +220,15 @@ private:
     /// Timestamp of the last event fed to the renderer (SDK thread) — used as
     /// the frame timestamp by the live mode tick (GUI thread).
     std::atomic<Metavision::timestamp> last_ev_ts_{0};
+
+    // Display-side ROI placement: origin to add back to the conditioned
+    // ROI-relative events for the DISPLAY feeds (live). GUI-thread setter,
+    // SDK-thread reader — plain ints are set before the pipeline starts or
+    // between batches from the GUI thread; add_events tolerates either value.
+    bool display_roi_active_{false};
+    int display_roi_x0_{0};
+    int display_roi_y0_{0};
+    std::vector<Metavision::EventCD> display_shift_buf_;
 
     /// Processed-stream listener (processed-stream recording), invoked under
     /// processed_mutex_. Events arrive already conditioned
