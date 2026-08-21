@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -106,51 +108,83 @@ public:
     }
 };
 
-/// AutoBiasController backend — bias command as overlay text.
-/// Supports ROI (design §5.6.6): rate computed from ROI events only.
+/// AutoBiasController backend — dual-loop bias control (§4.4.6 rework).
+/// Measures per-polarity rates over the (optionally ROI-restricted) stream
+/// and runs the control tick at 30 Hz; integer bias deltas surface through
+/// AlgoResult::bias_delta_* and are applied to the hardware by the GUI when
+/// a live camera is connected. The command is consumed on pull (applies
+/// exactly once). No overlay text/hint — the sidebar status line carries
+/// the measured rates.
 class AutoBiasBackend final : public AlgoBackend {
     gui_algo::AutoBiasController algo_;
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
     Metavision::timestamp last_t_{0};
-    gui_algo::BiasCommand last_cmd_;
+    Metavision::timestamp last_tick_{-1};
+    gui_algo::BiasCommand pending_cmd_;
 public:
-    AutoBiasBackend(int w, int h) : algo_(5.0F, 0.5F, 0.01F, 0.0F, 10.0F) { roi_.init(w, h); }
+    AutoBiasBackend(int w, int h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
-        if (k == "target_event_rate_mev") algo_.set_target_event_rate_mev(to_d(v));
+        if (k == "rate_min_mev") {
+            // Cross-validate against the current max: nudge it up when the
+            // new min would cross it, so the pair stays a valid band.
+            const float lo = static_cast<float>(to_d(v));
+            const float hi = std::max(algo_.rate_max_mev(), lo + 0.05F);
+            algo_.set_rate_bounds(lo, hi);
+        } else if (k == "rate_max_mev") {
+            const float hi = static_cast<float>(to_d(v));
+            const float lo = std::min(algo_.rate_min_mev(), hi - 0.05F);
+            algo_.set_rate_bounds(lo, hi);
+        } else if (k == "max_step") {
+            algo_.set_max_step(to_i(v, 8));
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "target_event_rate_mev") return from_d(algo_.target_event_rate_mev());
+        if (k == "rate_min_mev") return from_d(algo_.rate_min_mev());
+        if (k == "rate_max_mev") return from_d(algo_.rate_max_mev());
+        if (k == "max_step") return from_i(algo_.max_step());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
+        if (!passthrough_.empty()) last_t_ = passthrough_.back().t;
         auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
                                    passthrough_.size(), roi_buf_);
-        Metavision::timestamp cur_t = passthrough_.empty() ? last_t_ : passthrough_.back().t;
-        const auto dt = cur_t - last_t_;
-        if (dt > 0) {
-            const double rate_mev = static_cast<double>(n) / (static_cast<double>(dt) * 1e-6) / 1e6;
-            last_cmd_ = algo_.update(rate_mev, dt);
+        std::uint32_t n_on = 0, n_off = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (ev[i].p != 0) ++n_on; else ++n_off;
         }
-        last_t_ = cur_t;
+        algo_.accumulate(last_t_, n_on, n_off);
+        // 30 Hz control tick, driven by the event clock.
+        if (last_tick_ < 0) last_tick_ = last_t_;
+        if (last_t_ - last_tick_ >= gui_algo::AutoBiasController::kTickUs) {
+            const auto cmd = algo_.update(last_t_);
+            if (cmd.active) pending_cmd_ = cmd;
+            last_tick_ = last_t_;
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
-        OverlayText t;
-        t.x = 10; t.y = 40;
-        t.text = "bias: d_diff=" + std::to_string(last_cmd_.delta_diff) +
-                 " d_on=" + std::to_string(last_cmd_.delta_on);
-        r.texts.push_back(t);
-        r.status = "auto_bias: target=" + std::to_string(algo_.target_event_rate_mev()) + "Mev" +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
+        if (pending_cmd_.active) {
+            r.has_bias_command = true;
+            r.bias_delta_on = pending_cmd_.delta_on;
+            r.bias_delta_off = pending_cmd_.delta_off;
+            pending_cmd_ = {};
+        }
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "auto_bias: ON %.2f / OFF %.2f Mev/s (band %.1f-%.1f)%s",
+                      algo_.rate_on_mev(), algo_.rate_off_mev(),
+                      algo_.rate_min_mev(), algo_.rate_max_mev(),
+                      roi_.region.enabled ? " ROI" : "");
+        r.status = buf;
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_t_ = 0; last_cmd_ = {}; }
+    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear();
+                            last_t_ = 0; last_tick_ = -1; pending_cmd_ = {}; }
     void set_sensor_dimensions(int w, int h) override {
         // The algo holds no sensor-sized state (rate controller) — only the
         // ROI geometry needs updating (audit §五-D1).

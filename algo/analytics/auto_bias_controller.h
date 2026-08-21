@@ -1,130 +1,214 @@
-// algo/analytics/auto_bias_controller.h — Adaptive bias control via PID.
+// algo/analytics/auto_bias_controller.h — Dual-loop adaptive bias control.
 //
-// Design §4.4.6. PID controller that adjusts camera biases (bias_diff /
-// bias_on / bias_off) based on event-rate feedback to maintain a target event
-// rate, inspired by jAER AutoExposureController (which uses APS histograms;
-// this module uses event rate as the feedback signal). Output: bias adjustment
-// commands with rate limiting and clamping. Header-only.
+// Design §4.4.6 (reworked 2026-08-21). Two decoupled control loops on the
+// two hardware-tunable sensitivity biases (bias_diff_on / bias_diff_off —
+// the only writable biases, integers):
+//
+//   common mode  : total event rate  r = r_on + r_off  kept inside
+//                  [rate_min, rate_max] — above the cap both biases rise
+//                  (less sensitive), below the floor both fall;
+//   differential : polarity balance  b = (r_on - r_off) / r  kept inside
+//                  ±balance_tol — only the DOMINANT polarity's bias rises
+//                  (bias_diff_on gates ON events, bias_diff_off gates OFF;
+//                  self-effect dominates cross-effect, arXiv:2501.18788).
+//
+// No PID gains: the hardware itself is the integrator (each command moves
+// the bias and stays until the next command), so a plain deadband + step
+// law with integer output is the whole controller. Robustness against the
+// bias→rate response lag: act only after kActivateTicks consecutive
+// violating ticks, then observe for kHoldTicks before acting again.
+// Control tick is 30 Hz (kTickUs); rates are measured over a sliding
+// kWindowUs window of per-batch polarity counts. Header-only, no Qt.
 
 #ifndef GUI_ALGO_ANALYTICS_AUTO_BIAS_CONTROLLER_H
 #define GUI_ALGO_ANALYTICS_AUTO_BIAS_CONTROLLER_H
 
 #include <algorithm>
 #include <cmath>
-
-#include <metavision/sdk/base/utils/timestamp.h>
+#include <cstdint>
+#include <deque>
+#include <utility>
 
 namespace gui_algo {
 
-/// @brief A bias adjustment command emitted by the controller.
+/// @brief A bias adjustment command (integer deltas, applied verbatim by
+///        the hardware side which clamps to the LL bias range).
 struct BiasCommand {
-    float delta_diff{0.0f};  ///< Adjustment for bias_diff
-    float delta_on{0.0f};    ///< Adjustment for bias_on
-    float delta_off{0.0f};   ///< Adjustment for bias_off
+    int delta_on{0};    ///< Delta for bias_diff_on (positive = less sensitive)
+    int delta_off{0};   ///< Delta for bias_diff_off
+    bool active{false}; ///< True when this command requests a real adjustment
 };
 
-/// @brief PID-based adaptive camera bias controller targeting an event rate.
+/// @brief Dual-loop adaptive camera bias controller (rate band + polarity
+///        balance), 30 Hz control tick, integer bias deltas.
 class AutoBiasController {
 public:
-    /// @brief Constructs the controller.
-    /// @param target_event_rate_mev Target event rate in Mev/s, [0.1, 50].
-    /// @param kp,ki,kd PID gains.
-    /// @param max_step Maximum per-update step magnitude, [1, 100].
-    AutoBiasController(float target_event_rate_mev = 5.0f,
-                       float kp = 0.5f, float ki = 0.01f, float kd = 0.0f,
-                       float max_step = 10.0f)
-        : target_(clamp_target(target_event_rate_mev)),
-          kp_(kp), ki_(ki), kd_(kd),
-          max_step_(clamp_step(max_step)) {}
+    /// Measured-window length and the minimum span before the first
+    /// decision (avoids acting on a near-empty window after (re)enable).
+    static constexpr std::int64_t kWindowUs = 500'000;
+    static constexpr std::int64_t kMinSpanUs = 250'000;
+    /// Control tick (30 Hz).
+    static constexpr std::int64_t kTickUs = 33'333;
+    /// Consecutive violating ticks before acting / observation ticks after.
+    static constexpr int kActivateTicks = 3;
+    static constexpr int kHoldTicks = 10;
+    /// Polarity-balance deadband (normalized ON-OFF difference).
+    static constexpr double kBalanceTol = 0.15;
 
-    /// @brief Produces a bias adjustment command from the measured event rate.
-    /// @param measured_mev Current smoothed event rate in Mev/s.
-    /// @param dt_us Time elapsed since the last update in us (for integral/
-    ///        derivative terms). If <= 0, only the proportional term is used.
-    BiasCommand update(double measured_mev, Metavision::timestamp dt_us) {
-        const double error =
-            static_cast<double>(target_) - measured_mev;
-        // Proportional term.
-        double p = kp_ * error;
-        // Integral term (accumulated error over time).
-        double d_term = 0.0;
-        if (dt_us > 0) {
-            const double dt_s = static_cast<double>(dt_us) * 1.0e-6;
-            integral_ += error * dt_s;
-            // Anti-windup: clamp the integral contribution.
-            const double i_max = static_cast<double>(max_step_);
-            if (integral_ > i_max) integral_ = i_max;
-            if (integral_ < -i_max) integral_ = -i_max;
-            // Derivative term.
-            if (last_error_init_) {
-                d_term = kd_ * (error - last_error_) / dt_s;
-            }
-            last_error_ = error;
-            last_error_init_ = true;
+    /// @brief Constructs the controller.
+    /// @param rate_min_mev,rate_max_mev Target total-rate band in Mev/s.
+    /// @param max_step Maximum per-command bias delta, [1, 100].
+    AutoBiasController(float rate_min_mev = 1.0F, float rate_max_mev = 10.0F,
+                       int max_step = 8)
+        : max_step_(clamp_step(max_step)) {
+        set_rate_bounds(rate_min_mev, rate_max_mev);
+    }
+
+    /// @brief Sets the target rate band. Each bound is clamped to
+    ///        [0.05, 100]; the pair is rejected (previous band kept) when
+    ///        the result would not be a valid lo < hi band.
+    bool set_rate_bounds(float lo_mev, float hi_mev) {
+        float lo = std::clamp(lo_mev, 0.05F, 100.0F);
+        float hi = std::clamp(hi_mev, 0.05F, 100.0F);
+        if (hi <= lo) return false;
+        rate_min_ = lo;
+        rate_max_ = hi;
+        return true;
+    }
+    float rate_min_mev() const { return rate_min_; }
+    float rate_max_mev() const { return rate_max_; }
+
+    void set_max_step(int s) { max_step_ = clamp_step(s); }
+    int max_step() const { return max_step_; }
+
+    /// @brief Feeds one batch increment (counts of ON / OFF events whose
+    ///        timestamps all fall at @p t_us or just before). O(1).
+    void accumulate(std::int64_t t_us, std::uint32_t n_on, std::uint32_t n_off) {
+        if (win_.empty() || t_us > win_.back().t) {
+            win_.push_back({t_us, n_on, n_off});
+        } else { // non-monotonic batch (source seek/loop) — fold into the
+            auto& last = win_.back();  // newest entry; the window stays sorted
+            last.n_on += n_on;
+            last.n_off += n_off;
         }
-        const double i = ki_ * integral_;
-        double output = p + i + d_term;
-        // Rate-limit the output to [-max_step, +max_step].
-        if (output > max_step_) output = max_step_;
-        if (output < -max_step_) output = -max_step_;
-        // Higher event rate than target => reduce bias (negative delta);
-        // lower event rate than target => increase bias (positive delta).
-        // error = target - measured, so positive error => need more events =>
-        // increase bias => positive delta. This matches `output` directly.
+        acc_on_ += n_on;
+        acc_off_ += n_off;
+        prune(t_us);
+    }
+
+    /// @brief One control tick. Returns the command (inactive while the
+    ///        window is cold, inside both deadbands, or during the
+    ///        post-action hold).
+    BiasCommand update(std::int64_t now_us) {
+        prune(now_us);
+        // Hold: observe the effect of the last command before acting again.
+        if (hold_ticks_ > 0) {
+            --hold_ticks_;
+            return {};
+        }
+        if (!window_ready()) {
+            viol_ticks_ = 0;
+            return {};
+        }
+        const double span_s =
+            static_cast<double>(now_us - win_.front().t) * 1.0e-6;
+        const double r_on = acc_on_ * 1.0e-6 / span_s;
+        const double r_off = acc_off_ * 1.0e-6 / span_s;
+        const double total = r_on + r_off;
+
+        int d_on = 0, d_off = 0;
+        // Common mode: total rate inside the band (deadband = the band).
+        if (total > rate_max_) {
+            const double e = (total - rate_max_) / rate_max_;
+            const int s = step(e);
+            d_on += s;
+            d_off += s;
+        } else if (total < rate_min_) {
+            const double e = (rate_min_ - total) / rate_min_;
+            const int s = step(e);
+            d_on -= s;
+            d_off -= s;
+        }
+        // Differential mode: only meaningful with enough events to trust
+        // the polarity ratio (a handful of events says nothing).
+        if (acc_on_ + acc_off_ >= 64) {
+            const double b = (r_on - r_off) / total;
+            if (b > kBalanceTol) {
+                d_on += step(std::abs(b) - kBalanceTol);
+            } else if (b < -kBalanceTol) {
+                d_off += step(std::abs(b) - kBalanceTol);
+            }
+        }
+
+        const bool needs_action = d_on != 0 || d_off != 0;
+        if (!needs_action) {
+            viol_ticks_ = 0;
+            return {};
+        }
+        // Persistency filter: act only on sustained violations so a single
+        // noisy window cannot kick the biases.
+        if (++viol_ticks_ < kActivateTicks) return {};
+        viol_ticks_ = 0;
+        hold_ticks_ = kHoldTicks;
         BiasCommand cmd;
-        // Drive bias_diff primarily; bias_on/bias_off receive a fraction.
-        cmd.delta_diff = static_cast<float>(output);
-        cmd.delta_on = static_cast<float>(output) * 0.5f;
-        cmd.delta_off = static_cast<float>(output) * 0.5f;
-        last_output_ = output;
+        cmd.delta_on = std::clamp(d_on, -max_step_, max_step_);
+        cmd.delta_off = std::clamp(d_off, -max_step_, max_step_);
+        cmd.active = true;
         return cmd;
     }
 
-    void set_target_event_rate_mev(float r) { target_ = clamp_target(r); }
-    float target_event_rate_mev() const { return target_; }
-
-    void set_gains(float kp, float ki, float kd) {
-        kp_ = kp; ki_ = ki; kd_ = kd;
+    /// @brief Measured rates over the current window (0 before it fills).
+    double rate_on_mev() const { return window_ready() ? measured(true) : 0.0; }
+    double rate_off_mev() const { return window_ready() ? measured(false) : 0.0; }
+    bool window_ready() const {
+        return !win_.empty() &&
+               win_.back().t - win_.front().t >= kMinSpanUs;
     }
-    float kp() const { return kp_; }
-    float ki() const { return ki_; }
-    float kd() const { return kd_; }
 
-    void set_max_step(float s) { max_step_ = clamp_step(s); }
-    float max_step() const { return max_step_; }
-
-    double last_output() const { return last_output_; }
-    double integral() const { return integral_; }
-
-    /// @brief Resets the controller state (integral + derivative memory).
+    /// @brief Resets all state (disable / re-enable / source change).
     void reset() {
-        integral_ = 0.0;
-        last_error_ = 0.0;
-        last_error_init_ = false;
-        last_output_ = 0.0;
+        win_.clear();
+        acc_on_ = 0;
+        acc_off_ = 0;
+        viol_ticks_ = 0;
+        hold_ticks_ = 0;
     }
 
 private:
-    static float clamp_target(float r) {
-        if (r < 0.1f) return 0.1f;
-        if (r > 50.0f) return 50.0f;
-        return r;
+    struct Inc {
+        std::int64_t t;
+        std::uint32_t n_on, n_off;
+    };
+
+    static int clamp_step(int s) { return std::clamp(s, 1, 100); }
+    /// Step law: proportional to the normalized violation, always ≥1 (an
+    /// integer bias write of 0 is a no-op), capped by max_step_.
+    int step(double violation) const {
+        const double v = std::max(0.0, violation);
+        return std::clamp(static_cast<int>(std::lround(8.0 * v)) + 1, 1, max_step_);
     }
-    static float clamp_step(float s) {
-        if (s < 1.0f) return 1.0f;
-        if (s > 100.0f) return 100.0f;
-        return s;
+    void prune(std::int64_t now_us) {
+        while (!win_.empty() && now_us - win_.front().t > kWindowUs) {
+            acc_on_ -= win_.front().n_on;
+            acc_off_ -= win_.front().n_off;
+            win_.pop_front();
+        }
+    }
+    double measured(bool on) const {
+        const double span_s =
+            static_cast<double>(win_.back().t - win_.front().t) * 1.0e-6;
+        if (span_s <= 0.0) return 0.0;
+        const double n = on ? acc_on_ : acc_off_;
+        return n * 1.0e-6 / span_s;
     }
 
-    float target_;
-    float kp_;
-    float ki_;
-    float kd_;
-    float max_step_;
-    double integral_{0.0};
-    double last_error_{0.0};
-    bool last_error_init_{false};
-    double last_output_{0.0};
+    float rate_min_{1.0F};
+    float rate_max_{10.0F};
+    int max_step_{8};
+    std::deque<Inc> win_;
+    std::uint64_t acc_on_{0}, acc_off_{0};
+    int viol_ticks_{0};
+    int hold_ticks_{0};
 };
 
 } // namespace gui_algo

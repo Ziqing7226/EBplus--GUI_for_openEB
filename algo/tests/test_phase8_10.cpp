@@ -814,31 +814,104 @@ TEST(ParticleCounterTest, InitialCount) {
     EXPECT_EQ(c.cumulative_count(), 0u);
 }
 
-// --- 4.4.6 AutoBiasController ---
-TEST(AutoBiasControllerTest, Construction) {
-    AutoBiasController c;
-    EXPECT_FLOAT_EQ(c.target_event_rate_mev(), 5.0f);
-    EXPECT_FLOAT_EQ(c.kp(), 0.5f);
+// --- 4.4.6 AutoBiasController (dual loop: rate band + ON/OFF balance) ---
+namespace {
+// Feed a constant-rate stream for the given duration; returns the commands
+// emitted along the way (one per violating tick that passes the filters).
+std::vector<gui_algo::BiasCommand> feed(AutoBiasController& c,
+                                        double on_mev, double off_mev,
+                                        std::int64_t duration_us) {
+    std::vector<gui_algo::BiasCommand> cmds;
+    const std::int64_t step = 1000;  // 1 ms batches
+    const std::uint32_t n_on = static_cast<std::uint32_t>(on_mev * step);
+    const std::uint32_t n_off = static_cast<std::uint32_t>(off_mev * step);
+    std::int64_t t = 0;
+    while (t < duration_us) {
+        t += step;
+        c.accumulate(t, n_on, n_off);
+        const auto cmd = c.update(t);
+        if (cmd.active) cmds.push_back(cmd);
+    }
+    return cmds;
 }
-TEST(AutoBiasControllerTest, Params) {
-    AutoBiasController c;
-    c.set_target_event_rate_mev(10.0f);
-    EXPECT_FLOAT_EQ(c.target_event_rate_mev(), 10.0f);
-    c.set_gains(0.3f, 0.02f, 0.01f);
-    EXPECT_FLOAT_EQ(c.kp(), 0.3f);
-    EXPECT_FLOAT_EQ(c.ki(), 0.02f);
-    EXPECT_FLOAT_EQ(c.kd(), 0.01f);
+} // namespace
+
+TEST(AutoBiasControllerTest, RateBandValidation) {
+    AutoBiasController c;  // default band 1..10
+    EXPECT_FLOAT_EQ(c.rate_min_mev(), 1.0f);
+    EXPECT_FLOAT_EQ(c.rate_max_mev(), 10.0f);
+    EXPECT_FALSE(c.set_rate_bounds(5.0f, 5.0f));   // lo == hi rejected
+    EXPECT_FALSE(c.set_rate_bounds(8.0f, 4.0f));   // inverted rejected
+    EXPECT_FLOAT_EQ(c.rate_min_mev(), 1.0f);       // previous band kept
+    EXPECT_TRUE(c.set_rate_bounds(2.0f, 20.0f));
+    EXPECT_FLOAT_EQ(c.rate_min_mev(), 2.0f);
+    EXPECT_FLOAT_EQ(c.rate_max_mev(), 20.0f);
 }
-TEST(AutoBiasControllerTest, Update) {
-    AutoBiasController c(5.0f);
-    auto cmd = c.update(3.0, 1000000); // measured 3 Mev/s, target 5
-    EXPECT_NE(cmd.delta_diff, 0.0f); // should have some correction
+TEST(AutoBiasControllerTest, DeadbandIsIdle) {
+    AutoBiasController c;  // band 1..10
+    const auto cmds = feed(c, 3.0, 3.0, 1'000'000);  // in band, balanced
+    EXPECT_TRUE(cmds.empty());
+    EXPECT_NEAR(c.rate_on_mev(), 3.0, 0.2);
+    EXPECT_NEAR(c.rate_off_mev(), 3.0, 0.2);
+}
+TEST(AutoBiasControllerTest, HighRateRaisesBoth) {
+    AutoBiasController c;  // band 1..10
+    const auto cmds = feed(c, 20.0, 20.0, 1'000'000);  // 40 Mev/s >> max
+    ASSERT_FALSE(cmds.empty());
+    for (const auto& cmd : cmds) {
+        EXPECT_GT(cmd.delta_on, 0);   // raise both = less sensitive
+        EXPECT_GT(cmd.delta_off, 0);
+    }
+}
+TEST(AutoBiasControllerTest, LowRateLowersBoth) {
+    AutoBiasController c;  // band 1..10
+    const auto cmds = feed(c, 0.05, 0.05, 1'000'000);  // 0.1 Mev/s < min
+    ASSERT_FALSE(cmds.empty());
+    for (const auto& cmd : cmds) {
+        EXPECT_LT(cmd.delta_on, 0);   // lower both = more sensitive
+        EXPECT_LT(cmd.delta_off, 0);
+    }
+}
+TEST(AutoBiasControllerTest, BalanceRaisesOnlyDominantPolarity) {
+    AutoBiasController c;  // band 1..10
+    // Total 6 Mev/s (in band), heavily ON-skewed: b = 0.67 > tol.
+    const auto cmds = feed(c, 5.0, 1.0, 1'000'000);
+    ASSERT_FALSE(cmds.empty());
+    for (const auto& cmd : cmds) {
+        EXPECT_GT(cmd.delta_on, 0);    // gate the dominant ON side
+        EXPECT_EQ(cmd.delta_off, 0);   // leave the OFF side untouched
+    }
+}
+TEST(AutoBiasControllerTest, HoldAfterAction) {
+    AutoBiasController c;  // band 1..10
+    const auto cmds = feed(c, 20.0, 20.0, 500'000);
+    ASSERT_GE(cmds.size(), 1u);
+    // After the window fills (~250 ms) there are ~250 violating updates,
+    // but each action is followed by kHoldTicks idle ticks + kActivateTicks
+    // re-arming: at most one command per ~14 updates, never back-to-back.
+    EXPECT_LE(cmds.size(), 250 / 12 + 1u);
+}
+TEST(AutoBiasControllerTest, IntegerDeltasAndStepCap) {
+    AutoBiasController c(1.0f, 10.0f, 4);  // max_step 4
+    const auto cmds = feed(c, 50.0, 50.0, 500'000);
+    ASSERT_FALSE(cmds.empty());
+    for (const auto& cmd : cmds) {
+        EXPECT_LE(cmd.delta_on, 4);
+        EXPECT_LE(cmd.delta_off, 4);
+    }
+}
+TEST(AutoBiasControllerTest, ColdWindowIsIdle) {
+    AutoBiasController c;
+    c.accumulate(1000, 100000, 100000);  // single batch, window not ready
+    EXPECT_FALSE(c.window_ready());
+    EXPECT_FALSE(c.update(1000).active);
 }
 TEST(AutoBiasControllerTest, Reset) {
-    AutoBiasController c(5.0f);
-    c.update(3.0, 1000000);
+    AutoBiasController c;
+    feed(c, 20.0, 20.0, 400'000);
     c.reset();
-    EXPECT_DOUBLE_EQ(c.integral(), 0.0);
+    EXPECT_TRUE(c.rate_on_mev() == 0.0 && c.rate_off_mev() == 0.0);
+    EXPECT_FALSE(c.window_ready());
 }
 
 // --- 4.4.7 FreqDetector ---
