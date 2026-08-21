@@ -260,6 +260,68 @@ int main(int argc, char** argv) {
                              "original coordinates for every consumer\n");
     }
 
+    // --- Test 6: unified-ROI display placement (2026-08-21 review): the
+    // display frame stays FULL-sensor with ROI content at its ABSOLUTE
+    // position (non-ROI keeps the background — the pre-rework pass-through
+    // mode), while events_window_ready carries the CANONICAL ROI-relative
+    // stream for the ROI-dim backends.
+    {
+        FileFrameGenerator gen5;
+        gen5.set_geometry(W, H);
+        gen5.set_fps(60);
+        gen5.set_accumulation_time_us(1000);
+        gen5.set_display_roi(true, 20, 30, 40, 25, /*roni=*/false);
+
+        QImage rendered5;
+        QObject::connect(&gen5, &FileFrameGenerator::frame_ready,
+                         [&](QImage f, Metavision::timestamp) { rendered5 = f; });
+        std::shared_ptr<std::vector<Metavision::EventCD>> emitted5;
+        QObject::connect(&gen5, &FileFrameGenerator::events_window_ready,
+                         [&](std::shared_ptr<std::vector<Metavision::EventCD>> evs,
+                             Metavision::timestamp) { emitted5 = evs; });
+
+        std::vector<Metavision::EventCD> evs;
+        evs.push_back(Metavision::EventCD{30, 40, 100, 1});  // in-rect → ROI-rel (10,10)
+        evs.push_back(Metavision::EventCD{5, 5, 150, 1});    // outside → dropped
+        gen5.add_events(evs.data(), evs.data() + evs.size());
+        gen5.set_duration_us(2000);
+        gen5.seek(0);
+
+        if (rendered5.isNull()) {
+            std::fprintf(stderr, "FAIL: no frame rendered with ROI\n");
+            return 1;
+        }
+        if (rendered5.width() != W || rendered5.height() != H) {
+            std::fprintf(stderr, "FAIL: ROI display frame must stay full-sensor "
+                                 "(got %dx%d, want %dx%d)\n",
+                         rendered5.width(), rendered5.height(), W, H);
+            return 1;
+        }
+        const QRgb bg5 = rendered5.pixel(0, 0);
+        if (rendered5.pixel(30, 40) == bg5) {
+            std::fprintf(stderr, "FAIL: in-ROI event must render at its ABSOLUTE "
+                                 "position (30,40)\n");
+            return 1;
+        }
+        if (rendered5.pixel(10, 10) != bg5) {
+            std::fprintf(stderr, "FAIL: nothing may render at the ROI-relative "
+                                 "position (10,10)\n");
+            return 1;
+        }
+        if (rendered5.pixel(5, 5) != bg5) {
+            std::fprintf(stderr, "FAIL: outside-ROI event must be dropped\n");
+            return 1;
+        }
+        if (!emitted5 || emitted5->size() != 1 || (*emitted5)[0].x != 10 ||
+            (*emitted5)[0].y != 10) {
+            std::fprintf(stderr, "FAIL: events_window_ready must carry ONE "
+                                 "ROI-RELATIVE event at (10,10)\n");
+            return 1;
+        }
+        std::fprintf(stderr, "PASS: ROI display placement — full frame, absolute "
+                             "render, ROI-relative algo stream\n");
+    }
+
     std::fprintf(stderr, "PASS: flip_x correctly applied in render_frame() and events_window_ready\n");
     return 0;
 }
