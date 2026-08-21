@@ -19,6 +19,11 @@
 // violating ticks, then observe for kHoldTicks before acting again.
 // Control tick is 30 Hz (kTickUs); rates are measured over a sliding
 // kWindowUs window of per-batch polarity counts. Header-only, no Qt.
+//
+// Tuning (2026-08-21): fast-convergence profile — max_step default 32,
+// step gain 16, 2 violating ticks to arm, 6-tick hold (~200 ms). Overshoot
+// protection is the deadband structure itself (steps shrink as the error
+// approaches the band edge) plus the hold, not a small step cap.
 
 #ifndef GUI_ALGO_ANALYTICS_AUTO_BIAS_CONTROLLER_H
 #define GUI_ALGO_ANALYTICS_AUTO_BIAS_CONTROLLER_H
@@ -45,34 +50,35 @@ class AutoBiasController {
 public:
     /// Measured-window length and the minimum span before the first
     /// decision (avoids acting on a near-empty window after (re)enable).
-    static constexpr std::int64_t kWindowUs = 500'000;
-    static constexpr std::int64_t kMinSpanUs = 250'000;
+    static constexpr std::int64_t kWindowUs = 400'000;
+    static constexpr std::int64_t kMinSpanUs = 200'000;
     /// Control tick (30 Hz).
     static constexpr std::int64_t kTickUs = 33'333;
     /// Consecutive violating ticks before acting / observation ticks after.
-    static constexpr int kActivateTicks = 3;
-    static constexpr int kHoldTicks = 10;
+    static constexpr int kActivateTicks = 2;
+    static constexpr int kHoldTicks = 6;
     /// Polarity-balance deadband (normalized ON-OFF difference).
     static constexpr double kBalanceTol = 0.15;
 
     /// @brief Constructs the controller.
-    /// @param rate_min_mev,rate_max_mev Target total-rate band in Mev/s.
+    /// @param rate_min_mev,rate_max_mev Target total-rate band in Mev/s
+    ///        (max has no artificial ceiling — the hardware bias range is
+    ///        the real limit).
     /// @param max_step Maximum per-command bias delta, [1, 100].
     AutoBiasController(float rate_min_mev = 1.0F, float rate_max_mev = 10.0F,
-                       int max_step = 8)
+                       int max_step = 32)
         : max_step_(clamp_step(max_step)) {
         set_rate_bounds(rate_min_mev, rate_max_mev);
     }
 
-    /// @brief Sets the target rate band. Each bound is clamped to
-    ///        [0.05, 100]; the pair is rejected (previous band kept) when
-    ///        the result would not be a valid lo < hi band.
+    /// @brief Sets the target rate band. The min is floored at 0.05; the
+    ///        pair is rejected (previous band kept) when it would not form
+    ///        a valid lo < hi band.
     bool set_rate_bounds(float lo_mev, float hi_mev) {
-        float lo = std::clamp(lo_mev, 0.05F, 100.0F);
-        float hi = std::clamp(hi_mev, 0.05F, 100.0F);
-        if (hi <= lo) return false;
+        const float lo = std::max(lo_mev, 0.05F);
+        if (!(hi_mev > lo)) return false;
         rate_min_ = lo;
-        rate_max_ = hi;
+        rate_max_ = hi_mev;
         return true;
     }
     float rate_min_mev() const { return rate_min_; }
@@ -150,6 +156,13 @@ public:
         if (++viol_ticks_ < kActivateTicks) return {};
         viol_ticks_ = 0;
         hold_ticks_ = kHoldTicks;
+        // Drop the measurement window: every sample in it predates the bias
+        // change, so acting on it again after the hold would stack steps on
+        // stale data and overshoot. Fresh post-action data re-arms in
+        // kMinSpanUs.
+        win_.clear();
+        acc_on_ = 0;
+        acc_off_ = 0;
         BiasCommand cmd;
         cmd.delta_on = std::clamp(d_on, -max_step_, max_step_);
         cmd.delta_off = std::clamp(d_off, -max_step_, max_step_);
@@ -185,7 +198,7 @@ private:
     /// integer bias write of 0 is a no-op), capped by max_step_.
     int step(double violation) const {
         const double v = std::max(0.0, violation);
-        return std::clamp(static_cast<int>(std::lround(8.0 * v)) + 1, 1, max_step_);
+        return std::clamp(static_cast<int>(std::lround(16.0 * v)) + 1, 1, max_step_);
     }
     void prune(std::int64_t now_us) {
         while (!win_.empty() && now_us - win_.front().t > kWindowUs) {

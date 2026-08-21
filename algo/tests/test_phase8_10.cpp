@@ -840,12 +840,16 @@ TEST(AutoBiasControllerTest, RateBandValidation) {
     AutoBiasController c;  // default band 1..10
     EXPECT_FLOAT_EQ(c.rate_min_mev(), 1.0f);
     EXPECT_FLOAT_EQ(c.rate_max_mev(), 10.0f);
+    EXPECT_EQ(c.max_step(), 32);  // fast-convergence default
     EXPECT_FALSE(c.set_rate_bounds(5.0f, 5.0f));   // lo == hi rejected
     EXPECT_FALSE(c.set_rate_bounds(8.0f, 4.0f));   // inverted rejected
     EXPECT_FLOAT_EQ(c.rate_min_mev(), 1.0f);       // previous band kept
     EXPECT_TRUE(c.set_rate_bounds(2.0f, 20.0f));
     EXPECT_FLOAT_EQ(c.rate_min_mev(), 2.0f);
     EXPECT_FLOAT_EQ(c.rate_max_mev(), 20.0f);
+    EXPECT_TRUE(c.set_rate_bounds(0.0f, 5000.0f)); // no artificial ceiling
+    EXPECT_FLOAT_EQ(c.rate_min_mev(), 0.05f);      // min floored, max kept
+    EXPECT_FLOAT_EQ(c.rate_max_mev(), 5000.0f);
 }
 TEST(AutoBiasControllerTest, DeadbandIsIdle) {
     AutoBiasController c;  // band 1..10
@@ -884,12 +888,12 @@ TEST(AutoBiasControllerTest, BalanceRaisesOnlyDominantPolarity) {
 }
 TEST(AutoBiasControllerTest, HoldAfterAction) {
     AutoBiasController c;  // band 1..10
-    const auto cmds = feed(c, 20.0, 20.0, 500'000);
+    const auto cmds = feed(c, 20.0, 20.0, 600'000);
     ASSERT_GE(cmds.size(), 1u);
-    // After the window fills (~250 ms) there are ~250 violating updates,
-    // but each action is followed by kHoldTicks idle ticks + kActivateTicks
-    // re-arming: at most one command per ~14 updates, never back-to-back.
-    EXPECT_LE(cmds.size(), 250 / 12 + 1u);
+    // Each action flushes the measurement window (all pre-action samples
+    // are stale), so consecutive commands are spaced by the 200 ms refill
+    // at minimum — over 600 ms at most ~2 actions, never back-to-back.
+    EXPECT_LE(cmds.size(), 3u);
 }
 TEST(AutoBiasControllerTest, IntegerDeltasAndStepCap) {
     AutoBiasController c(1.0f, 10.0f, 4);  // max_step 4
