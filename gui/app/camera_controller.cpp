@@ -454,7 +454,14 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
                     // listener all consume the SAME output span.
                     const auto [cb, cn] = conditioner_.apply(b, e);
                     const auto* ce = cb + cn;
-                    frame_pipeline_.add_events(cb, ce);
+                    // cn == 0 (a stage emptied the batch): skip the display
+                    // push — an empty span may carry a null data() on first
+                    // use, and the old pre-rework paths guarded exactly this
+                    // (`if (!filtered.empty())`). The listener still runs: it
+                    // owns the raw-count profiler tick for empty batches.
+                    if (cn > 0) {
+                        frame_pipeline_.add_events(cb, ce);
+                    }
                     ConditionedListener listener;
                     {
                         std::lock_guard<std::mutex> lk(conditioned_mutex_);
