@@ -604,11 +604,9 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     // These checkboxes are intentionally NOT added to checkboxes_ (the
     // algorithm-mutex map) so enabling preprocessing does not disable the
     // main algorithm — preprocessing overlays on top of it.
-    connect(preproc_filter_cb_, &QCheckBox::toggled, this, [this](bool on) {
-        apply_global_preproc("preproc_filter_enabled", on ? "true" : "false");
-        // Make the panel the source of truth: without this push the backend
-        // keeps its built-in defaults for every row the user never touched,
-        // and those defaults had silently diverged from the displayed ones.
+    connect(preproc_filter_cb_, &QCheckBox::toggled, this, [this](bool) {
+        // push_all starts with preproc_filter_enabled — applying it here as
+        // well rebuilt the shared filter twice per toggle.
         push_all_preproc_params();
         refresh_preproc_params();
     });
@@ -636,8 +634,8 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     });
     connect(preproc_filter_mode_combo_,
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int idx) {
-                apply_global_preproc("preproc_filter_mode", std::to_string(idx));
+            [this](int) {
+                // push_all pushes the mode too (and the rows that follow it).
                 push_all_preproc_params();
                 refresh_preproc_params();
             });
@@ -989,7 +987,10 @@ void AlgorithmsPanel::refresh_param_values() {
                 return cv ? *cv : std::string();
             };
             const std::string fen = read_master("preproc_filter_enabled");
-            if (!fen.empty()) {
+            if (fen.empty()) continue;  // this algo carries no master mirror —
+                                       // try the next one (the flag must NOT
+                                       // latch on an algo with no values)
+            {
                 QSignalBlocker b(preproc_filter_cb_);
                 preproc_filter_cb_->setChecked(fen == "true");
             }
