@@ -2,6 +2,8 @@
 
 #include "biases_panel.h"
 
+#include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -60,16 +62,127 @@ BiasesPanel::BiasesPanel(QWidget* parent) : AbstractPanel(parent) {
             }
         }
     });
+
+    build_auto_bias_section(outer);
+}
+
+void BiasesPanel::build_auto_bias_section(QVBoxLayout* outer) {
+    auto_group_ = new QGroupBox(tr("AUTO BIAS"), this);
+    auto* lay = new QVBoxLayout(auto_group_);
+    lay->setContentsMargins(4, 4, 4, 4);
+    lay->setSpacing(6);
+
+    auto_bias_cb_ = new QCheckBox(tr("Enable"), auto_group_);
+    lay->addWidget(auto_bias_cb_);
+
+    auto* row = new QWidget(auto_group_);
+    auto* hl = new QHBoxLayout(row);
+    hl->setContentsMargins(0, 0, 0, 0);
+    hl->setSpacing(6);
+    // No artificial ceiling on the max — the hardware bias range is the
+    // real limit (spinbox max is set high enough to never bind).
+    auto* lo_lab = new QLabel(tr("Min"), row);
+    rate_min_sp_ = new QDoubleSpinBox(row);
+    rate_min_sp_->setRange(0.05, 1000.0);
+    rate_min_sp_->setDecimals(1);
+    rate_min_sp_->setSingleStep(0.5);
+    rate_min_sp_->setValue(1.0);
+    rate_min_sp_->setSuffix(tr(" Mev/s"));
+    auto* hi_lab = new QLabel(tr("Max"), row);
+    rate_max_sp_ = new QDoubleSpinBox(row);
+    rate_max_sp_->setRange(0.1, 100000.0);
+    rate_max_sp_->setDecimals(1);
+    rate_max_sp_->setSingleStep(0.5);
+    rate_max_sp_->setValue(10.0);
+    rate_max_sp_->setSuffix(tr(" Mev/s"));
+    hl->addWidget(lo_lab, 0);
+    hl->addWidget(rate_min_sp_, 1);
+    hl->addWidget(hi_lab, 0);
+    hl->addWidget(rate_max_sp_, 1);
+    lay->addWidget(row);
+
+    outer->addWidget(auto_group_);
+    auto_group_->setVisible(true);
+    auto_group_->setEnabled(false);
+
+    connect(auto_bias_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        if (!camera_ || !camera_->set_auto_bias_enabled(on)) {
+            // File playback / sensor without diff biases: refuse and
+            // reflect the actual state.
+            QSignalBlocker b(auto_bias_cb_);
+            auto_bias_cb_->setChecked(false);
+        }
+        sync_auto_bias_ui();
+    });
+    connect(rate_min_sp_, &QDoubleSpinBox::valueChanged, this,
+            [this](double) { apply_auto_bias_bounds(); });
+    connect(rate_max_sp_, &QDoubleSpinBox::valueChanged, this,
+            [this](double) { apply_auto_bias_bounds(); });
+}
+
+void BiasesPanel::apply_auto_bias_bounds() {
+    if (!camera_) {
+        return;
+    }
+    // The just-edited field wins; the other follows so the pair stays a
+    // valid lo < hi band (mirrors the controller's own validation).
+    const double lo = rate_min_sp_->value();
+    const double hi = rate_max_sp_->value();
+    if (sender() == rate_min_sp_ && lo >= hi) {
+        QSignalBlocker b(rate_max_sp_);
+        rate_max_sp_->setValue(lo + 0.5);
+    } else if (sender() == rate_max_sp_ && hi <= lo) {
+        QSignalBlocker b(rate_min_sp_);
+        rate_min_sp_->setValue(std::max(0.05, hi - 0.5));
+    }
+    camera_->set_auto_bias_rate_bounds(
+        static_cast<float>(rate_min_sp_->value()),
+        static_cast<float>(rate_max_sp_->value()));
+}
+
+void BiasesPanel::sync_auto_bias_ui() {
+    const bool usable = camera_ && populated_ && camera_->is_connected() &&
+                        !camera_->is_file_source();
+    auto_group_->setEnabled(usable);
+    if (!camera_ || !usable) {
+        QSignalBlocker b(auto_bias_cb_);
+        auto_bias_cb_->setChecked(false);
+        return;
+    }
+    QSignalBlocker b(auto_bias_cb_);
+    auto_bias_cb_->setChecked(camera_->auto_bias_enabled());
+    float lo = 0.F, hi = 0.F;
+    camera_->auto_bias_rate_bounds(lo, hi);
+    QSignalBlocker b1(rate_min_sp_);
+    QSignalBlocker b2(rate_max_sp_);
+    rate_min_sp_->setValue(static_cast<double>(lo));
+    rate_max_sp_->setValue(static_cast<double>(hi));
 }
 
 void BiasesPanel::on_camera_connected(CameraController* controller) {
     camera_ = controller;
+    // Re-connect the out-of-band write notification for THIS source
+    // (the controller object outlives sources — untracked connections
+    // would stack across reconnects).
+    if (auto_bias_conn_) {
+        disconnect(auto_bias_conn_);
+    }
+    if (controller) {
+        auto_bias_conn_ = connect(controller, &CameraController::auto_bias_applied,
+                                  this, &BiasesPanel::refresh_row_values,
+                                  Qt::QueuedConnection);
+    }
     clear_rows();
     populate();
+    sync_auto_bias_ui();
 }
 
 void BiasesPanel::on_camera_disconnected() {
     camera_ = nullptr;
+    if (auto_bias_conn_) {
+        disconnect(auto_bias_conn_);
+        auto_bias_conn_ = {};
+    }
     clear_rows();
     hint_label_->setText(tr("No live camera connected."));
     hint_label_->setProperty("class", "hint");
@@ -78,6 +191,7 @@ void BiasesPanel::on_camera_disconnected() {
     group_->setEnabled(false);
     group_->setVisible(false);
     populated_ = false;
+    sync_auto_bias_ui();
 }
 
 void BiasesPanel::save_to_file(const QString& path) {

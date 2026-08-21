@@ -10,6 +10,7 @@
 #ifndef GUI_PANELS_BIASES_PANEL_H
 #define GUI_PANELS_BIASES_PANEL_H
 
+#include <QMetaObject>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -20,7 +21,9 @@
 #include "abstract_panel.h"
 
 class QSpinBox;
+class QDoubleSpinBox;
 class QSlider;
+class QCheckBox;
 class QLabel;
 class QGroupBox;
 
@@ -70,9 +73,28 @@ private:
     void populate();
     void apply_value(BiasRow& row, int value);
 
+    /// Auto bias section (§4.4.6) at the bottom of the panel: enable
+    /// checkbox + rate band spinboxes, driving the CameraController-level
+    /// dual-loop bias control. Coexists with every algorithm (it is not an
+    /// algorithm instance). Live cameras only.
+    void build_auto_bias_section(QVBoxLayout* outer);
+    /// Enables/disables + state sync for the current source.
+    void sync_auto_bias_ui();
+    /// Pushes the spinbox pair to the controller, keeping it a valid
+    /// lo < hi band (the just-edited field wins, the other follows).
+    void apply_auto_bias_bounds();
+
     QVBoxLayout* rows_layout_{nullptr};
     QGroupBox* group_{nullptr};
     QLabel* hint_label_{nullptr};
+    QGroupBox* auto_group_{nullptr};
+    QCheckBox* auto_bias_cb_{nullptr};
+    QDoubleSpinBox* rate_min_sp_{nullptr};
+    QDoubleSpinBox* rate_max_sp_{nullptr};
+    /// CameraController::auto_bias_applied connection for the current
+    /// source (re-connected on every on_camera_connected — without tracking
+    /// it the connections would stack on the long-lived controller).
+    QMetaObject::Connection auto_bias_conn_;
 
     std::vector<BiasRow> rows_;
     bool populated_{false};
