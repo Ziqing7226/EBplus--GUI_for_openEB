@@ -670,6 +670,21 @@ void AlgorithmsPanel::refresh_preproc_params() {
 }
 
 void AlgorithmsPanel::push_all_preproc_params() {
+    // MASTER controls first — the conditioner's filter instance depends on
+    // enabled/mode, and the rows below are meaningless without them. Without
+    // this push a config load restored nothing (config restore drives the
+    // bridge's per-instance storage directly; the conditioner route starts
+    // at the panel — review fix 2026-08-21).
+    apply_global_preproc("preproc_filter_enabled",
+                         preproc_filter_cb_->isChecked() ? "true" : "false");
+    apply_global_preproc("preproc_filter_mode",
+                         std::to_string(preproc_filter_mode_combo_->currentIndex()));
+    apply_global_preproc("preproc_downsample",
+                         preproc_downsample_cb_->isChecked() ? "true" : "false");
+    apply_global_preproc("preproc_undistort_enabled",
+                         preproc_undistort_cb_->isChecked() ? "true" : "false");
+    apply_global_preproc("preproc_undistort_path",
+                         preproc_undistort_path_->text().toStdString());
     for (const auto& row : preproc_rows_) {
         if (!row.field) continue;
         std::string value;
@@ -900,6 +915,7 @@ void AlgorithmsPanel::sync_param_row(const std::string& name,
 
 void AlgorithmsPanel::refresh_param_values() {
     if (!bridge_) return;
+    bool masters_synced = false;
     for (auto& [algo_name, state] : algo_panel_state_) {
         auto inst = bridge_->find_live(algo_name);
         for (auto& row : state.rows) {
@@ -956,7 +972,54 @@ void AlgorithmsPanel::refresh_param_values() {
         }
         // Row visibility follows the (possibly updated) mode combo.
         if (state.mode_combo) refresh_mode_visibility(algo_name);
+
+        // Preproc MASTER controls (filter enabled / mode / downsample /
+        // undistort): global keys mirrored on every self instance and the
+        // bridge cache. Panel edits push them out immediately, so this
+        // mirror only diverges on a config load (apply_algo_state writes
+        // instance storage directly) — syncing from the first instance that
+        // provides them re-syncs the controls after a load. Review fix
+        // 2026-08-21: without this, a config with the noise filter enabled
+        // restored nothing (the widgets kept the pre-load state and the
+        // shared conditioners were never told).
+        if (!masters_synced) {
+            auto read_master = [&](const char* key) -> std::string {
+                if (inst) return inst->get_param(key);
+                auto cv = bridge_->get_cached_algo_param(algo_name, key);
+                return cv ? *cv : std::string();
+            };
+            const std::string fen = read_master("preproc_filter_enabled");
+            if (!fen.empty()) {
+                QSignalBlocker b(preproc_filter_cb_);
+                preproc_filter_cb_->setChecked(fen == "true");
+            }
+            const std::string fmode = read_master("preproc_filter_mode");
+            if (!fmode.empty()) {
+                int mi = QString::fromStdString(fmode).toInt();
+                if (mi < 0 || mi > 8) mi = 8;
+                QSignalBlocker b(preproc_filter_mode_combo_);
+                preproc_filter_mode_combo_->setCurrentIndex(mi);
+            }
+            const std::string ds = read_master("preproc_downsample");
+            if (!ds.empty()) {
+                QSignalBlocker b(preproc_downsample_cb_);
+                preproc_downsample_cb_->setChecked(ds == "true");
+            }
+            const std::string ue = read_master("preproc_undistort_enabled");
+            if (!ue.empty()) {
+                QSignalBlocker b(preproc_undistort_cb_);
+                preproc_undistort_cb_->setChecked(ue == "true");
+            }
+            const std::string up = read_master("preproc_undistort_path");
+            if (!up.empty()) {
+                QSignalBlocker b(preproc_undistort_path_);
+                preproc_undistort_path_->setText(QString::fromStdString(up));
+            }
+            masters_synced = true;
+        }
     }
+    // Mode-scoped row visibility follows the (possibly restored) mode.
+    refresh_preproc_params();
 }
 
 bool AlgorithmsPanel::algo_halves_coords(const std::string& algo_name) {
