@@ -816,8 +816,9 @@ TEST(ParticleCounterTest, InitialCount) {
 
 // --- 4.4.6 AutoBiasController (dual loop: rate band + ON/OFF balance) ---
 namespace {
-// Feed a constant-rate stream for the given duration; returns the commands
-// emitted along the way (one per violating tick that passes the filters).
+// Feed a constant-rate stream for the given duration; returns the CORRECTION
+// commands emitted along the way (home commands excluded — see the homing
+// tests below).
 std::vector<gui_algo::BiasCommand> feed(AutoBiasController& c,
                                         double on_mev, double off_mev,
                                         std::int64_t duration_us) {
@@ -830,16 +831,16 @@ std::vector<gui_algo::BiasCommand> feed(AutoBiasController& c,
         t += step;
         c.accumulate(t, n_on, n_off);
         const auto cmd = c.update(t);
-        if (cmd.active) cmds.push_back(cmd);
+        if (cmd.active && !cmd.home) cmds.push_back(cmd);
     }
     return cmds;
 }
 } // namespace
 
 TEST(AutoBiasControllerTest, RateBandValidation) {
-    AutoBiasController c;  // default band 1..10
+    AutoBiasController c;  // default band 1..50
     EXPECT_FLOAT_EQ(c.rate_min_mev(), 1.0f);
-    EXPECT_FLOAT_EQ(c.rate_max_mev(), 10.0f);
+    EXPECT_FLOAT_EQ(c.rate_max_mev(), 50.0f);
     EXPECT_EQ(c.max_step(), 32);  // fast-convergence default
     EXPECT_FALSE(c.set_rate_bounds(5.0f, 5.0f));   // lo == hi rejected
     EXPECT_FALSE(c.set_rate_bounds(8.0f, 4.0f));   // inverted rejected
@@ -852,15 +853,53 @@ TEST(AutoBiasControllerTest, RateBandValidation) {
     EXPECT_FLOAT_EQ(c.rate_max_mev(), 5000.0f);
 }
 TEST(AutoBiasControllerTest, DeadbandIsIdle) {
-    AutoBiasController c;  // band 1..10
+    AutoBiasController c;  // band 1..50
     const auto cmds = feed(c, 3.0, 3.0, 1'000'000);  // in band, balanced
     EXPECT_TRUE(cmds.empty());
     EXPECT_NEAR(c.rate_on_mev(), 3.0, 0.2);
     EXPECT_NEAR(c.rate_off_mev(), 3.0, 0.2);
 }
+TEST(AutoBiasControllerTest, HomingWhenSatisfied) {
+    AutoBiasController c;  // band 1..50
+    // In band + balanced → home commands, no correction deltas, spaced by
+    // kHomeIntervalTicks (~1 s at the 30 Hz tick; the test ticks every ms,
+    // so ~30 updates apart).
+    int home_cmds = 0;
+    int last_home_at = -1000;
+    const std::int64_t step = 1000;
+    for (std::int64_t t = step; t <= 2'000'000; t += step) {
+        c.accumulate(t, 3000, 3000);
+        const auto cmd = c.update(t);
+        if (cmd.home) {
+            EXPECT_TRUE(cmd.active);
+            EXPECT_EQ(cmd.delta_on, 0);
+            EXPECT_EQ(cmd.delta_off, 0);
+            ++home_cmds;
+            EXPECT_GT(static_cast<int>(t / step) - last_home_at, 25);
+            last_home_at = static_cast<int>(t / step);
+        }
+    }
+    EXPECT_GE(home_cmds, 50);  // ~1 per second over 2 s
+}
+TEST(AutoBiasControllerTest, HomingSuspendsOnViolation) {
+    AutoBiasController c;  // band 1..50
+    // In-band phase homes; the out-of-band phase must NOT home once the
+    // measurement window reflects the new rate (during the first window
+    // span after the transition the window still holds in-band samples —
+    // a home command there is measurement lag, not a logic error).
+    bool homed_after_settled = false;
+    const std::int64_t step = 1000;
+    for (std::int64_t t = step; t <= 3'000'000; t += step) {
+        const bool violating = t > 1'000'000;
+        c.accumulate(t, violating ? 60000 : 3000, violating ? 60000 : 3000);
+        const auto cmd = c.update(t);
+        if (violating && t > 1'500'000 && cmd.home) homed_after_settled = true;
+    }
+    EXPECT_FALSE(homed_after_settled);
+}
 TEST(AutoBiasControllerTest, HighRateRaisesBoth) {
-    AutoBiasController c;  // band 1..10
-    const auto cmds = feed(c, 20.0, 20.0, 1'000'000);  // 40 Mev/s >> max
+    AutoBiasController c;  // band 1..50
+    const auto cmds = feed(c, 40.0, 40.0, 1'000'000);  // 80 Mev/s >> max
     ASSERT_FALSE(cmds.empty());
     for (const auto& cmd : cmds) {
         EXPECT_GT(cmd.delta_on, 0);   // raise both = less sensitive
@@ -887,8 +926,8 @@ TEST(AutoBiasControllerTest, BalanceRaisesOnlyDominantPolarity) {
     }
 }
 TEST(AutoBiasControllerTest, HoldAfterAction) {
-    AutoBiasController c;  // band 1..10
-    const auto cmds = feed(c, 20.0, 20.0, 600'000);
+    AutoBiasController c;  // band 1..50
+    const auto cmds = feed(c, 40.0, 40.0, 600'000);  // 80 Mev/s >> max
     ASSERT_GE(cmds.size(), 1u);
     // Each action flushes the measurement window (all pre-action samples
     // are stale), so consecutive commands are spaced by the 200 ms refill

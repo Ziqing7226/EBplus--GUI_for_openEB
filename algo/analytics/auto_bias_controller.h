@@ -24,6 +24,14 @@
 // step gain 16, 2 violating ticks to arm, 6-tick hold (~200 ms). Overshoot
 // protection is the deadband structure itself (steps shrink as the error
 // approaches the band edge) plus the hold, not a small step cap.
+//
+// Homing (2026-08-21): while BOTH constraints are satisfied (rate inside
+// the band, polarity balance within tolerance), the biases drift SLOWLY
+// toward 0 — the factory default — one unit per kHomeIntervalTicks
+// (~1 s). The controller does not know the register values, so the home
+// command carries no deltas; the hardware side (BiasApplier::home) moves
+// each bias toward 0 and no-ops at 0. Any violation immediately suspends
+// homing and hands control back to the correction loops.
 
 #ifndef GUI_ALGO_ANALYTICS_AUTO_BIAS_CONTROLLER_H
 #define GUI_ALGO_ANALYTICS_AUTO_BIAS_CONTROLLER_H
@@ -42,6 +50,10 @@ struct BiasCommand {
     int delta_on{0};    ///< Delta for bias_diff_on (positive = less sensitive)
     int delta_off{0};   ///< Delta for bias_diff_off
     bool active{false}; ///< True when this command requests a real adjustment
+    /// @brief Home command: move both diff biases one step toward 0 (the
+    ///        factory default). delta_on/delta_off are unused — the
+    ///        hardware side knows the current register values.
+    bool home{false};
 };
 
 /// @brief Dual-loop adaptive camera bias controller (rate band + polarity
@@ -57,6 +69,9 @@ public:
     /// Consecutive violating ticks before acting / observation ticks after.
     static constexpr int kActivateTicks = 2;
     static constexpr int kHoldTicks = 6;
+    /// Homing cadence: one bias unit toward 0 every ~1 s while BOTH
+    /// constraints are satisfied.
+    static constexpr int kHomeIntervalTicks = 30;
     /// Polarity-balance deadband (normalized ON-OFF difference).
     static constexpr double kBalanceTol = 0.15;
 
@@ -65,7 +80,7 @@ public:
     ///        (max has no artificial ceiling — the hardware bias range is
     ///        the real limit).
     /// @param max_step Maximum per-command bias delta, [1, 100].
-    AutoBiasController(float rate_min_mev = 1.0F, float rate_max_mev = 10.0F,
+    AutoBiasController(float rate_min_mev = 1.0F, float rate_max_mev = 50.0F,
                        int max_step = 32)
         : max_step_(clamp_step(max_step)) {
         set_rate_bounds(rate_min_mev, rate_max_mev);
@@ -149,6 +164,16 @@ public:
         const bool needs_action = d_on != 0 || d_off != 0;
         if (!needs_action) {
             viol_ticks_ = 0;
+            // Both constraints satisfied: slowly home toward the factory
+            // default (0). Suspended during the post-action hold (the early
+            // return above) and after every correction (home_ticks_ reset).
+            if (++home_ticks_ >= kHomeIntervalTicks) {
+                home_ticks_ = 0;
+                BiasCommand cmd;
+                cmd.active = true;
+                cmd.home = true;
+                return cmd;
+            }
             return {};
         }
         // Persistency filter: act only on sustained violations so a single
@@ -156,6 +181,7 @@ public:
         if (++viol_ticks_ < kActivateTicks) return {};
         viol_ticks_ = 0;
         hold_ticks_ = kHoldTicks;
+        home_ticks_ = 0;
         // Drop the measurement window: every sample in it predates the bias
         // change, so acting on it again after the hold would stack steps on
         // stale data and overshoot. Fresh post-action data re-arms in
@@ -185,6 +211,7 @@ public:
         acc_off_ = 0;
         viol_ticks_ = 0;
         hold_ticks_ = 0;
+        home_ticks_ = 0;
     }
 
 private:
@@ -222,6 +249,7 @@ private:
     std::uint64_t acc_on_{0}, acc_off_{0};
     int viol_ticks_{0};
     int hold_ticks_{0};
+    int home_ticks_{0};
 };
 
 } // namespace gui_algo
