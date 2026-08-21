@@ -1,5 +1,6 @@
-// gui/algo_bridge/backends/analytics_extra_backends.cpp — ParticleCounter, TriggerSynced
-// (design §3.4). Split from the former algo_backend.cpp monolith.
+// gui/algo_bridge/backends/analytics_extra_backends.cpp — TriggerSynced,
+// FreqDetector, ActiveMarker, FrequencyMap (design §3.4). Split from the
+// former algo_backend.cpp monolith.
 
 #include "algo_bridge/algo_backend.h"
 #include "algo_bridge/backends/backend_common.h"
@@ -10,7 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "algo/analytics/particle_counter.h"
 #include "algo/analytics/freq_detector.h"
 #include "algo/analytics/active_marker.h"
 #include "algo/cv/trigger_synced_filter.h"
@@ -19,91 +19,6 @@
 using namespace gui::backend_detail;
 
 namespace gui {
-
-class ParticleCounterBackend final : public AlgoBackend {
-    gui_algo::ParticleCounter algo_;
-    std::vector<Metavision::EventCD> passthrough_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
-    Metavision::timestamp last_t_{0};
-    static constexpr Metavision::timestamp kMinDetectIntervalUs = 50000;
-    Metavision::timestamp last_detect_t_{0};
-    // -1 = auto (counting line at the sensor-height midpoint). Internal
-    // sentinel only: get_param() resolves it to the actual row (the y the
-    // line is drawn at), so the GUI never sees a -1 that disagrees with the
-    // drawn position.
-    int line_y_{-1};
-public:
-    ParticleCounterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
-    void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "line_y") {
-            const int y = to_i(v, -1);
-            if (y > 0) {
-                // Explicit row: forwarded as-is.
-                line_y_ = y;
-                algo_.set_counting_line_y(y);
-            } else {
-                // 0 (and legacy negative values) = auto: counting line at the
-                // sensor midpoint, re-centered on dimension changes. Keep the
-                // sentinel so set_sensor_dimensions picks the new center.
-                line_y_ = -1;
-                algo_.set_counting_line_y(algo_.height() / 2);
-            }
-        }
-        else if (k == "min_area") algo_.set_min_particle_size_px(to_i(v));
-    }
-    std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        // line_y: report the row the line is ACTUALLY drawn at. Auto (-1)
-        // resolves to the sensor midpoint, so the GUI default matches the
-        // visual position (the panel syncs its spinbox from this value).
-        if (k == "line_y") return from_i(algo_.counting_line_y());
-        if (k == "min_area") return from_i(algo_.min_particle_size_px());
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        if (!passthrough_.empty()) last_t_ = passthrough_.back().t;
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
-                                   passthrough_.size(), roi_buf_);
-        algo_.process(ev, n, last_t_);
-        // Throttle the expensive detect_and_track sweep to ~20Hz.
-        if (last_detect_t_ > 0 && last_t_ - last_detect_t_ < kMinDetectIntervalUs) {
-            return;
-        }
-        last_detect_t_ = last_t_;
-        algo_.detect_and_track();
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = passthrough_;
-        // Virtual counting line: full width at the counting row.
-        const int ly = algo_.counting_line_y();
-        r.lines.push_back({0, ly, algo_.width() - 1, ly});
-        // Detected / tracked particle bounding boxes. id = -1: a bare box
-        // only, no "#N" caption cluttering the view.
-        for (const auto& p : algo_.tracks()) {
-            r.boxes.push_back({p.last_bbox_x, p.last_bbox_y,
-                               p.last_bbox_w, p.last_bbox_h, -1});
-        }
-        OverlayText t;
-        t.x = 10; t.y = 20;
-        t.text = "count: " + std::to_string(algo_.cumulative_count());
-        r.texts.push_back(t);
-        r.status = "counter: " + std::to_string(algo_.cumulative_count()) +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
-        return r;
-    }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_t_ = 0; last_detect_t_ = 0; }
-    void set_sensor_dimensions(int w, int h) override {
-        roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::ParticleCounter(w, h);  // sensor-sized grid
-        // Re-apply an explicit counting line; -1 (auto) keeps the new
-        // sensor's height/2 ctor default.
-        if (line_y_ >= 0) algo_.set_counting_line_y(line_y_);
-    }
-};
 
 // §4.4.6 Auto Bias Controller: removed from the algorithm pipeline
 // (2026-08-21) — camera-level feature in CameraController now.
@@ -454,7 +369,6 @@ std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& n
                                           int width, int height) {
     if (name == "freq_detector")               return std::make_unique<FreqDetectorBackend>(width, height);
     if (name == "active_marker")               return std::make_unique<ActiveMarkerBackend>(width, height);
-    if (name == "particle_counter")            return std::make_unique<ParticleCounterBackend>(width, height);
     if (name == "trigger_synced")              return std::make_unique<TriggerSyncedBackend>(width, height);
     if (name == "frequency_map")               return std::make_unique<FrequencyMapBackend>(width, height);
     return nullptr;

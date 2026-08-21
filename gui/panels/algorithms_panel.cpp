@@ -258,13 +258,6 @@ void AlgorithmsPanel::build_ui() {
                     if (inst) {
                         inst->set_enabled(true);
                         live_instances_[algo_name] = inst;
-                        // Backend-resolved params: show the effective value,
-                        // not the registration placeholder. particle_counter
-                        // line_y defaults to 0 = auto-center; the backend
-                        // resolves it to the actual row, so display that y
-                        // (the spinbox must not show 0 while the line sits at
-                        // the screen center — line_y design fix).
-                        sync_param_row(algo_name, "line_y");
                         // create() already replayed the cached preproc_* params
                         // (BUG-R4, N3) and the cached unified ROI state
                         // (Phase 2.6 step 3), so the new instance matches the
@@ -718,14 +711,6 @@ void AlgorithmsPanel::apply_param(const std::string& algo_name,
     }
     it->second->set_param(param_key, value);
 
-    // Backend-resolved params: re-display the effective value. particle_counter
-    // line_y treats 0 as auto-center — after the edit, show the actual drawn
-    // row (e.g. typing 0 snaps the spinbox back to the sensor center instead
-    // of leaving it at 0 while the line sits mid-screen).
-    if (param_key == "line_y") {
-        sync_param_row(algo_name, "line_y");
-    }
-
     // BUG-G2: after setting model_path, the E2VID num_bins is dictated by the
     // loaded ONNX model. Read it back and update the GUI field so the user
     // sees the actual value the algo will use (not the stale typed value).
@@ -890,24 +875,6 @@ void AlgorithmsPanel::mutex_disable_others(const std::string& winner) {
         if (checkboxes_.find(other) != checkboxes_.end()) continue;  // handled above
         inst->set_enabled(false);
         emit algorithm_toggled(QString::fromStdString(other), false);
-    }
-}
-
-void AlgorithmsPanel::sync_param_row(const std::string& name,
-                                     const std::string& key) {
-    auto it = live_instances_.find(name);
-    if (it == live_instances_.end() || !it->second) return;
-    const std::string val = it->second->get_param(key);
-    if (val.empty()) return;
-    auto st = algo_panel_state_.find(name);
-    if (st == algo_panel_state_.end()) return;
-    for (auto& row : st->second.rows) {
-        if (row.key != key || !row.field) continue;
-        const QSignalBlocker blk(row.field);
-        if (auto* sp = qobject_cast<QSpinBox*>(row.field)) {
-            sp->setValue(QString::fromStdString(val).toInt());
-        }
-        break;
     }
 }
 

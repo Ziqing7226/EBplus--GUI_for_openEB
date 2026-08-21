@@ -45,9 +45,7 @@
 #include "algo/cv/time_surface.h"
 #include "algo/analytics/active_marker.h"
 #include "algo/analytics/event_to_video.h"
-#include "algo/analytics/flow_statistics.h"
 #include "algo/analytics/isi_analyzer.h"
-#include "algo/analytics/particle_counter.h"
 #include "algo/analytics/freq_detector.h"
 
 #include "raw_event_stream.h"
@@ -73,7 +71,6 @@ using gui_algo::TimeSurface;
 using gui_algo::ActiveMarker;
 using gui_algo::EventToVideo;
 using gui_algo::ISIAnalyzer;
-using gui_algo::ParticleCounter;
 using gui_algo::FreqDetector;
 
 #ifndef GUI_TEST_RAW_FILE
@@ -618,20 +615,6 @@ TEST_F(RawAlgoTest, FreqDetectorAnalyzesClean) {
         EXPECT_TRUE(is_finite(src.event_freq_hz));
         EXPECT_GE(src.event_freq_hz, 0.0F);
     }
-}
-
-// =========================================================================
-// 19. ParticleCounter — cumulative count stays consistent with processing.
-// =========================================================================
-TEST_F(RawAlgoTest, ParticleCounterConsistent) {
-    const auto& s = stream();
-    ParticleCounter pc(s.width(), s.height());
-    for (const auto& batch : s.batches(kBatchWindowUs)) {
-        if (batch.empty()) continue;
-        pc.process(batch.data(), batch.size(), batch.back().t);
-    }
-    // Cumulative count is monotonic non-decreasing and finite.
-    EXPECT_LE(pc.cumulative_count(), static_cast<std::uint64_t>(s.size()));
 }
 
 // =========================================================================

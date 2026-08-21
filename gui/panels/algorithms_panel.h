@@ -64,14 +64,6 @@ public:
     /// values while the algorithms run with the loaded ones (audit §5.9-疑点4).
     void refresh_param_values();
 
-    /// @brief Syncs one int parameter control of @p name from the live
-    /// backend's get_param() (QSignalBlocker — does not re-apply). Used for
-    /// parameters whose effective value is resolved by the backend, e.g.
-    /// particle_counter line_y: its default 0 = auto-center, and the backend
-    /// resolves it to the actual row — the spinbox must display the drawn y,
-    /// not the 0 placeholder (line_y design fix).
-    void sync_param_row(const std::string& name, const std::string& key);
-
     /// @brief Syncs the "Enable ROI" checkbox from the unified ROI state
     /// (driven by CameraController::roi_state_changed via MainWindow;
     /// QSignalBlocker — does not count as a user edit / no re-emission).

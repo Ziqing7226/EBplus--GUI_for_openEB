@@ -1,5 +1,5 @@
 // gui/algo_bridge/backends/display_backends.cpp — TimeSurface,
-// XYTVisualizer, Overlay (design §3.4). Split from the former algo_backend.cpp monolith.
+// XYTVisualizer (design §3.4). Split from the former algo_backend.cpp monolith.
 
 #include "algo_bridge/algo_backend.h"
 #include "algo_bridge/backends/backend_common.h"
@@ -213,54 +213,11 @@ public:
     }
 };
 
-
-class OverlayBackend final : public AlgoBackend {
-    std::vector<Metavision::EventCD> passthrough_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
-public:
-    OverlayBackend(int w, int h) { roi_.init(w, h); }
-    void set_param(const std::string& k, const std::string& v) override {
-        roi_.set_param(k, v);
-    }
-    std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
-                                   passthrough_.size(), roi_buf_);
-        // pull_result reads from passthrough_: if roi_.apply() filtered into
-        // another buffer, copy the result back; otherwise it is already there.
-        if (ev != as_events(passthrough_.data())) {
-            passthrough_.assign(reinterpret_cast<const Metavision::EventCD*>(ev),
-                                reinterpret_cast<const Metavision::EventCD*>(ev + n));
-        } else {
-            passthrough_.resize(n);
-        }
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = passthrough_;
-        r.status = "overlay: pass-through" +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
-        return r;
-    }
-    void reset() override { passthrough_.clear(); roi_buf_.clear(); }
-    void set_sensor_dimensions(int w, int h) override {
-        roi_.set_sensor_dimensions(w, h);
-    }
-};
-
-
-
 // --- Per-category factory (called by create_algo_backend in backend_factory.cpp)
 std::unique_ptr<AlgoBackend> create_display_backend(const std::string& name,
                                           int width, int height) {
     if (name == "time_surface")                return std::make_unique<TimeSurfaceBackend>(width, height);
     if (name == "xyt_visualizer")              return std::make_unique<XYTVisualizerBackend>(width, height);
-    if (name == "overlay")                     return std::make_unique<OverlayBackend>(width, height);
     return nullptr;
 }
 

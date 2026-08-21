@@ -89,7 +89,7 @@ EB plus 内置 **28 个自研算法** + **7 项 openEB 封装能力**，全部�
 | **检测** | Blob Detector、Corner Detector（Harris/FAST/AGAST）、Line Segment（ELiSeD）|
 | **跟踪** | Object Tracker（RCT/Median/Kalman/MultiHypothesis）、Hough Circle、Hough Line、Active Marker |
 | **重建** | Event-to-Video —— **E2VID**（默认，DL）、BardowVariational、InteractingMaps |
-| **分析** | Frequency Detector、Flow Statistics、ISI Analyzer、Particle Counter、Auto Bias |
+| **分析** | Frequency Detector、ISI Analyzer、Auto Bias |
 | **可视化** | Time Surface、XYT 3D 点云、Ultra Slow Motion、Orientation Cluster |
 | **标定** | Intrinsic Calibration（棋盘格 / 圆阵列 / aruco）|
 

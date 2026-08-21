@@ -53,22 +53,25 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 // in Phase 2.6 debug D-6, superseded by the unified ROI; rotate/transpose/
 // rescale were removed 2026-08-18 for coordinate-OOB heap corruption).
 // ultra_slow_motion was removed in Phase 2.5 (broken
-// Replace-display promise, no downstream consumer). sensor_self_test is
+// Replace-display promise, no downstream consumer). particle_counter,
+// flow_statistics and overlay were removed 2026-08-22 (user decision:
+// particle_counter fully self-invented, flow_statistics needed unavailable
+// ground truth, overlay was a pass-through placeholder). sensor_self_test is
 // intentionally NOT registered (it is a Devices-panel diagnostic, not an
 // algorithm — its instance is created via create_with_info).
-// Live registry: 28 self-developed + 4 OpenEB = 32.
+// Live registry: 24 self-developed + 4 OpenEB = 28.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 31u);
+    EXPECT_EQ(algos.size(), 28u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
         if (a.source == "self") ++self_count;
         else if (a.source == "openeb") ++openeb_count;
     }
-    EXPECT_EQ(self_count, 27u);
+    EXPECT_EQ(self_count, 24u);
     EXPECT_EQ(openeb_count, 4u);
 }
 
@@ -291,9 +294,10 @@ TEST(AlgoBridgeInstances, EnableDisableState) {
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeFloodGuard, OverloadsAfterSustainedHighRate) {
     AlgoBridge bridge;
-    // The overlay backend is the cheapest (ROI filter + copy), so a tight
-    // push loop sustains far more than the 30 Mev/s threshold.
-    auto inst = bridge.find_or_create("overlay");
+    // The blob_detector backend is among the cheapest (per-event count
+    // accumulation), so a tight push loop sustains far more than the
+    // 100 Mev/s threshold.
+    auto inst = bridge.find_or_create("blob_detector");
     ASSERT_NE(inst, nullptr);
     inst->set_enabled(true);
     ASSERT_FALSE(inst->is_overloaded());

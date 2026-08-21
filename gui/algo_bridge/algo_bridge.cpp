@@ -883,9 +883,9 @@ void AlgoBridge::register_self_cv() {
          {pint("time_window_us", "Time window (us)", "500000", "10000", "10000000")},
          /*description=*/"", /*uses_algo_roi=*/false});
 
-    // §4.3.26 Overlay
-    add({"overlay", "Overlay", "cv", "self",
-         AlgoDisplayMode::Overlay, {}});
+    // §4.3.26 Overlay removed (2026-08-22, user decision): the backend was a
+    // pure pass-through placeholder — event coloring is owned by the Display
+    // panel's frame mode / color theme, so the checkbox did nothing.
 
     // §4.3.27 Time Surface
     // decay is the mode selector (first param): Linear reads decay_time_us,
@@ -960,10 +960,6 @@ void AlgoBridge::register_self_analytics() {
           pfloat("unsharp_sigma", "Unsharp sigma", "1.0", "0.1", "5.0", "2"),
           pfloat("bilateral_sigma", "Bilateral sigma", "0.0", "0.0", "10.0", "2")}});
 
-    // §4.4.3 Flow Statistics (requires ground-truth; Passive in real-time)
-    add({"flow_statistics", "Flow Statistics", "analytics", "self",
-         AlgoDisplayMode::Passive, {}});
-
     // §4.4.4 ISI Analyzer. Per-pixel only (jAER parity; the global mode was
     // deleted — it degenerates to a single static bin at high event rates).
     // min_isi_ms = jAER minIsiUs band (0 = no lower cut).
@@ -972,19 +968,12 @@ void AlgoBridge::register_self_analytics() {
          {pfloat("min_isi_ms", "Min ISI (ms)", "0", "0", "999"),
           pfloat("max_isi_ms", "Max ISI (ms)", "100", "1", "1000")}});
 
-    // §4.4.5 Particle Counter. line_y default 0 = auto: the counting line
-    // sits at the sensor-height midpoint until the user sets an explicit row.
-    // The backend resolves auto to the actual y (get_param reports the drawn
-    // row), so the panel's spinbox shows the real position, never a magic -1
-    // that contradicts what is drawn (§五-B4). reset_on_reenable: the
-    // cumulative count / tracks are session state — re-enabling starts a
-    // fresh count (same policy as background_mask).
-    add({"particle_counter", "Particle Counter", "analytics", "self",
-         AlgoDisplayMode::Overlay,
-         {pint("line_y", "Line Y (0=auto center)", "0", "0", ""),
-          pint("min_area", "Min area (px)", "10", "1", "10000")},
-         /*description=*/"", /*uses_algo_roi=*/true,
-         /*reset_on_reenable=*/true});
+    // §4.4.3 Flow Statistics removed (2026-08-22, user decision): the
+    // evaluation core needed ground truth that a live stream cannot provide,
+    // so the module had degenerated to an event-count status line.
+    // §4.4.5 Particle Counter removed (2026-08-22, user decision):
+    // fully self-invented (only the conveyor-counting scenario was inspired
+    // by jAER particlecounter); superseded by blob_detector + tracking.
 
     // §4.4.6 Auto Bias Controller moved out of the algorithm pipeline
     // (2026-08-21): it is a camera-level feature now (CameraController +

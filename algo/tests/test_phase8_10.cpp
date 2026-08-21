@@ -33,9 +33,7 @@
 #include "algo/analytics/e2vid/intensity_rescaler.h"
 #include "algo/analytics/e2vid/unsharp_mask.h"
 #include "algo/analytics/e2vid/e2vid_inference.h"
-#include "algo/analytics/flow_statistics.h"
 #include "algo/analytics/isi_analyzer.h"
-#include "algo/analytics/particle_counter.h"
 #include "algo/analytics/auto_bias_controller.h"
 #include "algo/analytics/freq_detector.h"
 #include "algo/analytics/sensor_self_test.h"
@@ -59,9 +57,7 @@ using gui_algo::FrequencyMap;
 using gui_algo::FrequencyMapParams;
 using gui_algo::ActiveMarker;
 using gui_algo::EventToVideo;
-using gui_algo::FlowStatistics;
 using gui_algo::ISIAnalyzer;
-using gui_algo::ParticleCounter;
 using gui_algo::AutoBiasController;
 using gui_algo::FreqDetector;
 using gui_algo::SensorSelfTest;
@@ -741,28 +737,6 @@ TEST(E2VIDInferenceTest, CropToSensor) {
     EXPECT_EQ(out2.cols, 32);
 }
 
-// --- 4.4.3 FlowStatistics ---
-TEST(FlowStatisticsTest, Construction) {
-    FlowStatistics fs;
-    EXPECT_EQ(fs.output_hz(), 5);
-}
-TEST(FlowStatisticsTest, Params) {
-    FlowStatistics fs;
-    fs.set_output_hz(10);
-    EXPECT_EQ(fs.output_hz(), 10);
-    fs.set_source(FlowStatistics::Source::Annotated);
-    EXPECT_EQ(fs.source(), FlowStatistics::Source::Annotated);
-}
-TEST(FlowStatisticsTest, AddSamples) {
-    FlowStatistics fs;
-    std::vector<gui_algo::FlowSample> samples;
-    samples.push_back(gui_algo::FlowSample{1.0f, 0.0f, 1.0f, 0.0f}); // perfect match
-    samples.push_back(gui_algo::FlowSample{2.0f, 0.0f, 1.0f, 0.0f}); // off by 1
-    fs.add_samples(samples.data(), samples.size());
-    EXPECT_GT(fs.epe_mean(), 0.0);
-    EXPECT_GE(fs.epe_median(), 0.0);
-}
-
 // --- 4.4.4 ISIAnalyzer ---
 TEST(ISIAnalyzerTest, Construction) {
     ISIAnalyzer a(64, 48);
@@ -794,24 +768,6 @@ TEST(ISIAnalyzerTest, SetterPreservesRange) {
     std::uint64_t total = 0;
     for (auto c : counts) total += c;
     EXPECT_GT(total, 0u);  // at least one ISI sample must be counted
-}
-
-// --- 4.4.5 ParticleCounter ---
-TEST(ParticleCounterTest, Construction) {
-    ParticleCounter c(64, 48);
-    EXPECT_EQ(c.width(), 64);
-    EXPECT_EQ(c.height(), 48);
-}
-TEST(ParticleCounterTest, Params) {
-    ParticleCounter c(32, 32);
-    c.set_min_particle_size_px(10);
-    EXPECT_EQ(c.min_particle_size_px(), 10);
-    c.set_max_particle_size_px(200);
-    EXPECT_EQ(c.max_particle_size_px(), 200);
-}
-TEST(ParticleCounterTest, InitialCount) {
-    ParticleCounter c(32, 32);
-    EXPECT_EQ(c.cumulative_count(), 0u);
 }
 
 // --- 4.4.6 AutoBiasController (dual loop: rate band + ON/OFF balance) ---

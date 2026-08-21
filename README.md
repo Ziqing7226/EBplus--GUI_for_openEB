@@ -87,7 +87,7 @@ EB plus ships **28 self-developed algorithms** plus **7 OpenEB-wrapped capabilit
 | **Detection** | Blob Detector, Corner Detector (Harris/FAST/AGAST), Line Segment (ELiSeD) |
 | **Tracking** | Object Tracker (RCT/Median/Kalman/MultiHypothesis), Hough Circle, Hough Line, Active Marker |
 | **Reconstruction** | Event-to-Video — **E2VID** (default, DL), BardowVariational, InteractingMaps |
-| **Analytics** | Frequency Detector, Flow Statistics, ISI Analyzer, Particle Counter, Auto Bias |
+| **Analytics** | Frequency Detector, ISI Analyzer, Auto Bias |
 | **Visualization** | Time Surface, XYT 3D Point Cloud, Ultra Slow Motion, Orientation Cluster |
 | **Calibration** | Intrinsic Calibration (chessboard / circle grid / aruco) |
 

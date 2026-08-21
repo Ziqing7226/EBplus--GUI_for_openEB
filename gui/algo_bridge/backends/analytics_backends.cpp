@@ -1,6 +1,6 @@
 // gui/algo_bridge/backends/analytics_backends.cpp — frame producers + analyzers
 // (design §3.4). Split from the former algo_backend.cpp monolith.
-// Contains: EventToVideo, FlowStatistics, ISIAnalyzer.
+// Contains: EventToVideo, ISIAnalyzer.
 
 #include "algo_bridge/algo_backend.h"
 #include "algo_bridge/backends/backend_common.h"
@@ -12,7 +12,6 @@
 #include <opencv2/imgproc.hpp>
 
 #include "algo/analytics/event_to_video.h"
-#include "algo/analytics/flow_statistics.h"
 #include "algo/analytics/isi_analyzer.h"
 #include "algo/analytics/sensor_self_test.h"
 
@@ -328,48 +327,6 @@ public:
     }
 };
 
-/// FlowStatistics backend — requires ground-truth flow samples (not available
-/// in real-time). Counts events only (audit §三-9: the FlowStatistics member
-/// was never fed events, so it was removed); reports a status; no frame is
-/// produced. Supports ROI (design §5.6.6): when enabled, only ROI events are
-/// counted.
-class FlowStatisticsBackend final : public AlgoBackend {
-    std::vector<Metavision::EventCD> passthrough_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
-    std::size_t total_events_{0};
-public:
-    FlowStatisticsBackend(int w, int h) {
-        roi_.init(w, h);
-    }
-    void set_param(const std::string& k, const std::string& v) override {
-        roi_.set_param(k, v);
-    }
-    std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
-                                   passthrough_.size(), roi_buf_);
-        total_events_ += n;
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = passthrough_;
-        r.status = "flow_stats: " + std::to_string(total_events_) +
-                   " events (no GT — Passive mode)" +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
-        return r;
-    }
-    void reset() override { passthrough_.clear(); roi_buf_.clear(); total_events_ = 0; }
-    void set_sensor_dimensions(int w, int h) override {
-        // Event-count only — no sensor-sized algorithm state; just update
-        // the ROI geometry (audit §五-D1).
-        roi_.set_sensor_dimensions(w, h);
-    }
-};
 
 /// ISIAnalyzer backend — renders ISI histogram as frame.
 /// Complex algorithm (design §4.4.4): the ISI histogram is inherently
@@ -568,7 +525,6 @@ public:
 std::unique_ptr<AlgoBackend> create_analytics_backend(const std::string& name,
                                           int width, int height) {
     if (name == "event_to_video")              return std::make_unique<EventToVideoBackend>(width, height);
-    if (name == "flow_statistics")             return std::make_unique<FlowStatisticsBackend>(width, height);
     if (name == "isi_analyzer")                return std::make_unique<ISIAnalyzerBackend>(width, height);
     if (name == "sensor_self_test")            return std::make_unique<SensorSelfTestBackend>(width, height);
     return nullptr;
