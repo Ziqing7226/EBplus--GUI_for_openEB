@@ -991,11 +991,21 @@ void AlgoBridge::register_self_analytics() {
          AlgoDisplayMode::Overlay,
          {pfloat("target_event_rate_mev", "Target rate (Mev/s)", "5.0", "0.1", "50.0")}});
 
-    // §4.4.7 Freq Detector
+    // §4.4.7 Freq Detector — overlay boxes + frequency labels on the main
+    // display (centered usage hint during the initialization phase). Full
+    // reference parameter set.
     add({"freq_detector", "Frequency Detector", "analytics", "self",
-         AlgoDisplayMode::Standalone,
-         {pfloat("update_interval_s", "Update interval (s)", "1.0", "0.1", "10"),
-          pint("min_events", "Min events", "3", "1", "1000")}});
+         AlgoDisplayMode::Overlay,
+         {pfloat("fmin", "Min event freq (Hz)", "100", "10", "1000"),
+          pfloat("fmax", "Max event freq (Hz)", "10000", "1000", "50000"),
+          pfloat("bin_dt_us", "Time bin (us)", "50", "10", "1000"),
+          pint("heatmap_threshold", "Heatmap threshold", "50", "1", "1000"),
+          pint("min_events", "Min cluster area (px)", "3", "1", "100"),
+          pint("region_radius", "Region radius (px)", "1", "0", "5"),
+          pfloat("peak_alpha", "Peak threshold alpha", "5.0", "1.0", "20.0"),
+          pfloat("first_analysis", "Init phase (s)", "2.0", "0.5", "10.0"),
+          pfloat("max_duration", "Max window (s)", "20.0", "5.0", "120.0"),
+          pfloat("update_interval_s", "Update interval (s)", "1.0", "0.1", "5.0")}});
 
     // §4.3.x Per-pixel frequency/period map + frequency clustering + modulated-
     // light source detection (vibration/flicker analysis).

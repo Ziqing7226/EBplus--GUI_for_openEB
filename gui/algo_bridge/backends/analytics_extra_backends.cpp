@@ -4,7 +4,9 @@
 #include "algo_bridge/algo_backend.h"
 #include "algo_bridge/backends/backend_common.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -212,72 +214,103 @@ public:
 // Group E: Analyzers (process events, produce text/point overlay)
 // ===========================================================================
 
-/// FreqDetector backend — detected light sources as overlay circles + text.
-/// Complex algorithm (design §4.4.7): defaults to the center 128×128 ROI.
-/// Events outside the ROI are dropped before reaching the analyzer; the algo
-/// keeps sensor-sized internal buffers so output coordinates remain at sensor
-/// scale (correct for overlay rendering). Uses RoiFilter so the shared
-/// Preprocessor (noise filter + 1/4 downsample, subsample-only) applies after
-/// ROI; coordinates stay at sensor scale for overlay correctness.
+/// FreqDetector backend — detected light sources as overlay boxes + frequency
+/// labels drawn on the main display (design §4.4.7). No internal ROI filter:
+/// with the unified ROI active the incoming stream is already ROI-relative,
+/// and the OverlayStrategy shifts coordinates by the ROI origin, so a second
+/// absolute-rect filter would be inconsistent. During the analyzer's
+/// initialization phase the result carries a centered hint explaining the
+/// feature and the keep-still requirement instead of sources.
 class FreqDetectorBackend final : public AlgoBackend {
     gui_algo::FreqDetector algo_;
     std::vector<Metavision::EventCD> passthrough_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
+    std::vector<gui_algo::Event> algo_buf_;
     std::vector<gui_algo::LightSource> last_;
-    // Persisted so set_sensor_dimensions() rebuilds (unified-ROI automation)
-    // keep the user's settings instead of reverting to ctor defaults.
-    float update_interval_s_{1.0f};
+    // Persisted so set_sensor_dimensions() rebuilds keep the user's settings
+    // instead of reverting to ctor defaults.
+    float f_min_{100.0f};
+    float f_max_{10000.0f};
+    float bin_dt_us_{50.0f};
+    int heatmap_threshold_{50};
     int min_events_{3};
+    int region_radius_{1};
+    float peak_alpha_{5.0f};
+    float first_analysis_s_{2.0f};
+    float max_duration_s_{20.0f};
+    float update_interval_s_{1.0f};
 public:
-    FreqDetectorBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
+    explicit FreqDetectorBackend(int w, int h) : algo_(w, h) {}
     void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "update_interval_s") {
-            update_interval_s_ = static_cast<float>(to_d(v));
-            algo_.set_update_interval_s(update_interval_s_);
-        } else if (k == "min_events") {
-            min_events_ = to_i(v);
-            algo_.set_min_cc_area(min_events_);
-        }
+        if (k == "fmin") { f_min_ = static_cast<float>(to_d(v)); algo_.set_f_min(f_min_); }
+        else if (k == "fmax") { f_max_ = static_cast<float>(to_d(v)); algo_.set_f_max(f_max_); }
+        else if (k == "bin_dt_us") { bin_dt_us_ = static_cast<float>(to_d(v)); algo_.set_bin_dt_us(bin_dt_us_); }
+        else if (k == "heatmap_threshold") { heatmap_threshold_ = to_i(v); algo_.set_heatmap_threshold(heatmap_threshold_); }
+        else if (k == "min_events") { min_events_ = to_i(v); algo_.set_min_cc_area(min_events_); }
+        else if (k == "region_radius") { region_radius_ = to_i(v); algo_.set_region_radius(region_radius_); }
+        else if (k == "peak_alpha") { peak_alpha_ = static_cast<float>(to_d(v)); algo_.set_peak_alpha(peak_alpha_); }
+        else if (k == "first_analysis") { first_analysis_s_ = static_cast<float>(to_d(v)); algo_.set_first_analysis_s(first_analysis_s_); }
+        else if (k == "max_duration") { max_duration_s_ = static_cast<float>(to_d(v)); algo_.set_max_duration_s(max_duration_s_); }
+        else if (k == "update_interval_s") { update_interval_s_ = static_cast<float>(to_d(v)); algo_.set_update_interval_s(update_interval_s_); }
     }
     std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "update_interval_s") return from_d(algo_.update_interval_s());
+        if (k == "fmin") return from_d(algo_.f_min());
+        if (k == "fmax") return from_d(algo_.f_max());
+        if (k == "bin_dt_us") return from_d(algo_.bin_dt_us());
+        if (k == "heatmap_threshold") return from_i(algo_.heatmap_threshold());
         if (k == "min_events") return from_i(algo_.min_cc_area());
+        if (k == "region_radius") return from_i(algo_.region_radius());
+        if (k == "peak_alpha") return from_d(algo_.peak_alpha());
+        if (k == "first_analysis") return from_d(algo_.first_analysis_s());
+        if (k == "max_duration") return from_d(algo_.max_duration_s());
+        if (k == "update_interval_s") return from_d(algo_.update_interval_s());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
-                                   passthrough_.size(), roi_buf_);
-        algo_.process(ev, n);
+        algo_buf_.assign(b, e);
+        algo_.process(algo_buf_.data(), algo_buf_.size());
         if (algo_.should_analyze()) last_ = algo_.analyze();
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
+        if (algo_.phase() == gui_algo::FreqDetector::Phase::Initializing) {
+            r.hint = "LED frequency measurement (spectral method)\n"
+                     "Keep the camera and the light source relatively still (" +
+                     std::to_string(
+                         static_cast<int>(std::ceil(algo_.init_remaining_s()))) +
+                     " s)";
+            return r;
+        }
+        int id = 0;
         for (const auto& src : last_) {
-            OverlayCircle c;
-            c.cx = src.u; c.cy = src.v; c.r = 8;
-            r.circles.push_back(c);
+            OverlayBox box;
+            box.x = src.u0; box.y = src.v0;
+            box.w = std::max(src.w, 6); box.h = std::max(src.h, 6);
+            box.id = id++;
+            r.boxes.push_back(box);
             OverlayText t;
-            t.x = src.u + 12; t.y = src.v;
-            t.text = std::to_string(static_cast<int>(src.blink_freq_hz)) + "Hz";
+            t.x = src.u0 + box.w + 4;
+            t.y = src.v0 + src.h / 2;
+            t.text = std::to_string(static_cast<int>(std::lround(src.blink_freq_hz))) + " Hz";
             r.texts.push_back(t);
         }
-        r.status = "freq: " + std::to_string(last_.size()) + " sources" +
-                   std::string(roi_.region.enabled ? " (ROI)" : " (full)");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_.clear(); }
+    void reset() override { algo_.reset(); passthrough_.clear(); algo_buf_.clear(); last_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
-        roi_.set_sensor_dimensions(w, h);
-        // The algo keeps sensor-sized internal buffers — rebuild at the new
-        // dimensions and re-apply the persisted settings.
+        // Rebuild at the new dimensions and re-apply the persisted settings.
         algo_ = gui_algo::FreqDetector(w, h);
-        algo_.set_update_interval_s(update_interval_s_);
+        algo_.set_f_min(f_min_);
+        algo_.set_f_max(f_max_);
+        algo_.set_bin_dt_us(bin_dt_us_);
+        algo_.set_heatmap_threshold(heatmap_threshold_);
         algo_.set_min_cc_area(min_events_);
+        algo_.set_region_radius(region_radius_);
+        algo_.set_peak_alpha(peak_alpha_);
+        algo_.set_first_analysis_s(first_analysis_s_);
+        algo_.set_max_duration_s(max_duration_s_);
+        algo_.set_update_interval_s(update_interval_s_);
         last_.clear();
     }
 };

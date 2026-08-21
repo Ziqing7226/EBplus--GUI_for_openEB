@@ -85,6 +85,9 @@ struct AlgoResult {
     std::vector<OverlayText> texts;
     std::vector<ColoredEvent> colored_events;       ///< 朝向/方向着色事件
     std::vector<OverlayTrajectory> trajectories;    ///< 聚类轨迹
+    /// 居中提示（如 freq_detector 初始化阶段的使用说明）：非空时在主显示
+    /// 帧中心绘制半透明底条 + 文字（'\\n' 分行）。
+    std::string hint;
     // Phase 2.6 debug D-2: has_aux_frame / aux_frame deleted with the hough
     // aux display (jAER-style debug view, never visible in baseline practice).
 };

@@ -12,6 +12,7 @@
 #include <atomic>
 
 #include <QColor>
+#include <QFontMetrics>
 #include <QLineF>
 #include <QMetaObject>
 #include <QPainter>
@@ -20,6 +21,7 @@
 #include <QPointer>
 #include <QRect>
 #include <QString>
+#include <QStringList>
 
 #include <algorithm>
 #include <utility>
@@ -194,6 +196,31 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
             trajs.emplace_back(t.id, std::move(pts));
         }
         ctx.annotator->draw_trajectories(frame, trajs, QColor(0, 255, 0));
+    }
+    // Centered hint (e.g. the freq_detector initialization-phase usage
+    // hint): drawn on the main display frame center with a translucent
+    // backdrop, one line per '\n'.
+    if (!r.hint.empty()) {
+        const QStringList lines =
+            QString::fromStdString(r.hint).split(QLatin1Char('\n'));
+        QFontMetrics fm(ctx.annotator->font());
+        int text_w = 0;
+        for (const QString& line : lines) text_w = std::max(text_w, fm.horizontalAdvance(line));
+        const int line_h = fm.height();
+        const int pad = 12;
+        const int box_w = text_w + 2 * pad;
+        const int box_h = lines.size() * line_h + 2 * pad;
+        QRect box((frame.width() - box_w) / 2, (frame.height() - box_h) / 2,
+                  box_w, box_h);
+        QPainter p(&frame);
+        p.fillRect(box, QColor(0, 0, 0, 160));
+        p.setPen(QColor(255, 255, 255));
+        p.setFont(ctx.annotator->font());
+        int ty = box.top() + pad + fm.ascent();
+        for (const QString& line : lines) {
+            p.drawText(box.left() + pad, ty, line);
+            ty += line_h;
+        }
     }
     // Phase 2.6 debug D-2: the aux-frame routing (Hough θ-ρ / accumulator
     // maps) was deleted with the hough aux display — no producer remains.
