@@ -2,12 +2,19 @@
 //
 // Design §4.4.7. Detects relatively static flickering light sources (LEDs) by
 // accumulating an event heatmap, clustering hot spots, then for each cluster
-// gathering the event timestamps in a 3x3 region around the centroid, binning
-// them, applying a Hann window, and running a DFT to find the dominant
+// gathering the event timestamps in a small region around the centroid,
+// binning them, applying a Hann window, and running a DFT to find the dominant
 // frequency peak (with parabolic interpolation + 2x harmonic confirmation).
 // Frequency definition: event_freq = 2 * LED blink_freq. Inspired by the
-// Lighthouse freq_analyzer tool. Header-only; uses a self-contained DFT (no
-// external FFT library).
+// Lighthouse freq_analyzer tool. Uses cv::dft (no external FFT library).
+//
+// Pipeline aligned with the reference tool:
+//   - Initialization phase: no results until the stream has accumulated
+//     first_analysis_s_ of events (default 2 s) AND at least kMinTotalEvents.
+//   - Growing window: every analysis covers the whole retained buffer (capped
+//     at max_duration_s_ by pruning), so frequency accuracy improves as the
+//     window grows. Deviation for continuous GUI use: the reference freezes
+//     after max_duration_s; we keep the window rolling at that cap.
 
 #ifndef GUI_ALGO_ANALYTICS_FREQ_DETECTOR_H
 #define GUI_ALGO_ANALYTICS_FREQ_DETECTOR_H
@@ -28,15 +35,14 @@
 
 namespace gui_algo {
 
-namespace freq_detail {
-constexpr double kPi = 3.14159265358979323846;
-constexpr int kMaxFFT = 8192;  // Cap on DFT input size to keep O(N*K) bounded.
-}
-
 /// @brief A detected flickering light source.
 struct LightSource {
     int u{0};                 ///< Centroid column
     int v{0};                 ///< Centroid row
+    int u0{0};                ///< Cluster bounding-box left
+    int v0{0};                ///< Cluster bounding-box top
+    int w{0};                 ///< Cluster bounding-box width
+    int h{0};                 ///< Cluster bounding-box height
     float event_freq_hz{0.0f}; ///< Event frequency (2x blink frequency)
     float blink_freq_hz{0.0f}; ///< Physical LED blink frequency
 };
@@ -44,6 +50,12 @@ struct LightSource {
 /// @brief Flickering light source frequency detector (heatmap + DFT).
 class FreqDetector {
 public:
+    /// @brief Detector lifecycle phase (drives the GUI init-phase hint).
+    enum class Phase {
+        Initializing,  ///< Accumulating the warm-up window, no results yet.
+        Running,       ///< Warm-up done, results update every interval.
+    };
+
     /// @brief Constructs the detector.
     /// @param width,height Sensor dimensions.
     explicit FreqDetector(int width, int height)
@@ -62,24 +74,50 @@ public:
                 ++heatmap_[idx];
             }
             if (e.t > latest_t_) latest_t_ = e.t;
+            if (total_events_ == 0) first_t_ = e.t;
+            ++total_events_;
         }
         prune();
     }
 
+    /// @brief Current lifecycle phase (see Phase).
+    Phase phase() const {
+        if (latest_t_ <= 0 || total_events_ < kMinTotalEvents) {
+            return Phase::Initializing;
+        }
+        const Metavision::timestamp warmup_us =
+            static_cast<Metavision::timestamp>(first_analysis_s_ * 1.0e6);
+        return (latest_t_ - first_t_ >= warmup_us) ? Phase::Running
+                                                   : Phase::Initializing;
+    }
+
+    /// @brief Seconds of warm-up remaining in the initialization phase
+    ///        (0 once running).
+    float init_remaining_s() const {
+        if (phase() == Phase::Running) return 0.0f;
+        const Metavision::timestamp warmup_us =
+            static_cast<Metavision::timestamp>(first_analysis_s_ * 1.0e6);
+        const Metavision::timestamp elapsed = latest_t_ - first_t_;
+        const Metavision::timestamp left_us =
+            elapsed < warmup_us ? warmup_us - elapsed : 0;
+        return static_cast<float>(left_us) / 1.0e6f;
+    }
+
     /// @brief Runs the full detection pipeline and returns detected sources.
-    /// Call periodically (respecting update_interval_s).
+    ///        Empty while the initialization phase has not completed.
     std::vector<LightSource> analyze() {
         std::vector<LightSource> out;
-        if (width_ <= 0 || height_ <= 0 || latest_t_ <= 0) return out;
+        if (width_ <= 0 || height_ <= 0) return out;
+        if (phase() != Phase::Running) return out;
         const Metavision::timestamp t_end = latest_t_;
-        const Metavision::timestamp analysis_us =
-            static_cast<Metavision::timestamp>(first_analysis_s_ * 1.0e6);
         const Metavision::timestamp max_us =
             static_cast<Metavision::timestamp>(max_duration_s_ * 1.0e6);
-        const Metavision::timestamp t_start =
-            (t_end > analysis_us) ? (t_end - analysis_us) : 0;
         const Metavision::timestamp window_lo =
             (t_end > max_us) ? (t_end - max_us) : 0;
+        // Growing analysis window: the whole retained buffer (pruning keeps it
+        // at max_duration_s_), so accuracy improves as the window grows.
+        const Metavision::timestamp t_start =
+            buffer_.empty() ? t_end : buffer_.front().t;
         // Threshold the heatmap (restricted to the analysis window).
         cv::Mat mask(height_, width_, CV_8UC1, cv::Scalar(0));
         for (int y = 0; y < height_; ++y) {
@@ -108,6 +146,10 @@ public:
             LightSource src;
             src.u = u;
             src.v = v;
+            src.u0 = stats.at<int>(i, cv::CC_STAT_LEFT);
+            src.v0 = stats.at<int>(i, cv::CC_STAT_TOP);
+            src.w = stats.at<int>(i, cv::CC_STAT_WIDTH);
+            src.h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
             compute_frequency(u, v, t_start, t_end, window_lo, src);
             out.push_back(src);
         }
@@ -197,7 +239,9 @@ public:
         buffer_.clear();
         std::fill(heatmap_.begin(), heatmap_.end(), 0);
         latest_t_ = 0;
+        first_t_ = 0;
         last_analyze_t_ = 0;
+        total_events_ = 0;
     }
 
     int width() const { return width_; }
@@ -207,6 +251,15 @@ private:
     /// Max clusters reported per analyze() (defensive cost cap, see the
     /// cluster loop in analyze()).
     static constexpr std::size_t kMaxSources = 32;
+    /// Minimum total events before any analysis (reference guard).
+    static constexpr std::size_t kMinTotalEvents = 100;
+    /// Minimum timestamps in a cluster region to attempt the DFT.
+    static constexpr std::size_t kMinRegionTs = 50;
+    /// Minimum bin count to attempt the DFT.
+    static constexpr int kMinBins = 16;
+
+    static constexpr double kPi = 3.14159265358979323846;
+
     static float clamp_fmin(float f) {
         if (f < 10.0f) return 10.0f;
         if (f > 1000.0f) return 1000.0f;
@@ -256,16 +309,45 @@ private:
         }
     }
 
-    /// @brief Computes the event frequency for one cluster via binned DFT.
+    /// @brief One detected spectral peak (frequency + DFT magnitude).
+    struct SpectralPeak {
+        double freq_hz{0.0};
+        double magnitude{0.0};
+    };
+
+    /// @brief Reference harmonic confirmation: among the peaks sorted by
+    ///        frequency, the fundamental is the LOWEST peak whose 2x harmonic
+    ///        also exists within tol Hz; fallback = highest-magnitude peak.
+    static double identify_event_frequency(
+        const std::vector<SpectralPeak>& peaks, double tol_hz) {
+        if (peaks.empty()) return 0.0;
+        const SpectralPeak* fallback = &peaks[0];
+        for (const auto& p : peaks) {
+            if (p.magnitude > fallback->magnitude) fallback = &p;
+        }
+        for (const auto& p : peaks) {  // sorted by frequency ascending
+            const double f2 = 2.0 * p.freq_hz;
+            for (const auto& q : peaks) {
+                if (q.freq_hz > p.freq_hz && std::abs(q.freq_hz - f2) <= tol_hz) {
+                    return p.freq_hz;
+                }
+            }
+        }
+        return fallback->freq_hz;
+    }
+
+    /// @brief Computes the event frequency for one cluster via binned DFT
+    ///        over the full growing window (cv::dft, zero-padded to a power
+    ///        of two), with noise-threshold peak detection, parabolic
+    ///        interpolation and harmonic confirmation.
     void compute_frequency(int u, int v,
                            Metavision::timestamp t_start,
                            Metavision::timestamp t_end,
                            Metavision::timestamp window_lo,
                            LightSource& out) const {
         // Gather timestamps from the region around the centroid.
-        ts_.clear();
-        auto& ts = ts_;
-        ts_.reserve(64);
+        std::vector<Metavision::timestamp> ts;
+        ts.reserve(256);
         for (const Event& e : buffer_) {
             if (e.t < window_lo) continue;
             if (std::abs(static_cast<int>(e.x) - u) <= region_radius_ &&
@@ -273,102 +355,101 @@ private:
                 ts.push_back(e.t);
             }
         }
-        if (ts.size() < 4) return;
-        // Determine FFT window: most recent N bins (capped at kMaxFFT).
+        if (ts.size() < kMinRegionTs) return;
+        if (t_end <= t_start) return;
         const double bin_dt = static_cast<double>(bin_dt_us_);
-        const double total_window =
-            static_cast<double>(t_end - (t_start > 0 ? t_start : 0));
-        int N = static_cast<int>(total_window / bin_dt);
-        if (N < 4) return;
-        if (N > freq_detail::kMaxFFT) N = freq_detail::kMaxFFT;
-        const Metavision::timestamp t_fft_start =
-            t_end - static_cast<Metavision::timestamp>(
-                        static_cast<double>(N) * bin_dt);
-        // Bin the timestamps.
-        signal_.assign(N, 0.0);
-        auto& signal = signal_;
+        const int num_bins =
+            static_cast<int>(static_cast<double>(t_end - t_start) / bin_dt) + 1;
+        if (num_bins < kMinBins) return;
+        // Zero-pad to the next power of two for cv::dft.
+        int fft_size = 1;
+        while (fft_size < num_bins) fft_size <<= 1;
+        // Bin the timestamps into the analysis window, then Hann-window the
+        // valid samples (padding stays zero).
+        cv::Mat signal = cv::Mat::zeros(1, fft_size, CV_32F);
+        auto* sig = signal.ptr<float>(0);
         for (const Metavision::timestamp t : ts) {
-            if (t < t_fft_start) continue;
+            if (t < t_start) continue;
             const int b = static_cast<int>(
-                static_cast<double>(t - t_fft_start) / bin_dt);
-            if (b >= 0 && b < N) signal[b] += 1.0;
+                static_cast<double>(t - t_start) / bin_dt);
+            if (b >= 0 && b < num_bins) sig[b] += 1.0f;
         }
-        // Apply Hann window.
-        if (hann_N_ != N) {
-            hann_N_ = N;
-            hann_window_.resize(N > 0 ? N : 0);
-            for (int n = 0; n < N; ++n) {
-                hann_window_[n] = (N > 1)
-                    ? 0.5 * (1.0 - std::cos(2.0 * freq_detail::kPi *
-                                             static_cast<double>(n) /
-                                             static_cast<double>(N - 1)))
-                    : 1.0;
-            }
+        for (int n = 0; n < num_bins; ++n) {
+            const double w = (num_bins > 1)
+                ? 0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(n) /
+                                         static_cast<double>(num_bins - 1)))
+                : 1.0;
+            sig[n] = static_cast<float>(sig[n] * w);
         }
-        for (int n = 0; n < N; ++n) {
-            signal[n] *= hann_window_[n];
+        // DFT magnitude spectrum.
+        cv::Mat complex_spec;
+        cv::dft(signal, complex_spec, cv::DFT_COMPLEX_OUTPUT);
+        const int half = fft_size / 2;
+        std::vector<double> mag(static_cast<std::size_t>(half), 0.0);
+        const auto* cx = complex_spec.ptr<float>(0);
+        for (int k = 0; k < half; ++k) {
+            const double re = cx[2 * k];
+            const double im = cx[2 * k + 1];
+            mag[static_cast<std::size_t>(k)] = std::sqrt(re * re + im * im);
         }
-        // DFT magnitude over the frequency range of interest.
+        // Noise threshold: mean + peak_alpha * std over the spectrum, skipping
+        // DC and the first bin (like the reference).
+        double sum = 0.0, sum_sq = 0.0;
+        int n_stats = 0;
+        for (int k = 2; k < half; ++k) {
+            const double m = mag[static_cast<std::size_t>(k)];
+            sum += m;
+            sum_sq += m * m;
+            ++n_stats;
+        }
+        if (n_stats < 2) return;
+        const double mean = sum / n_stats;
+        const double variance = std::max(0.0, sum_sq / n_stats - mean * mean);
+        const double threshold =
+            mean + static_cast<double>(peak_alpha_) * std::sqrt(variance);
         const double fs = 1.0e6 / bin_dt;  // sampling rate in Hz
-        const int k_min = std::max(1, static_cast<int>(std::floor(
-            static_cast<double>(f_min_) * N / fs)));
-        const int k_max = std::min(N / 2, static_cast<int>(std::ceil(
-            static_cast<double>(f_max_) * N / fs)));
-        if (k_max <= k_min) return;
-        int k_peak = -1;
-        double mag_peak = 0.0;
-        mag_.assign(k_max - k_min + 1, 0.0);
-        auto& mag = mag_;
-        std::vector<double> cos_tab(N), sin_tab(N);
-        for (int n = 0; n < N; ++n) {
-            const double phase = 2.0 * freq_detail::kPi * static_cast<double>(n) / static_cast<double>(N);
-            cos_tab[n] = std::cos(phase);
-            sin_tab[n] = std::sin(phase);
-        }
-        for (int k = k_min; k <= k_max; ++k) {
-            double re = 0.0, im = 0.0;
-            for (int n = 0; n < N; ++n) {
-                const int idx = static_cast<int>((static_cast<std::size_t>(k) * static_cast<std::size_t>(n)) % static_cast<std::size_t>(N));
-                re += signal[n] * cos_tab[idx];
-                im -= signal[n] * sin_tab[idx];
-            }
-            const double m = std::sqrt(re * re + im * im);
-            mag[k - k_min] = m;
-            if (m > mag_peak) {
-                mag_peak = m;
-                k_peak = k;
+        // Local maxima within [f_min, f_max] above the noise threshold, with
+        // parabolic interpolation.
+        std::vector<SpectralPeak> peaks;
+        peaks.reserve(16);
+        for (int k = 1; k < half - 1; ++k) {
+            const double f = static_cast<double>(k) * fs / fft_size;
+            if (f < f_min_ || f > f_max_) continue;
+            const double m = mag[static_cast<std::size_t>(k)];
+            if (m < threshold) continue;
+            if (m > mag[static_cast<std::size_t>(k - 1)] &&
+                m >= mag[static_cast<std::size_t>(k + 1)]) {
+                double k_interp = static_cast<double>(k);
+                const double y0 = mag[static_cast<std::size_t>(k - 1)];
+                const double y2 = mag[static_cast<std::size_t>(k + 1)];
+                const double denom = y0 - 2.0 * m + y2;
+                if (std::abs(denom) > 1e-12) {
+                    k_interp = static_cast<double>(k) + 0.5 * (y0 - y2) / denom;
+                }
+                SpectralPeak p;
+                p.freq_hz = k_interp * fs / fft_size;
+                p.magnitude = m;
+                peaks.push_back(p);
             }
         }
-        if (k_peak < 0 || mag_peak <= 0.0) return;
-        // Parabolic interpolation around the peak.
-        double k_interp = static_cast<double>(k_peak);
-        if (k_peak > k_min && k_peak < k_max) {
-            const double y0 = mag[k_peak - 1 - k_min];
-            const double y1 = mag[k_peak - k_min];
-            const double y2 = mag[k_peak + 1 - k_min];
-            const double denom = y0 - 2.0 * y1 + y2;
-            if (std::abs(denom) > 1e-12) {
-                k_interp = static_cast<double>(k_peak) + 0.5 * (y0 - y2) / denom;
-            }
-        }
-        double event_freq = k_interp * fs / static_cast<double>(N);
-        // Harmonic confirmation: if there is a significant peak at half the
-        // detected frequency, the detected peak was the 2nd harmonic of a
-        // square wave -> the true fundamental is at half the frequency.
-        const int k_half = k_peak / 2;
-        if (k_half >= k_min) {
-            const double m_half = mag[k_half - k_min];
-            if (m_half > mag_peak / static_cast<double>(peak_alpha_)) {
-                event_freq = 0.5 * event_freq;
-            }
-        }
+        if (peaks.empty()) return;
+        std::sort(peaks.begin(), peaks.end(),
+                  [](const SpectralPeak& a, const SpectralPeak& b) {
+                      return a.freq_hz < b.freq_hz;
+                  });
+        // Harmonic confirmation tolerance adapts to the window length: the
+        // frequency resolution is fs/fft_size, so shorter windows need a
+        // looser absolute tolerance (reference: max(1, 2/span) Hz).
+        const double span_s = static_cast<double>(t_end - t_start) / 1.0e6;
+        const double tol_hz = std::max(1.0, 2.0 / std::max(span_s, 1e-9));
+        const double event_freq = identify_event_frequency(peaks, tol_hz);
         out.event_freq_hz = static_cast<float>(event_freq);
         out.blink_freq_hz = static_cast<float>(event_freq * 0.5);
     }
 
     int width_;
     int height_;
-    // Tunable parameters (design defaults).
+    // Tunable parameters (reference defaults).
     float f_min_{100.0f};
     float f_max_{10000.0f};
     float bin_dt_us_{50.0f};
@@ -383,15 +464,11 @@ private:
     std::deque<Event> buffer_;
     std::vector<int> heatmap_;
     Metavision::timestamp latest_t_{0};
+    Metavision::timestamp first_t_{0};
     Metavision::timestamp last_analyze_t_{0};
-
-    // --- Reusable temporary buffers (compute_frequency is const -> mutable) ---
-    mutable std::vector<Metavision::timestamp> ts_;
-    mutable std::vector<double> signal_, mag_;
-    mutable int hann_N_{0};
-    mutable std::vector<double> hann_window_;
+    std::size_t total_events_{0};
 };
 
-} // namespace gui_algo
+}  // namespace gui_algo
 
 #endif // GUI_ALGO_ANALYTICS_FREQ_DETECTOR_H

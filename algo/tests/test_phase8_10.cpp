@@ -866,8 +866,69 @@ TEST(FreqDetectorTest, ProcessAndAnalyze) {
     auto ev = make_events(32, 32, 100);
     d.process(ev.data(), ev.size());
     auto sources = d.analyze();
-    // May or may not find light sources.
-    SUCCEED();
+    // Still in the initialization phase -> no results yet.
+    EXPECT_TRUE(sources.empty());
+}
+
+// Blinking LED covering the 3x3 block around (16, 16) (a real LED spans
+// several pixels, and clusters below min_cc_area=3 are skipped): one event
+// every 5000 us -> event frequency 200 Hz, physical blink frequency 100 Hz.
+static std::vector<Event> make_blinking_led(std::size_t count,
+                                            Metavision::timestamp dt_us = 5000,
+                                            Metavision::timestamp t0 = 0) {
+    std::vector<Event> ev;
+    ev.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const uint16_t x = static_cast<uint16_t>(15 + i % 3);
+        const uint16_t y = static_cast<uint16_t>(15 + (i / 3) % 3);
+        ev.emplace_back(x, y, static_cast<uint8_t>(i & 1),
+                        t0 + static_cast<Metavision::timestamp>(i) * dt_us);
+    }
+    return ev;
+}
+
+TEST(FreqDetectorTest, InitPhaseGatesAnalyze) {
+    FreqDetector d(32, 32);
+    // 1 s of stream (200 events at 5 ms): below first_analysis_s (2 s).
+    auto ev = make_blinking_led(200, 5000, 0);
+    d.process(ev.data(), ev.size());
+    EXPECT_EQ(d.phase(), FreqDetector::Phase::Initializing);
+    EXPECT_GT(d.init_remaining_s(), 0.0f);
+    EXPECT_TRUE(d.analyze().empty());
+    // Cross the warm-up threshold (2 s).
+    auto ev2 = make_blinking_led(250, 5000, 1000000);
+    d.process(ev2.data(), ev2.size());
+    EXPECT_EQ(d.phase(), FreqDetector::Phase::Running);
+    EXPECT_FLOAT_EQ(d.init_remaining_s(), 0.0f);
+    auto sources = d.analyze();
+    ASSERT_EQ(sources.size(), 1u);
+    // Bounding box covers the blinking pixel.
+    EXPECT_LE(sources[0].u0, 16);
+    EXPECT_LE(sources[0].v0, 16);
+    EXPECT_GT(sources[0].u0 + sources[0].w, 16);
+    EXPECT_GT(sources[0].v0 + sources[0].h, 16);
+    // Event frequency 200 Hz (blink 100 Hz), within the DFT resolution.
+    EXPECT_NEAR(sources[0].event_freq_hz, 200.0f, 10.0f);
+    EXPECT_NEAR(sources[0].blink_freq_hz, 100.0f, 5.0f);
+}
+
+TEST(FreqDetectorTest, MinTotalEventsGate) {
+    FreqDetector d(32, 32);
+    // 3 s of stream but only 50 events: below the 100-event guard.
+    auto ev = make_blinking_led(50, 60000, 0);
+    d.process(ev.data(), ev.size());
+    EXPECT_EQ(d.phase(), FreqDetector::Phase::Initializing);
+    EXPECT_TRUE(d.analyze().empty());
+}
+
+TEST(FreqDetectorTest, ResetRestartsInitPhase) {
+    FreqDetector d(32, 32);
+    auto ev = make_blinking_led(500, 5000, 0);
+    d.process(ev.data(), ev.size());
+    ASSERT_EQ(d.phase(), FreqDetector::Phase::Running);
+    d.reset();
+    EXPECT_EQ(d.phase(), FreqDetector::Phase::Initializing);
+    EXPECT_TRUE(d.analyze().empty());
 }
 
 // --- 4.4.8 SensorSelfTest ---
