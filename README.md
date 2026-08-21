@@ -85,9 +85,9 @@ EB plus ships **28 self-developed algorithms** plus **7 OpenEB-wrapped capabilit
 | **Filtering** | Hot Pixel Filter, Background Mask, Bandpass Filter, Trigger Synced |
 | **Motion** | Sparse Optical Flow (4 modes), Direction Selective, EIS / Optical Gyro |
 | **Detection** | Blob Detector, Corner Detector (Harris/FAST/AGAST), Line Segment (ELiSeD) |
-| **Tracking** | Object Tracker (RCT/Median/Kalman/MultiHypothesis), Hough Circle, Hough Line, Active Marker |
+| **Tracking** | Object Tracker (RCT/Median/Kalman/MultiHypothesis), Hough Circle, Hough Line |
 | **Reconstruction** | Event-to-Video — **E2VID** (default, DL), BardowVariational, InteractingMaps |
-| **Analytics** | Frequency Detector, ISI Analyzer, Auto Bias |
+| **Analytics** | Frequency Detector, Auto Bias |
 | **Visualization** | Time Surface, XYT 3D Point Cloud, Ultra Slow Motion, Orientation Cluster |
 | **Calibration** | Intrinsic Calibration (chessboard / circle grid / aruco) |
 

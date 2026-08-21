@@ -14,7 +14,7 @@
 // bad pixels). The interval-to-brightness mapping uses an exponential curve
 // precomputed as a LUT so render() is O(N) with a trivial constant.
 //
-// Header-only, matching isi_analyzer.h / hot_pixel_filter.h conventions.
+// Header-only, matching hot_pixel_filter.h conventions.
 
 #ifndef GUI_ALGO_ANALYTICS_SENSOR_SELF_TEST_H
 #define GUI_ALGO_ANALYTICS_SENSOR_SELF_TEST_H

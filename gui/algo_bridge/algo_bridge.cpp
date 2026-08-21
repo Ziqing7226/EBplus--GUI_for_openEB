@@ -846,15 +846,9 @@ void AlgoBridge::register_self_cv() {
     // wired calibration into the algo (always a no-op) and the shared
     // Preprocessor undistort stage (preproc_undistort_*) supersedes it.
 
-    // §4.3.21 Trigger Synced Filter
-    add({"trigger_synced", "Trigger Synced Filter", "cv", "self",
-         AlgoDisplayMode::Passive,
-         {pint("window_us", "Window (us)", "10000", "1000", "1000000"),
-          pint("t0_us", "T0 delay (us)", "500", "0", "1000"),
-          pint("t1_us", "T1 window (us)", "500", "0", "100000"),
-          pint("trigger_channel", "Trigger channel", "0", "0", "7")},
-         "Requires an external trigger source; none is currently wired in "
-         "this GUI, so the output is always empty (§5-G3)."});
+    // §4.3.21 Trigger Synced Filter removed (2026-08-22, user decision):
+    // faithful jAER FilterSyncedEvents port, but the GUI never wired an
+    // external trigger source, so the output was always empty (§5-G3).
 
     // §4.3.22 Bandpass Filter
     add({"bandpass_filter", "Bandpass Filter", "cv", "self",
@@ -917,11 +911,10 @@ void AlgoBridge::register_self_analytics() {
         registry_[a.name] = std::move(a);
     };
 
-    // §4.4.1 Active Marker
-    add({"active_marker", "Active Marker Tracking", "analytics", "self",
-         AlgoDisplayMode::Overlay,
-         {pint("window_us", "Window (us)", "10000", "1000", "100000"),
-          pint("min_events", "Min events", "20", "5", "500")}});
+    // §4.4.1 Active Marker removed (2026-08-22, user decision):
+    // fully self-invented (only "inspired by" the Lighthouse scheme — it
+    // borrowed the heatmap+CC stage that Lighthouse itself later replaced
+    // with Goertzel frequency-identity detection; no tracking, no IDs).
 
     // §4.4.2 Event To Video (3 modes). Parameters are mode-scoped via
     // mode_filter: the UI shows only the params that apply to the currently
@@ -960,13 +953,10 @@ void AlgoBridge::register_self_analytics() {
           pfloat("unsharp_sigma", "Unsharp sigma", "1.0", "0.1", "5.0", "2"),
           pfloat("bilateral_sigma", "Bilateral sigma", "0.0", "0.0", "10.0", "2")}});
 
-    // §4.4.4 ISI Analyzer. Per-pixel only (jAER parity; the global mode was
-    // deleted — it degenerates to a single static bin at high event rates).
-    // min_isi_ms = jAER minIsiUs band (0 = no lower cut).
-    add({"isi_analyzer", "ISI Analyzer", "analytics", "self",
-         AlgoDisplayMode::Standalone,
-         {pfloat("min_isi_ms", "Min ISI (ms)", "0", "0", "999"),
-          pfloat("max_isi_ms", "Max ISI (ms)", "100", "1", "1000")}});
+    // §4.4.4 ISI Analyzer removed (2026-08-22, user decision):
+    // fully self-invented per-pixel ISI histogram (loosely inspired by jAER
+    // ISIHistogrammer); the frequency analytics role is now covered by
+    // freq_detector / frequency_map.
 
     // §4.4.3 Flow Statistics removed (2026-08-22, user decision): the
     // evaluation core needed ground truth that a live stream cannot provide,

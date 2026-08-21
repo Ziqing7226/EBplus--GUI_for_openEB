@@ -100,8 +100,7 @@ void AlgorithmsPanel::build_ui() {
             if (a->source != "self") continue;
 
             auto* cb = new QCheckBox(QString::fromStdString(a->display_name), gb);
-            // Surface registered caveats (e.g. trigger_synced: needs an
-            // external trigger source, output always empty — §5-G3).
+            // Surface registered caveats in a tooltip, if any.
             if (!a->description.empty()) {
                 cb->setToolTip(QString::fromStdString(a->description));
             }
@@ -379,7 +378,6 @@ bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
     // update_interval_s and frequency_map to update_interval_ms, which keeps
     // the GUI responsive without the ROI crutch.
     return algo_name == "event_to_video" ||
-           algo_name == "isi_analyzer" ||
            algo_name == "time_surface" ||
            algo_name == "hough_line" ||
            algo_name == "hough_circle";
@@ -997,7 +995,6 @@ bool AlgorithmsPanel::algo_halves_coords(const std::string& algo_name) {
     // downsample only thins events (3/4 discarded, coordinates unchanged) —
     // a silent 4× input loss (§五-F1).
     return algo_name == "event_to_video" ||
-           algo_name == "isi_analyzer" ||
            algo_name == "time_surface" ||
            algo_name == "hough_line" ||
            algo_name == "hough_circle";

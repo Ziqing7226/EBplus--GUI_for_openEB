@@ -267,7 +267,7 @@ void ReplaceStrategy::apply(QImage& frame, AlgoResult& r,
 void StandaloneStrategy::apply(QImage& /*frame*/, AlgoResult& r,
                                const AlgoInfo& info, DisplayContext& ctx) {
     // Route results to the AlgoWindow (design §5.6.6). Frame-producing algos
-    // (time_surface, event_to_video, isi_analyzer, background_mask) use an
+    // (time_surface, event_to_video, background_mask) use an
     // EventDisplayWidget; text-producing algos use the default status
     // QLabel. xyt_visualizer is handled separately via SpaceTimeDisplay.
     auto wit = ctx.algo_windows->find(info.name);

@@ -56,22 +56,23 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 // Replace-display promise, no downstream consumer). particle_counter,
 // flow_statistics and overlay were removed 2026-08-22 (user decision:
 // particle_counter fully self-invented, flow_statistics needed unavailable
-// ground truth, overlay was a pass-through placeholder). sensor_self_test is
+// ground truth, overlay was a pass-through placeholder; isi_analyzer /
+// trigger_synced / active_marker were self-invented or input-less). sensor_self_test is
 // intentionally NOT registered (it is a Devices-panel diagnostic, not an
 // algorithm — its instance is created via create_with_info).
-// Live registry: 24 self-developed + 4 OpenEB = 28.
+// Live registry: 21 self-developed + 4 OpenEB = 25.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 28u);
+    EXPECT_EQ(algos.size(), 25u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
         if (a.source == "self") ++self_count;
         else if (a.source == "openeb") ++openeb_count;
     }
-    EXPECT_EQ(self_count, 24u);
+    EXPECT_EQ(self_count, 21u);
     EXPECT_EQ(openeb_count, 4u);
 }
 

@@ -2,7 +2,7 @@
 //
 // Maintains a bounded rolling window of scalar samples (ISI, direction,
 // polarity, latency) and computes a histogram + summary statistics (mean, std,
-// percentiles). Used by isi_analyzer, direction consensus, and latency probes.
+// percentiles). Used by direction consensus, latency probes, and percentile stats.
 // Header-only; O(1) push, O(bins) stats.
 
 #ifndef GUI_ALGO_COMMON_HISTOGRAM_RING_BUFFER_H

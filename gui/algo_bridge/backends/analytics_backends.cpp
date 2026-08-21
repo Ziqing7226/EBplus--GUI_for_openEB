@@ -1,6 +1,6 @@
 // gui/algo_bridge/backends/analytics_backends.cpp — frame producers + analyzers
 // (design §3.4). Split from the former algo_backend.cpp monolith.
-// Contains: EventToVideo, ISIAnalyzer.
+// Contains: EventToVideo, SensorSelfTest.
 
 #include "algo_bridge/algo_backend.h"
 #include "algo_bridge/backends/backend_common.h"
@@ -12,7 +12,6 @@
 #include <opencv2/imgproc.hpp>
 
 #include "algo/analytics/event_to_video.h"
-#include "algo/analytics/isi_analyzer.h"
 #include "algo/analytics/sensor_self_test.h"
 
 using namespace gui::backend_detail;
@@ -328,113 +327,6 @@ public:
 };
 
 
-/// ISIAnalyzer backend — renders ISI histogram as frame.
-/// Complex algorithm (design §4.4.4): the ISI histogram is inherently
-/// per-pixel in jAER (ISIHistogrammer keeps last-ts per channel) — the
-/// global mode was deleted (Phase 2.6 debug, user decision: it degenerates
-/// to a single static bin at high event rates).
-class ISIAnalyzerBackend final : public AlgoBackend {
-    int sensor_w_{0}, sensor_h_{0};
-    ProcessRegion roi_;
-    float max_isi_ms_{100.0F};
-    float min_isi_ms_{0.0F};
-    std::unique_ptr<gui_algo::ISIAnalyzer> algo_;
-    std::vector<Metavision::EventCD> passthrough_;
-    std::vector<gui_algo::Event> roi_events_;
-    Preprocessor preproc_;
-public:
-    ISIAnalyzerBackend(int w, int h) : sensor_w_(w), sensor_h_(h) {
-        roi_.compute(sensor_w_, sensor_h_);
-        preproc_.halve_coords_ = true;
-        rebuild();
-    }
-    void rebuild() {
-        const int aw = roi_.enabled ? roi_.rw : sensor_w_;
-        const int ah = roi_.enabled ? roi_.rh : sensor_h_;
-        preproc_.init(aw, ah);
-        const int f = preproc_.factor();
-        algo_ = std::make_unique<gui_algo::ISIAnalyzer>(aw / f, ah / f, 32, max_isi_ms_,
-                                                        min_isi_ms_);
-    }
-    void set_param(const std::string& k, const std::string& v) override {
-        if (preproc_.set_param(k, v)) {
-            if (k == "preproc_downsample") rebuild();
-            return;
-        }
-        // Only rebuild when the effective dimensions actually change
-        // (audit §五-D4): apply_global_roi fires 5 set_param calls, and a
-        // rebuild discards the accumulated histogram each time.
-        const bool prev_roi_enabled = roi_.enabled;
-        const int prev_roi_rw = roi_.rw;
-        const int prev_roi_rh = roi_.rh;
-        bool need_rebuild = false;
-        bool roi_changed = false;
-        if (k == "max_isi_ms") {
-            max_isi_ms_ = static_cast<float>(to_d(v));
-            if (algo_) algo_->set_max_isi_ms(max_isi_ms_);
-        } else if (k == "min_isi_ms") {
-            min_isi_ms_ = static_cast<float>(to_d(v));
-            if (algo_) algo_->set_min_isi_ms(min_isi_ms_);
-        }
-        // Phase 2.6: roi_* keys intentionally not handled.
-        if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
-        else if (roi_changed) {
-            const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
-            const int old_ah = prev_roi_enabled ? prev_roi_rh : sensor_h_;
-            roi_.compute(sensor_w_, sensor_h_);
-            const int new_aw = roi_.enabled ? roi_.rw : sensor_w_;
-            const int new_ah = roi_.enabled ? roi_.rh : sensor_h_;
-            if (new_aw != old_aw || new_ah != old_ah) rebuild();
-        }
-    }
-    std::string get_param(const std::string& k) const override {
-        auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "max_isi_ms") return from_d(max_isi_ms_);
-        if (k == "min_isi_ms") return from_d(min_isi_ms_);
-        // Phase 2.6: roi_* keys intentionally not handled.
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        const auto* ev = as_events(passthrough_.data());
-        std::size_t n = passthrough_.size();
-        if (roi_.enabled && roi_.rw > 0 && roi_.rh > 0) {
-            crop_to_roi(ev, n, roi_, &preproc_, roi_events_);
-            ev = roi_events_.data();
-            n = roi_events_.size();
-        } else if (preproc_.active() && n > 0) {
-            auto [p, m] = preproc_.apply(ev, n);
-            roi_events_.assign(p, p + m);
-            ev = roi_events_.data();
-            n = m;
-        }
-        algo_->process(ev, n);
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = passthrough_;
-        r.has_frame = true;
-        // The ISI output is a fixed-size chart (512×256, isi_analyzer.h
-        // render()) that has no relation to the sensor/working resolution.
-        // Phase 2.6 debug D-4: do NOT resize it to the working resolution
-        // (the old f>1 branch crushed it to 128×128 or blew it up to
-        // 1280×720 with INTER_NEAREST — two resampling stages made the text
-        // unreadable). The AlgoWindow letterboxes it to the window size.
-        r.frame = algo_->render().clone();
-        r.status = "isi: histogram" + std::string(roi_.enabled ? " (ROI)" : " (full)");
-        return r;
-    }
-    void reset() override {
-        if (algo_) algo_->reset();
-        passthrough_.clear();
-        roi_events_.clear();
-    }
-    void set_sensor_dimensions(int w, int h) override {
-        sensor_w_ = w; sensor_h_ = h;
-        roi_.compute(sensor_w_, sensor_h_); rebuild();
-    }
-};
-
 /// SensorSelfTest backend — per-pixel refractory-period heatmap + bad-pixel
 /// detection (design §4.4.8). Processes the FULL sensor (no ROI, no
 /// preprocessing) because the self-test must cover every pixel. Produces a
@@ -525,7 +417,6 @@ public:
 std::unique_ptr<AlgoBackend> create_analytics_backend(const std::string& name,
                                           int width, int height) {
     if (name == "event_to_video")              return std::make_unique<EventToVideoBackend>(width, height);
-    if (name == "isi_analyzer")                return std::make_unique<ISIAnalyzerBackend>(width, height);
     if (name == "sensor_self_test")            return std::make_unique<SensorSelfTestBackend>(width, height);
     return nullptr;
 }

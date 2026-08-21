@@ -43,9 +43,7 @@
 #include "algo/cv/optical_gyro.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
-#include "algo/analytics/active_marker.h"
 #include "algo/analytics/event_to_video.h"
-#include "algo/analytics/isi_analyzer.h"
 #include "algo/analytics/freq_detector.h"
 
 #include "raw_event_stream.h"
@@ -68,9 +66,7 @@ using gui_algo::HoughCircleTracker;
 using gui_algo::OpticalGyro;
 using gui_algo::XYTVisualizer;
 using gui_algo::TimeSurface;
-using gui_algo::ActiveMarker;
 using gui_algo::EventToVideo;
-using gui_algo::ISIAnalyzer;
 using gui_algo::FreqDetector;
 
 #ifndef GUI_TEST_RAW_FILE
@@ -476,21 +472,6 @@ TEST_F(RawAlgoTest, CornerDetectorArcCornersAreValid) {
 }
 
 // =========================================================================
-// 10. ISIAnalyzer — histogram must contain real ISI samples from real events.
-// =========================================================================
-TEST_F(RawAlgoTest, ISIAnalyzerHistogramPopulated) {
-    const auto& s = stream();
-    ISIAnalyzer isi(s.width(), s.height(), 32, 100.0f);
-    isi.process(s.events().data(), s.events().size());
-    std::uint64_t total = 0;
-    for (auto c : isi.counts()) total += c;
-    EXPECT_GT(total, 0u) << "no ISI samples recorded from real events";
-    EXPECT_GT(isi.mean_us(), 0.0);
-    EXPECT_TRUE(is_finite(isi.mean_us()));
-    EXPECT_TRUE(is_finite(isi.median_us()));
-}
-
-// =========================================================================
 // 11. LineSegmentDetector — emitted segments have finite endpoints.
 // =========================================================================
 TEST_F(RawAlgoTest, LineSegmentsAreFinite) {
@@ -652,22 +633,6 @@ TEST_F(RawAlgoTest, DirectionSelectiveLabelsValid) {
                 EXPECT_LT(d, num_dir);
             }
         }
-    }
-}
-
-// =========================================================================
-// 22. ActiveMarker — analyze must return finite annotations.
-// =========================================================================
-TEST_F(RawAlgoTest, ActiveMarkerAnnotationsFinite) {
-    const auto& s = stream();
-    ActiveMarker am(s.width(), s.height());
-    for (const auto& batch : s.batches(kBatchWindowUs)) {
-        am.process(batch.data(), batch.size());
-    }
-    auto anns = am.analyze();
-    for (const auto& a : anns) {
-        EXPECT_TRUE(is_finite(a.cx));
-        EXPECT_TRUE(is_finite(a.cy));
     }
 }
 

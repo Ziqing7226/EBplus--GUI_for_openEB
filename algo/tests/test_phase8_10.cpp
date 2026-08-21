@@ -20,20 +20,17 @@
 #include "algo/cv/orientation_cluster.h"
 #include "algo/cv/cluster_lif.h"
 #include "algo/cv/background_mask_filter.h"
-#include "algo/cv/trigger_synced_filter.h"
 #include "algo/cv/bandpass_filter.h"
 #include "algo/cv/optical_gyro.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
 #include "algo/cv/dense_optical_flow.h"
 #include "algo/cv/frequency_map.h"
-#include "algo/analytics/active_marker.h"
 #include "algo/analytics/event_to_video.h"
 #include "algo/analytics/e2vid/event_voxel_grid.h"
 #include "algo/analytics/e2vid/intensity_rescaler.h"
 #include "algo/analytics/e2vid/unsharp_mask.h"
 #include "algo/analytics/e2vid/e2vid_inference.h"
-#include "algo/analytics/isi_analyzer.h"
 #include "algo/analytics/auto_bias_controller.h"
 #include "algo/analytics/freq_detector.h"
 #include "algo/analytics/sensor_self_test.h"
@@ -47,7 +44,6 @@ using gui_algo::HoughCircleTracker;
 using gui_algo::OrientationCluster;
 using gui_algo::ClusterLIF;
 using gui_algo::BackgroundMaskFilter;
-using gui_algo::TriggerSyncedFilter;
 using gui_algo::BandpassFilter;
 using gui_algo::OpticalGyro;
 using gui_algo::XYTVisualizer;
@@ -55,9 +51,7 @@ using gui_algo::TimeSurface;
 using gui_algo::DenseOpticalFlow;
 using gui_algo::FrequencyMap;
 using gui_algo::FrequencyMapParams;
-using gui_algo::ActiveMarker;
 using gui_algo::EventToVideo;
-using gui_algo::ISIAnalyzer;
 using gui_algo::AutoBiasController;
 using gui_algo::FreqDetector;
 using gui_algo::SensorSelfTest;
@@ -306,33 +300,6 @@ TEST(BackgroundMaskFilterTest, ProcessEmpty) {
     EXPECT_FALSE(mask.empty());
 }
 
-// --- 4.3.21 TriggerSyncedFilter (jAER FilterSyncedEvents port) ---
-TEST(TriggerSyncedFilterTest, Construction) {
-    TriggerSyncedFilter f;
-    // jAER defaults: t0=500us, t1=500us (window). trigger_window_us() maps to t1.
-    EXPECT_EQ(f.trigger_window_us(), 500);
-    EXPECT_EQ(f.t0(), 500);
-    EXPECT_EQ(f.t1(), 500);
-    EXPECT_EQ(f.trigger_channel(), 0);
-}
-TEST(TriggerSyncedFilterTest, Params) {
-    TriggerSyncedFilter f;
-    f.set_trigger_window_us(50000);
-    EXPECT_EQ(f.trigger_window_us(), 50000);
-    f.set_t0(1000);
-    f.set_t1(2000);
-    EXPECT_EQ(f.t0(), 1000);
-    EXPECT_EQ(f.t1(), 2000);
-    f.set_trigger_channel(3);
-    EXPECT_EQ(f.trigger_channel(), 3);
-}
-TEST(TriggerSyncedFilterTest, ProcessEmpty) {
-    TriggerSyncedFilter f;
-    std::vector<Event> empty;
-    auto pkt = make_packet(empty);
-    auto result = f.process(pkt);
-    EXPECT_TRUE(result.empty());
-}
 
 // --- 4.3.22 BandpassFilter ---
 TEST(BandpassFilterTest, Construction) {
@@ -491,28 +458,6 @@ TEST(TimeSurfaceTest, LinearDecayUnchangedByDefault) {
 // =========================================================================
 // Phase 10: algo/analytics/ §4.4.1–4.4.7
 // =========================================================================
-
-// --- 4.4.1 ActiveMarker ---
-TEST(ActiveMarkerTest, Construction) {
-    ActiveMarker m(64, 48);
-    EXPECT_EQ(m.width(), 64);
-    EXPECT_EQ(m.height(), 48);
-}
-TEST(ActiveMarkerTest, Params) {
-    ActiveMarker m(32, 32);
-    m.set_window_ms(50.0f);
-    EXPECT_FLOAT_EQ(m.window_ms(), 50.0f);
-    m.set_heatmap_threshold(100);
-    EXPECT_EQ(m.heatmap_threshold(), 100);
-    m.set_enable_freq_detect(true);
-    EXPECT_TRUE(m.enable_freq_detect());
-}
-TEST(ActiveMarkerTest, Process) {
-    ActiveMarker m(32, 32);
-    auto ev = make_events(32, 32, 100);
-    m.process(ev.data(), ev.size());
-    SUCCEED();
-}
 
 // --- 4.4.2 EventToVideo ---
 TEST(EventToVideoTest, Construction) {
@@ -735,39 +680,6 @@ TEST(E2VIDInferenceTest, CropToSensor) {
     cv::Mat out2 = e.crop_to_sensor(padded);
     EXPECT_EQ(out2.rows, 32);
     EXPECT_EQ(out2.cols, 32);
-}
-
-// --- 4.4.4 ISIAnalyzer ---
-TEST(ISIAnalyzerTest, Construction) {
-    ISIAnalyzer a(64, 48);
-    EXPECT_EQ(a.bin_count(), 32);  // default bin count
-}
-TEST(ISIAnalyzerTest, Params) {
-    ISIAnalyzer a(32, 32);
-    a.set_bin_count(64);
-    EXPECT_EQ(a.bin_count(), 64);
-    a.set_min_isi_ms(5.0f);
-    EXPECT_FLOAT_EQ(a.min_isi_ms(), 5.0f);
-}
-TEST(ISIAnalyzerTest, Process) {
-    ISIAnalyzer a(32, 32);
-    auto ev = make_events(32, 32, 50);
-    a.process(ev.data(), ev.size());
-    SUCCEED();
-}
-// Regression: set_bin_count / set_max_isi_ms must preserve the histogram
-// range in µs (previous bug divided by 1000, causing all samples to be
-// dropped and counts() to be all-zero).
-TEST(ISIAnalyzerTest, SetterPreservesRange) {
-    ISIAnalyzer a(32, 32, 32, 100.0f);  // max_isi = 100 ms = 100000 us
-    a.set_bin_count(64);
-    // Feed two events 50000 us apart (< 100000 us, must land in a bin).
-    gui_algo::Event ev[2] = {{16, 16, 1, 0}, {16, 16, 1, 50000}};
-    a.process(ev, 2);
-    const auto& counts = a.counts();
-    std::uint64_t total = 0;
-    for (auto c : counts) total += c;
-    EXPECT_GT(total, 0u);  // at least one ISI sample must be counted
 }
 
 // --- 4.4.6 AutoBiasController (dual loop: rate band + ON/OFF balance) ---

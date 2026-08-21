@@ -26,13 +26,13 @@ std::unique_ptr<AlgoBackend> create_cv_backend(const std::string& name,
 std::unique_ptr<AlgoBackend> create_cv_vector_backend(const std::string& name,
                                                        int width, int height);
 
-/// Analytics: event_to_video, isi_analyzer,
-/// freq_detector, active_marker.
+/// Analytics: event_to_video.
 std::unique_ptr<AlgoBackend> create_analytics_backend(const std::string& name,
                                                        int width, int height);
 
-/// Analytics extras: trigger_synced. (auto_bias moved to CameraController +
-/// Biases panel, 2026-08-21; particle_counter removed 2026-08-22.)
+/// Analytics extras: frequency analytics (freq_detector, frequency_map).
+/// (auto_bias moved to CameraController + Biases panel, 2026-08-21;
+/// particle_counter / trigger_synced removed 2026-08-22.)
 std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& name,
                                                              int width, int height);
 

@@ -2096,7 +2096,7 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
         // Note: background_mask is registered as Replace, not Standalone —
         // listing it here was a dead branch (audit §五-G5).
         if (algo_name == "time_surface" || algo_name == "event_to_video" ||
-            algo_name == "isi_analyzer" || algo_name == "sensor_self_test" ||
+            algo_name == "sensor_self_test" ||
             algo_name == "frequency_map") {
             auto* disp = new EventDisplayWidget(nullptr);
             w->set_display_widget(disp);

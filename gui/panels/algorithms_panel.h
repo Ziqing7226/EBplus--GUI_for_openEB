@@ -70,7 +70,7 @@ public:
     void set_roi_enabled(bool enabled);
     /// @brief True if the named algorithm auto-enables the unified ROI when
     /// enabled (Phase 2.6 debug D-7 default list): the compute-heavy
-    /// algorithms that would stall at full sensor (e2v / isi_analyzer /
+    /// algorithms that would stall at full sensor (e2v /
     /// time_surface / hough_line / hough_circle). XYT is deliberately NOT
     /// in the list (user decision — it never used ROI).
     static bool algo_defaults_to_roi(const std::string& algo_name);
@@ -247,7 +247,7 @@ private:
     /// Tracks whether the user has manually toggled preproc_downsample.
     /// While false, enabling an algorithm auto-sets downsample based on
     /// whether the algorithm's backend halves coordinates (§11.2-I):
-    ///   - event_to_video / isi_analyzer / time_surface / hough_line /
+    ///   - event_to_video / time_surface / hough_line /
     ///     hough_circle: downsample ON (halves coords, project memory)
     ///   - all others: downsample OFF (avoids 4× input loss, §五-F1)
     /// Once the user manually toggles, this flips true and auto-setting
