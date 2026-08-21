@@ -434,36 +434,62 @@ public:
         if (cached_frame_.empty() || elapsed_ms >= update_interval_ms_) {
             algo_.analyze();
             last_analyze_ = now;
-            // Frequency map → Jet colormap frame (Standalone display).
+            // Frequency map → Jet heatmap. Fixed-band normalization: the
+            // confirmed-frequency range [min_freq_hz, max_freq_hz] maps to the
+            // full colormap (higher = redder/hotter); unconfirmed pixels (0)
+            // stay near-black instead of falling into Jet's dark-blue band,
+            // so the background reads as empty rather than "very low freq".
             const cv::Mat f = algo_.frequency_hz();
-            double mn = 0, mx = 0;
-            cv::minMaxLoc(f, &mn, &mx);
-            cv::Mat u8;
-            if (mx > 0.0) {
-                f.convertTo(u8, CV_8UC1, 255.0 / mx, 0.0);
-            } else {
-                u8 = cv::Mat::zeros(f.size(), CV_8UC1);
+            cv::Mat u8 = cv::Mat::zeros(f.size(), CV_8UC1);
+            const float lo = params_.min_freq_hz;
+            const float span = std::max(1.0f, params_.max_freq_hz - lo);
+            for (int y = 0; y < f.rows; ++y) {
+                const float* frow = f.ptr<float>(y);
+                std::uint8_t* orow = u8.ptr<std::uint8_t>(y);
+                for (int x = 0; x < f.cols; ++x) {
+                    if (frow[x] <= 0.0f) continue;  // unconfirmed → black
+                    float v = (frow[x] - lo) / span;
+                    v = std::min(1.0f, std::max(0.0f, v));
+                    orow[x] = static_cast<std::uint8_t>(24.0f + v * 231.0f);
+                }
             }
-            cached_frame_.create(u8.rows, u8.cols, CV_8UC3);
-            cv::applyColorMap(u8, cached_frame_, cv::COLORMAP_JET);
+            // 4x bilinear upscale for a smooth heatmap, then Jet LUT. The
+            // Jet dark-blue tail (values 0..23 never occur — unconfirmed
+            // pixels are masked out) keeps the confirmed low end from
+            // blending into the background.
+            cv::Mat up;
+            cv::resize(u8, up, cv::Size(), 4.0, 4.0, cv::INTER_LINEAR);
+            cv::Mat jet;
+            cv::applyColorMap(up, jet, cv::COLORMAP_JET);
+            cached_frame_ = cv::Mat::zeros(jet.size(), CV_8UC3);
+            for (int y = 0; y < jet.rows; ++y) {
+                const cv::Vec3b* jrow = jet.ptr<cv::Vec3b>(y);
+                cv::Vec3b* crow = cached_frame_.ptr<cv::Vec3b>(y);
+                const std::uint8_t* mrow = u8.ptr<std::uint8_t>(y / 4);
+                for (int x = 0; x < jet.cols; ++x) {
+                    if (mrow[x / 4] == 0) continue;
+                    crow[x] = jrow[x];
+                }
+            }
+            // Sources are annotated directly into the frame (white circles +
+            // shadowed text) — nothing goes to the sidebar text list.
             cached_sources_ = algo_.sources();
+            for (const auto& src : cached_sources_) {
+                const cv::Point c(static_cast<int>(std::lround(src.x * 4.0f)),
+                                  static_cast<int>(std::lround(src.y * 4.0f)));
+                const int rad = std::max(6, static_cast<int>(std::lround(src.radius_px * 4.0f)));
+                cv::circle(cached_frame_, c, rad, cv::Scalar(255, 255, 255), 2);
+                const std::string label =
+                    std::to_string(static_cast<int>(std::lround(src.frequency_hz))) + " Hz";
+                const cv::Point tp(c.x + rad + 4, c.y + 4);
+                cv::putText(cached_frame_, label, tp + cv::Point(1, 1),
+                            cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 0), 2);
+                cv::putText(cached_frame_, label, tp,
+                            cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
+            }
         }
         r.frame = cached_frame_;
         r.has_frame = true;
-        for (const auto& src : cached_sources_) {
-            OverlayCircle c;
-            c.cx = static_cast<int>(std::lround(src.x));
-            c.cy = static_cast<int>(std::lround(src.y));
-            c.r = std::max(3, static_cast<int>(std::lround(src.radius_px)));
-            r.circles.push_back(c);
-            OverlayText t;
-            t.x = static_cast<int>(std::lround(src.x)) + c.r + 4;
-            t.y = static_cast<int>(std::lround(src.y));
-            t.text = std::to_string(static_cast<int>(src.frequency_hz)) + " Hz";
-            r.texts.push_back(t);
-        }
-        r.status = "freq map: " + std::to_string(cached_sources_.size()) +
-                   " sources" + std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
     void reset() override {
