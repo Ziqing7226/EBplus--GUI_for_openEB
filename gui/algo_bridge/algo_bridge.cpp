@@ -993,7 +993,9 @@ void AlgoBridge::register_self_analytics() {
 
     // §4.4.7 Freq Detector — overlay boxes + frequency labels on the main
     // display (centered usage hint during the initialization phase). Full
-    // reference parameter set.
+    // reference parameter set. reset_on_reenable: the warm-up window,
+    // heatmap and frozen result are all stale after a disabled gap — a new
+    // measurement session must start from scratch.
     add({"freq_detector", "Frequency Detector", "analytics", "self",
          AlgoDisplayMode::Overlay,
          {pfloat("fmin", "Min event freq (Hz)", "100", "10", "1000"),
@@ -1005,7 +1007,9 @@ void AlgoBridge::register_self_analytics() {
           pfloat("peak_alpha", "Peak threshold alpha", "5.0", "1.0", "20.0"),
           pfloat("first_analysis", "Init phase (s)", "5.0", "0.5", "10.0"),
           pfloat("max_duration", "Max window (s)", "20.0", "5.0", "120.0"),
-          pfloat("update_interval_s", "Update interval (s)", "2.0", "0.1", "10.0")}});
+          pfloat("update_interval_s", "Update interval (s)", "2.0", "0.1", "10.0")},
+         /*description=*/"", /*uses_algo_roi=*/false,
+         /*reset_on_reenable=*/true});
 
     // §4.3.x Per-pixel frequency/period map + frequency clustering + modulated-
     // light source detection (vibration/flicker analysis).
