@@ -74,15 +74,19 @@ void AlgorithmsPanel::build_ui() {
     // Group algorithms by category. Only self-developed algorithms are shown
     // here: OpenEB-wrapped filters have no real backend in AlgoBridge and are
     // controlled via the Preprocess menu / PreprocessingPanel instead.
+    // The former "cv" (Computer Vision) group is merged into Analytics
+    // (2026-08-22, user decision) — the registration category field is
+    // unchanged so config round-trips keep their stored values.
     algos_ = bridge_->list_algos();
     QMap<QString, std::vector<const AlgoInfo*>> by_cat;
     for (const auto& a : algos_) {
         if (a.source != "self") continue;
-        by_cat[QString::fromStdString(a.category)].push_back(&a);
+        QString cat = QString::fromStdString(a.category);
+        if (cat == QLatin1String("cv")) cat = QStringLiteral("analytics");
+        by_cat[cat].push_back(&a);
     }
 
     const QMap<QString, QString> cat_titles = {
-        {"cv",              tr("Computer Vision")},
         {"analytics",       tr("Analytics")},
     };
 

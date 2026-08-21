@@ -2,7 +2,7 @@
 
 EB plus ships **59 algorithms** registered in a single `AlgoBridge` registry (`gui/algo_bridge/algo_bridge.cpp`):
 
-- **29 self-developed** algorithms under `algo/` (21 Computer Vision + 8 Analytics). `intrinsic_calibration` was removed from the registry — it is now a **Tools → Intrinsic Wizard** dialog. Undistortion is available as a stackable preprocessing checkbox in the Algorithms panel (`preproc_undistort_enabled` / `preproc_undistort_path`).
+- **25 registered** algorithms (21 self-developed + 4 OpenEB filter stages). The sidebar shows all self-developed algorithms under a single **Analytics** group (the former Computer Vision group was merged in 2026-08-22). `intrinsic_calibration` was removed from the registry — it is now a **Tools → Intrinsic Wizard** dialog. Undistortion is available as a stackable preprocessing checkbox in the Algorithms panel (`preproc_undistort_enabled` / `preproc_undistort_path`).
 - **30 OpenEB-wrapped** capabilities (10 filters + 7 frame modes + 7 preprocessors + 6 utilities)
 
 Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a global ROI (default: center 128×128) and a shared preprocessing stage. All parameters are adjusted exclusively in the sidebar's **Algorithms** panel; algorithm display windows show only the title and output.
@@ -49,7 +49,7 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 
 ## Self-Developed Algorithms
 
-### Computer Vision (21)
+### Self-Developed (21) — sidebar group "Analytics"
 
 | Algorithm | Display | Notes |
 |-----------|---------|-------|
@@ -57,41 +57,35 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 | Orientation Filter | Overlay | jAER SimpleOrientationFilter (min-dt WTA) |
 | Direction Selective Filter | Overlay | jAER DirectionSelectiveFilter |
 | Sparse Optical Flow | Overlay | 4 modes: LocalPlanes / LucasKanade / BlockMatch / ClusterOF |
-| Blob Detector | Overlay | |
+| Dense Optical Flow | Overlay | PlaneFitting / TimeGradient / TripletMatching |
+| Blob Detector | Overlay | EMA background + connected components |
 | Object Tracker | Overlay | 4 modes: RCT / Median / Kalman / MultiHypothesis |
-| Corner Detector | Overlay | 3 modes: Harris / FAST / AGAST |
-| Line Segment (ELiSeD) | Overlay | |
+| Corner Detector | Overlay | EndStopped / Harris / FAST / AGAST / Arc* |
+| Line Segment (ELiSeD) | Overlay | timestamp-Sobel gradients |
 | Hough Line Tracker | Overlay | jAER HoughLineTracker |
 | Hough Circle Tracker | Overlay | jAER HoughCircleTracker |
-| Orientation Cluster | Overlay | |
-| Cluster LIF | Overlay | LIF neuron clustering |
-| Background Mask Filter | Replace | 2D histogram background modeling |
-| Perspective Undistort | Passive | |
-| Trigger Synced Filter | Passive | |
-| Bandpass Filter | Overlay | |
-| EIS (Optical Gyro) | Overlay | Electronic image stabilization |
-| Ultra Slow Motion | Passive | Time dilation |
+| Orientation Cluster | Overlay | jAER OrientationCluster |
+| Cluster LIF | Overlay | jAER BlurringTunnelFilter LIF clustering |
+| Background Mask Filter | Replace | jAER Histogram2DFilter background modeling |
+| Bandpass Filter | Overlay | event-rate HP+LP cascade |
+| EIS (Optical Gyro) | Overlay | jAER OpticalGyro, electronic image stabilization |
 | XYT 3D Visualizer | Standalone | GPU 3D point cloud |
-| Overlay | Overlay | Generic overlay |
 | Time Surface | Standalone | Hot / Plasma / Turbo palettes |
-
-### Analytics (7)
-
-| Algorithm | Display | Notes |
-|-----------|---------|-------|
-| Active Marker Tracking | Overlay | Sliding-window clustering |
 | Event -> Video (E2VID) | Standalone | 3 modes (see below) |
-| Flow Statistics | Passive | Requires ground-truth |
-| ISI Analyzer | Standalone | Inter-spike interval histograms |
-| Particle Counter | Overlay | Line-crossing counter |
-| Auto Bias Controller | Overlay | Closed-loop bias tuning |
-| Frequency Detector | Standalone | Blinking frequency detection |
+| Frequency Detector | Overlay | blinking-light frequency detection |
+| Frequency Map | Standalone | flicker-frequency heatmap |
 
-### Calibration (1)
+Removed from the registry: particle_counter / flow_statistics / overlay /
+isi_analyzer / trigger_synced / active_marker (2026-08-22 provenance cull),
+perspective_undistort (superseded by the preproc undistort stage),
+ultra_slow_motion (Phase 2.5), Auto Bias Controller (now a camera-level
+feature in the Biases panel, not an algorithm), intrinsic_calibration
+(Tools → Intrinsic Wizard).
 
-| Algorithm | Display | Notes |
-|-----------|---------|-------|
-| Intrinsic Calibration | Standalone | chessboard / circle_grid / aruco |
+### Calibration
+
+Intrinsic calibration is a **Tools → Intrinsic Wizard** dialog (blinking
+chessboard + two-pass Zhang solver), not a registered algorithm.
 
 ## Event-to-Video (E2VID)
 
