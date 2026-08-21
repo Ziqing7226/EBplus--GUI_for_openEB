@@ -7,6 +7,8 @@
 
 #include <filesystem>
 
+#include <cstdint>
+
 #include <metavision/sdk/stream/camera_error_code.h>
 #include <metavision/sdk/stream/camera_exception.h>
 #include <metavision/sdk/stream/file_config_hints.h>
@@ -372,6 +374,74 @@ void CameraController::set_cd_broadcast(bool enabled) {
     cd_broadcast_.store(enabled, std::memory_order_relaxed);
 }
 
+// --- Auto bias (§4.4.6) -----------------------------------------------------
+
+bool CameraController::set_auto_bias_enabled(bool on) {
+    if (on == auto_bias_enabled()) return on;
+    if (on) {
+        if (is_file_ || !camera_) return false;
+        if (!bias_applier_.attach(biases_facility())) return false;
+        {
+            std::lock_guard<std::mutex> lk(auto_bias_mutex_);
+            auto_bias_ctrl_.reset();
+            auto_bias_last_tick_ = -1;
+        }
+        auto_bias_enabled_.store(true, std::memory_order_relaxed);
+    } else {
+        auto_bias_enabled_.store(false, std::memory_order_relaxed);
+        if (bias_applier_.attached()) {
+            bias_applier_.restore();
+            bias_applier_.detach();
+            emit auto_bias_applied();
+        }
+        std::lock_guard<std::mutex> lk(auto_bias_mutex_);
+        auto_bias_ctrl_.reset();
+    }
+    return true;
+}
+
+bool CameraController::set_auto_bias_rate_bounds(float lo_mev, float hi_mev) {
+    std::lock_guard<std::mutex> lk(auto_bias_mutex_);
+    return auto_bias_ctrl_.set_rate_bounds(lo_mev, hi_mev);
+}
+
+void CameraController::auto_bias_rate_bounds(float& lo_mev, float& hi_mev) const {
+    std::lock_guard<std::mutex> lk(auto_bias_mutex_);
+    lo_mev = auto_bias_ctrl_.rate_min_mev();
+    hi_mev = auto_bias_ctrl_.rate_max_mev();
+}
+
+void CameraController::auto_bias_tick(const Metavision::EventCD* b,
+                                      const Metavision::EventCD* e) {
+    if (b == e) return;
+    std::uint32_t n_on = 0, n_off = 0;
+    for (auto* it = b; it != e; ++it) {
+        if (it->p != 0) ++n_on; else ++n_off;
+    }
+    const std::int64_t t = (e - 1)->t;
+    gui_algo::BiasCommand cmd;
+    {
+        std::lock_guard<std::mutex> lk(auto_bias_mutex_);
+        auto_bias_ctrl_.accumulate(t, n_on, n_off);
+        if (auto_bias_last_tick_ < 0) auto_bias_last_tick_ = t;
+        if (t - auto_bias_last_tick_ >= gui_algo::AutoBiasController::kTickUs) {
+            cmd = auto_bias_ctrl_.update(t);
+            auto_bias_last_tick_ = t;
+        }
+    }
+    if (!cmd.active) return;
+    // Apply on the GUI thread: the register writes are rare (each is
+    // followed by a hold + measurement refill) and the Biases panel can
+    // safely re-read the hardware afterwards.
+    QMetaObject::invokeMethod(this, [this, cmd]() {
+        // The controller may have been disabled since the tick — the
+        // snapshot restore already ran, don't fight it.
+        if (!auto_bias_enabled_.load(std::memory_order_relaxed)) return;
+        bias_applier_.apply(cmd.delta_on, cmd.delta_off);
+        emit auto_bias_applied();
+    }, Qt::QueuedConnection);
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -475,6 +545,11 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
                     // toggles take effect immediately during playback.
                     frame_pipeline_.add_events(b, e);
                 } else {
+                    // Auto bias measures the RAW sensor output (biases act
+                    // before any software conditioning).
+                    if (auto_bias_enabled_.load(std::memory_order_relaxed)) {
+                        auto_bias_tick(b, e);
+                    }
                     // Live mode: condition ONCE (unified ROI → polarity
                     // stages → noise filter → thin → undistort → flips).
                     // Display, processed recording and the algorithm
@@ -566,6 +641,14 @@ void CameraController::teardown() {
     //    callback's frame_pipeline_.add_events() — a use-after-free.
     // Also disable CD broadcast so no in-flight emit references the camera.
     cd_broadcast_.store(false, std::memory_order_relaxed);
+    // Auto bias: stop the control loop before the device goes away. The
+    // register writes would fail — the sensor keeps its current biases.
+    auto_bias_enabled_.store(false, std::memory_order_relaxed);
+    bias_applier_.detach();
+    {
+        std::lock_guard<std::mutex> lk(auto_bias_mutex_);
+        auto_bias_ctrl_.reset();
+    }
     if (camera_) {
         if (cd_cb_id_) {
             camera_->cd().remove_callback(*cd_cb_id_);

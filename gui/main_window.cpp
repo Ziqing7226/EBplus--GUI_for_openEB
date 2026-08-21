@@ -861,10 +861,6 @@ void MainWindow::wire_signals() {
         // SDK data thread stops calling our lambda before any MainWindow
         // members are destroyed.
         remove_algo_callback();
-        // auto_bias: the facility (and the device) is gone — drop the
-        // snapshot without writing; the sensor keeps its current biases.
-        bias_applier_.detach();
-        auto_bias_warn_.clear();
         prev_frame_ts_ = 0;
         prev_frame_wall_ = {};
         perf_meter_.reset();
@@ -1253,25 +1249,6 @@ void MainWindow::wire_signals() {
                             e2v_downsample_save_ = ap->preproc_downsample_enabled();
                             ap->set_preproc_downsample(true);
                         }
-                        // auto_bias: snapshot the diff biases at enable so
-                        // disable restores the pre-control state. Sensors
-                        // without bias_diff_on/off cannot be controlled —
-                        // refuse instead of silently measuring only.
-                        if (key == "auto_bias") {
-                            auto_bias_warn_.clear();
-                            if (camera_.is_file_source()) {
-                                statusBar()->showMessage(
-                                    tr("auto_bias: file playback — measuring "
-                                       "only, biases not driven"), 5000);
-                            } else if (camera_.is_connected() &&
-                                       !bias_applier_.attach(
-                                           camera_.biases_facility())) {
-                                statusBar()->showMessage(
-                                    tr("auto_bias: sensor exposes no "
-                                       "bias_diff_on/off — disabled"), 5000);
-                                ap->set_algo_enabled(key, false);
-                            }
-                        }
                     } else {
                         // Close the AlgoWindow if open (its closing handler will
                         // disable the instance and uncheck the sidebar checkbox —
@@ -1304,18 +1281,6 @@ void MainWindow::wire_signals() {
                             e2v_downsample_save_.has_value()) {
                             ap->set_preproc_downsample(*e2v_downsample_save_);
                             e2v_downsample_save_.reset();
-                        }
-                        // auto_bias: restore the pre-enable bias snapshot
-                        // (skip when the device is already gone — nothing
-                        // to write). The panel re-reads the hardware after
-                        // the out-of-band restore.
-                        if (key == "auto_bias" && bias_applier_.attached()) {
-                            bias_applier_.restore();
-                            bias_applier_.detach();
-                            auto_bias_warn_.clear();
-                            if (auto* bp = settings_->biases_panel()) {
-                                bp->refresh_row_values();
-                            }
                         }
                     }
                 });
@@ -1937,11 +1902,6 @@ void MainWindow::process_algo_results(QImage& frame) {
         } catch (...) {
             continue;
         }
-        // auto_bias: hand the integer bias deltas to the hardware path
-        // (live camera only — file playback just measures).
-        if (r.has_bias_command) {
-            apply_auto_bias_command(r.bias_delta_on, r.bias_delta_off);
-        }
         // apply_strategy runs mat_to_qimage / frame.copy etc. — a
         // cv::Exception escaping this Qt slot would terminate the app
         // (audit §五-H2). Skip this algorithm's output for one frame instead.
@@ -1968,41 +1928,6 @@ void MainWindow::process_algo_results(QImage& frame) {
     // unified_roi_changed / RoiPanel::roi_applied.
 }
 
-void MainWindow::apply_auto_bias_command(int delta_on, int delta_off) {
-    // One-shot warnings: the result pipeline runs at frame rate, so a
-    // per-command status-bar flood would be noise.
-    const auto warn = [this](const QString& msg) {
-        if (auto_bias_warn_ != msg) {
-            auto_bias_warn_ = msg;
-            statusBar()->showMessage(msg, 5000);
-        }
-    };
-    if (camera_.is_file_source() || !camera_.is_connected()) {
-        warn(tr("auto_bias: bias control requires a live camera (measuring only)"));
-        return;
-    }
-    if (!bias_applier_.attached() &&
-        !bias_applier_.attach(camera_.biases_facility())) {
-        warn(tr("auto_bias: sensor exposes no bias_diff_on/off — control inactive"));
-        return;
-    }
-    const auto status = bias_applier_.apply(delta_on, delta_off);
-    if (status == BiasApplier::Status::Error) {
-        warn(tr("auto_bias: bias write failed — control inactive"));
-        bias_applier_.detach();
-        return;
-    }
-    if (status == BiasApplier::Status::Clamped) {
-        warn(tr("auto_bias: bias at hardware range limit — check rate band"));
-    } else if (!auto_bias_warn_.isEmpty()) {
-        auto_bias_warn_.clear();  // recovered — no repeated status-bar spam
-    }
-    // Keep the Biases panel in sync with the out-of-band register writes
-    // (same mechanism as the calibration wizard's override).
-    if (auto* bp = settings_->biases_panel()) {
-        bp->refresh_row_values();
-    }
-}
 
 void MainWindow::on_intrinsic_wizard() {
     if (!calibration_wizard_) {

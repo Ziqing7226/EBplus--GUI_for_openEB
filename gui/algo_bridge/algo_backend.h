@@ -88,12 +88,6 @@ struct AlgoResult {
     /// 居中提示（如 freq_detector 初始化阶段的使用说明）：非空时在主显示
     /// 帧中心绘制半透明底条 + 文字（'\n' 分行）。
     std::string hint;
-    /// auto_bias 专用：请求作用于硬件的 bias 增量（整数 —— LL bias 寄存器
-    /// 只接受整数）。GUI 侧仅在在线相机时应用（含 LL 范围 clamp）。每次
-    /// 命令只被应用一次（backend 在 pull 时消费）。
-    bool has_bias_command{false};
-    int bias_delta_on{0};   ///< bias_diff_on 增量（正 = 灵敏度降低）
-    int bias_delta_off{0};  ///< bias_diff_off 增量
     // Phase 2.6 debug D-2: has_aux_frame / aux_frame deleted with the hough
     // aux display (jAER-style debug view, never visible in baseline practice).
 };

@@ -1,4 +1,4 @@
-// gui/algo_bridge/backends/analytics_extra_backends.cpp — ParticleCounter, AutoBias, TriggerSynced
+// gui/algo_bridge/backends/analytics_extra_backends.cpp — ParticleCounter, TriggerSynced
 // (design §3.4). Split from the former algo_backend.cpp monolith.
 
 #include "algo_bridge/algo_backend.h"
@@ -7,13 +7,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdint>
-#include <cstdio>
 #include <string>
 #include <vector>
 
 #include "algo/analytics/particle_counter.h"
-#include "algo/analytics/auto_bias_controller.h"
 #include "algo/analytics/freq_detector.h"
 #include "algo/analytics/active_marker.h"
 #include "algo/cv/trigger_synced_filter.h"
@@ -108,89 +105,8 @@ public:
     }
 };
 
-/// AutoBiasController backend — dual-loop bias control (§4.4.6 rework).
-/// Measures per-polarity rates over the (optionally ROI-restricted) stream
-/// and runs the control tick at 30 Hz; integer bias deltas surface through
-/// AlgoResult::bias_delta_* and are applied to the hardware by the GUI when
-/// a live camera is connected. The command is consumed on pull (applies
-/// exactly once). No overlay text/hint — the sidebar status line carries
-/// the measured rates.
-class AutoBiasBackend final : public AlgoBackend {
-    gui_algo::AutoBiasController algo_;
-    std::vector<Metavision::EventCD> passthrough_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
-    Metavision::timestamp last_t_{0};
-    Metavision::timestamp last_tick_{-1};
-    gui_algo::BiasCommand pending_cmd_;
-public:
-    AutoBiasBackend(int w, int h) { roi_.init(w, h); }
-    void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "rate_min_mev") {
-            // Cross-validate against the current max: nudge it up when the
-            // new min would cross it, so the pair stays a valid band.
-            const float lo = static_cast<float>(to_d(v));
-            const float hi = std::max(algo_.rate_max_mev(), lo + 0.05F);
-            algo_.set_rate_bounds(lo, hi);
-        } else if (k == "rate_max_mev") {
-            const float hi = static_cast<float>(to_d(v));
-            const float lo = std::min(algo_.rate_min_mev(), hi - 0.05F);
-            algo_.set_rate_bounds(lo, hi);
-        } else if (k == "max_step") {
-            algo_.set_max_step(to_i(v, 8));
-        }
-    }
-    std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "rate_min_mev") return from_d(algo_.rate_min_mev());
-        if (k == "rate_max_mev") return from_d(algo_.rate_max_mev());
-        if (k == "max_step") return from_i(algo_.max_step());
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        if (!passthrough_.empty()) last_t_ = passthrough_.back().t;
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
-                                   passthrough_.size(), roi_buf_);
-        std::uint32_t n_on = 0, n_off = 0;
-        for (std::size_t i = 0; i < n; ++i) {
-            if (ev[i].p != 0) ++n_on; else ++n_off;
-        }
-        algo_.accumulate(last_t_, n_on, n_off);
-        // 30 Hz control tick, driven by the event clock.
-        if (last_tick_ < 0) last_tick_ = last_t_;
-        if (last_t_ - last_tick_ >= gui_algo::AutoBiasController::kTickUs) {
-            const auto cmd = algo_.update(last_t_);
-            if (cmd.active) pending_cmd_ = cmd;
-            last_tick_ = last_t_;
-        }
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = passthrough_;
-        if (pending_cmd_.active) {
-            r.has_bias_command = true;
-            r.bias_delta_on = pending_cmd_.delta_on;
-            r.bias_delta_off = pending_cmd_.delta_off;
-            pending_cmd_ = {};
-        }
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "auto_bias: ON %.2f / OFF %.2f Mev/s (band %.1f-%.1f)%s",
-                      algo_.rate_on_mev(), algo_.rate_off_mev(),
-                      algo_.rate_min_mev(), algo_.rate_max_mev(),
-                      roi_.region.enabled ? " ROI" : "");
-        r.status = buf;
-        return r;
-    }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear();
-                            last_t_ = 0; last_tick_ = -1; pending_cmd_ = {}; }
-    void set_sensor_dimensions(int w, int h) override {
-        // The algo holds no sensor-sized state (rate controller) — only the
-        // ROI geometry needs updating (audit §五-D1).
-        roi_.set_sensor_dimensions(w, h);
-    }
-};
+// §4.4.6 Auto Bias Controller: removed from the algorithm pipeline
+// (2026-08-21) — camera-level feature in CameraController now.
 
 // ===========================================================================
 // Group F: Event-vector (process returns vector<Event>)
@@ -539,7 +455,6 @@ std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& n
     if (name == "freq_detector")               return std::make_unique<FreqDetectorBackend>(width, height);
     if (name == "active_marker")               return std::make_unique<ActiveMarkerBackend>(width, height);
     if (name == "particle_counter")            return std::make_unique<ParticleCounterBackend>(width, height);
-    if (name == "auto_bias")                   return std::make_unique<AutoBiasBackend>(width, height);
     if (name == "trigger_synced")              return std::make_unique<TriggerSyncedBackend>(width, height);
     if (name == "frequency_map")               return std::make_unique<FrequencyMapBackend>(width, height);
     return nullptr;

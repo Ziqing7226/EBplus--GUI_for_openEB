@@ -32,6 +32,8 @@
 #include "stream_conditioner.h"
 #include "statistics_controller.h"
 #include "algo_bridge/filter_chain.h"
+#include "algo/analytics/auto_bias_controller.h"
+#include "app/bias_applier.h"
 
 namespace gui {
 
@@ -175,6 +177,25 @@ public:
     /// Used by RecorderController to choose processed-stream recording.
     bool conditioner_active() const;
 
+    // --- Auto bias (§4.4.6) ---------------------------------------------
+    // Camera-level dual-loop bias control (total-rate band + ON/OFF
+    // balance over bias_diff_on/off). Independent of the algorithm
+    // instances — it coexists with every other feature. Live sources only;
+    // enabling on a file source or a sensor without diff biases fails.
+
+    /// @brief Enables/disables auto bias. On enable the diff biases are
+    ///        snapshotted; disable restores them. Returns false when the
+    ///        current source cannot be bias-driven (file / no diff biases).
+    bool set_auto_bias_enabled(bool on);
+    bool auto_bias_enabled() const {
+        return auto_bias_enabled_.load(std::memory_order_relaxed);
+    }
+    /// @brief Sets the target rate band (cross-validated: rejected unless
+    ///        it forms a valid lo < hi band; the max has no ceiling — the
+    ///        hardware bias range is the real limit).
+    bool set_auto_bias_rate_bounds(float lo_mev, float hi_mev);
+    void auto_bias_rate_bounds(float& lo_mev, float& hi_mev) const;
+
 signals:
     void connected(const SensorInfo& info);
     void disconnected();
@@ -192,6 +213,19 @@ signals:
     /// listeners on the GUI thread can process it safely. Used by the
     /// calibration wizard's 1 ms event accumulator.
     void cd_events_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events);
+    /// @brief Auto bias wrote the diff bias registers out-of-band (or
+    /// restored them on disable) — the Biases panel re-reads the hardware.
+    void auto_bias_applied();
+
+private:
+    /// Auto bias measurement + control state, guarded by auto_bias_mutex_
+    /// (accumulate/tick on the SDK thread, params on the GUI thread).
+    void auto_bias_tick(const Metavision::EventCD* b, const Metavision::EventCD* e);
+    mutable std::mutex auto_bias_mutex_;
+    gui_algo::AutoBiasController auto_bias_ctrl_;
+    std::int64_t auto_bias_last_tick_{-1};
+    BiasApplier bias_applier_;
+    std::atomic<bool> auto_bias_enabled_{false};
 
 private:
     /// @brief Sets up callbacks + pipeline for a new camera. Calls

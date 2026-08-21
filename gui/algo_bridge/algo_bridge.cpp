@@ -986,14 +986,10 @@ void AlgoBridge::register_self_analytics() {
          /*description=*/"", /*uses_algo_roi=*/true,
          /*reset_on_reenable=*/true});
 
-    // §4.4.6 Auto Bias Controller — dual loop (total rate band + ON/OFF
-    // balance) over the two writable sensitivity biases. rate_min/rate_max
-    // are cross-validated in the backend so the pair stays a valid band.
-    add({"auto_bias", "Auto Bias Controller", "analytics", "self",
-         AlgoDisplayMode::Overlay,
-         {pfloat("rate_min_mev", "Min rate (Mev/s)", "1.0", "0.1", "50.0"),
-          pfloat("rate_max_mev", "Max rate (Mev/s)", "10.0", "0.5", "50.0"),
-          pint("max_step", "Max bias step", "8", "1", "100")}});
+    // §4.4.6 Auto Bias Controller moved out of the algorithm pipeline
+    // (2026-08-21): it is a camera-level feature now (CameraController +
+    // Biases panel) so it no longer occupies the single algorithm slot and
+    // coexists with every algorithm.
 
     // §4.4.7 Freq Detector — overlay boxes + frequency labels on the main
     // display (centered usage hint during the initialization phase). Full

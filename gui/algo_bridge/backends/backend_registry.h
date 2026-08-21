@@ -31,7 +31,8 @@ std::unique_ptr<AlgoBackend> create_cv_vector_backend(const std::string& name,
 std::unique_ptr<AlgoBackend> create_analytics_backend(const std::string& name,
                                                        int width, int height);
 
-/// Analytics extras: particle_counter, auto_bias, trigger_synced.
+/// Analytics extras: particle_counter, trigger_synced. (auto_bias moved to
+/// CameraController + Biases panel, 2026-08-21.)
 std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& name,
                                                              int width, int height);
 
