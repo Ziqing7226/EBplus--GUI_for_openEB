@@ -263,7 +263,7 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
     //     into already-grown buffers — safe; the conditioner keeps dropping
     //     outside-the-old-rect events for the few ms until it flips, events
     //     hw I_ROI was discarding the instant before anyway).
-    // No hot-path cost: this only reorders two statements on a user action.
+    // No hot-path cost: this only reorders statements on a user action.
     const int new_out_w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_
                                                        : sensor_info_.width;
     const int new_out_h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_
@@ -274,10 +274,37 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
         frame_pipeline_.set_display_roi_origin(roi_enabled_ && !roi_roni_,
                                                roi_x0_, roi_y0_);
     };
-    if (new_out_w <= old_out_w && new_out_h <= old_out_h) {
+    const bool shrink = new_out_w <= old_out_w && new_out_h <= old_out_h;
+    const bool grow = new_out_w >= old_out_w && new_out_h >= old_out_h;
+    if (shrink) {
+        // Conditioner first: new small coords into not-yet-shrunk buffers.
         apply_conditioner();
         emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
+    } else if (grow) {
+        // Resize first: old small coords into already-grown buffers. The
+        // conditioner keeps dropping outside-the-old-rect events for the
+        // few ms until it flips — events hw I_ROI was discarding the
+        // instant before anyway.
+        emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
+        apply_conditioner();
     } else {
+        // MIXED rect change (one axis shrinks, the other grows — reachable
+        // via the ROI settings dialog): NO single order is safe; both leave
+        // one axis's coordinates out of bounds in one intermediate state.
+        // Route through a min-dims intermediate instead:
+        //   1. conditioner -> min rect at the NEW origin: coords ≤ min dims,
+        //      which fit BOTH the old and the future backend buffers;
+        //   2. resize to the final rect (min coords fit the new dims);
+        //   3. conditioner -> final rect.
+        // Costs a transient drop of events outside the min sub-rect (ms
+        // scale) — the margin hw I_ROI is already delivering at the new
+        // rect. Mixed only occurs rect→rect (rect-vs-sensor is always
+        // shrink-or-grow since rects are clamped inside the sensor).
+        const int min_w = std::min(old_out_w, new_out_w);
+        const int min_h = std::min(old_out_h, new_out_h);
+        conditioner_.set_roi(true, roi_x0_, roi_y0_,
+                             roi_x0_ + min_w, roi_y0_ + min_h, false);
+        frame_pipeline_.set_display_roi_origin(true, roi_x0_, roi_y0_);
         emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
         apply_conditioner();
     }
