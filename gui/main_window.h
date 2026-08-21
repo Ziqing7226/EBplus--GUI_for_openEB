@@ -41,6 +41,7 @@
 #include <metavision/sdk/base/events/event_cd.h>
 
 #include "algo_bridge/algo_bridge.h"
+#include "app/bias_applier.h"
 #include "app/camera_controller.h"
 #include "app/file_converter.h"
 #include "app/theme_controller.h"
@@ -162,6 +163,12 @@ private:
     void remove_algo_callback();
     void process_algo_results(QImage& frame);
 
+    /// Applies an auto_bias command (integer bias_diff_on/off deltas) to the
+    /// live camera (§4.4.6). No-op for file playback / no camera / sensors
+    /// without diff biases; shows a one-shot status-bar warning when the
+    /// command cannot be applied or hits a hardware range limit.
+    void apply_auto_bias_command(int delta_on, int delta_off);
+
     /// File playback: feeds the events in the current accumulation window
     /// (emitted by FileFrameGenerator) to all live AlgoInstances and to the
     /// XYT 3D display, synchronously with the displayed frame. This replaces
@@ -194,6 +201,11 @@ private:
     /// E2VID forces the 1/4 downsample ON while enabled; this prior state
     /// is restored on disable.
     std::optional<bool> e2v_downsample_save_;
+    /// Hardware side of auto_bias: locates/snapshots/restores the
+    /// bias_diff_on/off registers and applies the controller's deltas.
+    BiasApplier bias_applier_;
+    /// Last auto_bias warning shown (suppresses per-frame repetition).
+    QString auto_bias_warn_;
     SettingsPanel* settings_{nullptr};
     QDockWidget* settings_dock_{nullptr};  ///< Right-dock wrapper, for hide/show.
     PlaybackControls* playback_controls_{nullptr};
