@@ -1005,7 +1005,7 @@ void AlgoBridge::register_self_analytics() {
           pfloat("peak_alpha", "Peak threshold alpha", "5.0", "1.0", "20.0"),
           pfloat("first_analysis", "Init phase (s)", "5.0", "0.5", "10.0"),
           pfloat("max_duration", "Max window (s)", "20.0", "5.0", "120.0"),
-          pfloat("update_interval_s", "Update interval (s)", "5.0", "0.1", "10.0")}});
+          pfloat("update_interval_s", "Update interval (s)", "2.0", "0.1", "10.0")}});
 
     // §4.3.x Per-pixel frequency/period map + frequency clustering + modulated-
     // light source detection (vibration/flicker analysis).

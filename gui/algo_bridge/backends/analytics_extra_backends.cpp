@@ -237,7 +237,7 @@ class FreqDetectorBackend final : public AlgoBackend {
     float peak_alpha_{5.0f};
     float first_analysis_s_{5.0f};
     float max_duration_s_{20.0f};
-    float update_interval_s_{5.0f};
+    float update_interval_s_{2.0f};
 public:
     explicit FreqDetectorBackend(int w, int h) : algo_(w, h) {}
     void set_param(const std::string& k, const std::string& v) override {

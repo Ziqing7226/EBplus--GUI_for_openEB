@@ -142,25 +142,63 @@ public:
         cv::Mat labels, stats, centroids;
         const int n_labels =
             cv::connectedComponentsWithStats(mask, labels, stats, centroids, 8);
+        // Collect the accepted cluster regions first...
+        struct ClusterRegion {
+            int label;  // connected-component label (for the bbox stats)
+            int u, v;   // rounded centroid
+        };
+        std::vector<ClusterRegion> regions;
         for (int i = 1; i < n_labels; ++i) {
             const int area = stats.at<int>(i, cv::CC_STAT_AREA);
             if (area < min_cc_area_) continue;
-            // Defensive cap: compute_frequency() scans the whole event buffer
-            // per cluster (O(buffer)), so on busy scenes with many clusters the
-            // analyze() would block the calling thread (SDK thread → GUI
-            // freeze) for seconds. Report at most the kMaxSources largest
-            // clusters.
-            if (out.size() >= kMaxSources) break;
-            const int u = static_cast<int>(centroids.at<double>(i, 0));
-            const int v = static_cast<int>(centroids.at<double>(i, 1));
+            // Defensive cap: report at most the kMaxSources largest clusters
+            // (bounds the per-analysis DFT count).
+            if (regions.size() >= kMaxSources) break;
+            ClusterRegion cr;
+            cr.label = i;
+            cr.u = static_cast<int>(centroids.at<double>(i, 0));
+            cr.v = static_cast<int>(centroids.at<double>(i, 1));
+            regions.push_back(cr);
+        }
+        // ...then gather the region timestamps for ALL clusters in ONE pass
+        // over the event buffer (a per-cluster full-buffer scan is O(buffer ×
+        // clusters) and froze the pipeline at high event rates). region_map
+        // holds cluster_index+1 inside each cluster's square region.
+        std::vector<std::vector<Metavision::timestamp>> region_ts(regions.size());
+        if (!regions.empty()) {
+            region_map_.assign(static_cast<std::size_t>(width_) * height_, 0);
+            for (std::size_t c = 0; c < regions.size(); ++c) {
+                const int x0 = std::max(0, regions[c].u - region_radius_);
+                const int x1 = std::min(width_ - 1, regions[c].u + region_radius_);
+                const int y0 = std::max(0, regions[c].v - region_radius_);
+                const int y1 = std::min(height_ - 1, regions[c].v + region_radius_);
+                for (int y = y0; y <= y1; ++y) {
+                    std::uint8_t* row =
+                        region_map_.data() + static_cast<std::size_t>(y) * width_;
+                    for (int x = x0; x <= x1; ++x) {
+                        if (row[x] == 0) row[x] = static_cast<std::uint8_t>(c + 1);
+                    }
+                }
+            }
+            for (std::size_t c = 0; c < region_ts.size(); ++c) region_ts[c].reserve(256);
+            for (const Event& e : buffer_) {
+                if (e.t < window_lo) continue;
+                if (e.x >= width_ || e.y >= height_) continue;
+                const std::uint8_t c =
+                    region_map_[static_cast<std::size_t>(e.y) * width_ + e.x];
+                if (c != 0) region_ts[c - 1].push_back(e.t);
+            }
+        }
+        for (std::size_t c = 0; c < regions.size(); ++c) {
+            const int li = regions[c].label;
             LightSource src;
-            src.u = u;
-            src.v = v;
-            src.u0 = stats.at<int>(i, cv::CC_STAT_LEFT);
-            src.v0 = stats.at<int>(i, cv::CC_STAT_TOP);
-            src.w = stats.at<int>(i, cv::CC_STAT_WIDTH);
-            src.h = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-            compute_frequency(u, v, t_start, t_end, window_lo, src);
+            src.u = regions[c].u;
+            src.v = regions[c].v;
+            src.u0 = stats.at<int>(li, cv::CC_STAT_LEFT);
+            src.v0 = stats.at<int>(li, cv::CC_STAT_TOP);
+            src.w = stats.at<int>(li, cv::CC_STAT_WIDTH);
+            src.h = stats.at<int>(li, cv::CC_STAT_HEIGHT);
+            compute_frequency(region_ts[c], t_start, t_end, src);
             out.push_back(src);
         }
         frozen_result_ = out;
@@ -354,21 +392,12 @@ private:
     ///        over the full growing window (cv::dft, zero-padded to a power
     ///        of two), with noise-threshold peak detection, parabolic
     ///        interpolation and harmonic confirmation.
-    void compute_frequency(int u, int v,
+    ///        @p ts holds the region's event timestamps (pre-gathered in a
+    ///        single pass over the buffer by analyze()).
+    void compute_frequency(const std::vector<Metavision::timestamp>& ts,
                            Metavision::timestamp t_start,
                            Metavision::timestamp t_end,
-                           Metavision::timestamp window_lo,
                            LightSource& out) const {
-        // Gather timestamps from the region around the centroid.
-        std::vector<Metavision::timestamp> ts;
-        ts.reserve(256);
-        for (const Event& e : buffer_) {
-            if (e.t < window_lo) continue;
-            if (std::abs(static_cast<int>(e.x) - u) <= region_radius_ &&
-                std::abs(static_cast<int>(e.y) - v) <= region_radius_) {
-                ts.push_back(e.t);
-            }
-        }
         if (ts.size() < kMinRegionTs) return;
         if (t_end <= t_start) return;
         const double bin_dt = static_cast<double>(bin_dt_us_);
@@ -388,22 +417,35 @@ private:
                 static_cast<double>(t - t_start) / bin_dt);
             if (b >= 0 && b < num_bins) sig[b] += 1.0f;
         }
-        for (int n = 0; n < num_bins; ++n) {
-            const double w = (num_bins > 1)
-                ? 0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(n) /
-                                         static_cast<double>(num_bins - 1)))
-                : 1.0;
-            sig[n] = static_cast<float>(sig[n] * w);
+        // Hann window over the valid samples (padding stays zero). Cached per
+        // num_bins: all clusters in one analyze() share the same window, so
+        // the cos() sweep runs once per analysis, not once per cluster.
+        if (hann_bins_ != num_bins) {
+            hann_bins_ = num_bins;
+            hann_window_.resize(static_cast<std::size_t>(num_bins));
+            for (int n = 0; n < num_bins; ++n) {
+                hann_window_[static_cast<std::size_t>(n)] = (num_bins > 1)
+                    ? 0.5 * (1.0 - std::cos(2.0 * kPi * static_cast<double>(n) /
+                                             static_cast<double>(num_bins - 1)))
+                    : 1.0;
+            }
         }
-        // DFT magnitude spectrum.
-        cv::Mat complex_spec;
-        cv::dft(signal, complex_spec, cv::DFT_COMPLEX_OUTPUT);
+        for (int n = 0; n < num_bins; ++n) {
+            sig[n] = static_cast<float>(sig[n] *
+                                        hann_window_[static_cast<std::size_t>(n)]);
+        }
+        // Real-input DFT (packed CCS output — ~2x faster than the complex
+        // output and the magnitude loop below reads it directly):
+        // packed[k] = [Re0, Re_{N/2}, Re1, Im1, Re2, Im2, ...], i.e. for
+        // k >= 1: Re_k = p[2k], Im_k = p[2k+1].
+        cv::Mat packed_spec;
+        cv::dft(signal, packed_spec);
         const int half = fft_size / 2;
         std::vector<double> mag(static_cast<std::size_t>(half), 0.0);
-        const auto* cx = complex_spec.ptr<float>(0);
-        for (int k = 0; k < half; ++k) {
-            const double re = cx[2 * k];
-            const double im = cx[2 * k + 1];
+        const auto* pk = packed_spec.ptr<float>(0);
+        for (int k = 1; k < half; ++k) {
+            const double re = pk[2 * k];
+            const double im = pk[2 * k + 1];
             mag[static_cast<std::size_t>(k)] = std::sqrt(re * re + im * im);
         }
         // Noise threshold: mean + peak_alpha * std over the spectrum, skipping
@@ -473,7 +515,7 @@ private:
     float peak_alpha_{5.0f};
     float first_analysis_s_{5.0f};
     float max_duration_s_{20.0f};
-    float update_interval_s_{5.0f};
+    float update_interval_s_{2.0f};
 
     std::deque<Event> buffer_;
     std::vector<int> heatmap_;
@@ -483,6 +525,11 @@ private:
     std::size_t total_events_{0};
     std::vector<LightSource> frozen_result_;  ///< Final result computed at the freeze boundary.
     bool freeze_final_done_{false};
+    std::vector<std::uint8_t> region_map_;  ///< Reusable cluster-region label map (analyze).
+    // Reusable Hann window (compute_frequency is const -> mutable). Shared by
+    // all clusters of one analyze() pass (same num_bins).
+    mutable int hann_bins_{0};
+    mutable std::vector<double> hann_window_;
 };
 
 }  // namespace gui_algo
