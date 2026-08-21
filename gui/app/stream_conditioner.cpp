@@ -331,16 +331,19 @@ void StreamConditioner::rebuild_undistort_lut_locked(int w, int h) {
     if (w <= 0 || h <= 0) return;
 
     // Adjust K from sensor resolution to the stage-1 coordinate system:
-    // ROI mode shifts the origin by (roi_x0_, roi_y0_); factor is always 1
-    // here (halving is per consumer, downstream). cv::undistortPoints with
+    // ROI mode shifts the origin by (roi_x0_, roi_y0_); RONI keeps ABSOLUTE
+    // coordinates, so K must stay unadjusted there (the rect origin is
+    // meaningless for the coordinate system). Factor is always 1 here
+    // (halving is per consumer, downstream). cv::undistortPoints with
     // P = K_adj returns undistorted pixels in the same adjusted system —
     // directly indexable by event coordinates.
     cv::Mat K_adj = undistort_K_.clone();
     if (K_adj.type() != CV_64F) K_adj.convertTo(K_adj, CV_64F);
     cv::Mat dist = undistort_dist_;
     if (dist.type() != CV_64F) dist.convertTo(dist, CV_64F);
-    const double ox = static_cast<double>(roi_x0_);
-    const double oy = static_cast<double>(roi_y0_);
+    const bool roi_relative = roi_enabled_ && !roi_roni_;
+    const double ox = roi_relative ? static_cast<double>(roi_x0_) : 0.0;
+    const double oy = roi_relative ? static_cast<double>(roi_y0_) : 0.0;
     K_adj.at<double>(0, 2) -= ox;
     K_adj.at<double>(1, 2) -= oy;
 

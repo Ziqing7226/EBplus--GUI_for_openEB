@@ -170,8 +170,9 @@ TEST(StreamConditionerTest, FlipsMirrorWithinOutputGeometry) {
     EXPECT_EQ(p3[0].x, 63 - 3);  // mirrored within 64, not 32
 }
 
-// Writes a minimal identity-calibration YAML so the undistort LUT builds.
-std::string write_identity_yml(int w, int h) {
+// Writes a minimal calibration YAML so the undistort LUT builds. Zero
+// distortion → identity map; nonzero k1 → real correction.
+std::string write_calib_yml(int w, int h, double k1) {
     const std::string path = ::testing::TempDir() + "sc_identity.yml";
     std::ofstream f(path);
     f << "%YAML:1.0\n---\n";
@@ -181,9 +182,11 @@ std::string write_identity_yml(int w, int h) {
     f << "           0., " << h / 2.0 << ", " << h / 2.0 << ",\n";
     f << "           0., 0., 1.]\n";
     f << "distortion_coefficients:\n   rows: 1\n   cols: 5\n   dt: d\n";
-    f << "   data: [0., 0., 0., 0., 0.]\n";  // zero distortion → identity map
+    f << "   data: [" << k1 << ", 0., 0., 0., 0.]\n";
     return path;
 }
+
+std::string write_identity_yml(int w, int h) { return write_calib_yml(w, h, 0.0); }
 
 TEST(StreamConditionerTest, UndistortIdentityKeepsCoordinates) {
     StreamConditioner c;
@@ -198,6 +201,35 @@ TEST(StreamConditionerTest, UndistortIdentityKeepsCoordinates) {
         EXPECT_EQ(p[i].x, batch[i].x);  // identity distortion → unchanged
         EXPECT_EQ(p[i].y, batch[i].y);
     }
+}
+
+// Regression (review 2026-08-21): RONI keeps ABSOLUTE coordinates, so the
+// undistort LUT must use the unadjusted sensor K — with the rect origin
+// subtracted from cx/cy the corrected positions were systematically shifted.
+TEST(StreamConditionerTest, RoniUndistortUsesSensorK) {
+    const std::string yml = write_calib_yml(64, 48, -0.25);
+    std::vector<Ev> batch{Ev(36, 28, 1, 1000)};  // near center (survives the
+    // distortion correction), outside the RONI rect below
+
+    // Reference: no ROI at all.
+    StreamConditioner plain;
+    plain.init(64, 48);
+    plain.set_param("preproc_undistort_path", yml);
+    plain.set_param("preproc_undistort_enabled", "true");
+    auto [rp, rn] = plain.apply(batch.data(), batch.data() + batch.size());
+    ASSERT_EQ(rn, 1u);
+
+    // RONI (rect far from the event, event kept at absolute coords): the
+    // corrected position must be IDENTICAL to the no-ROI reference.
+    StreamConditioner roni;
+    roni.init(64, 48);
+    roni.set_param("preproc_undistort_path", yml);
+    roni.set_param("preproc_undistort_enabled", "true");
+    roni.set_roi(true, 10, 8, 30, 20, /*roni=*/true);
+    auto [np, nn] = roni.apply(batch.data(), batch.data() + batch.size());
+    ASSERT_EQ(nn, 1u);
+    EXPECT_EQ(np[0].x, rp[0].x);
+    EXPECT_EQ(np[0].y, rp[0].y);
 }
 
 TEST(StreamConditionerTest, ResetTemporalAndParamRoundTrip) {
