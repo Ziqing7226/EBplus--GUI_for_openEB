@@ -141,6 +141,12 @@ private:
 
     FilterChain* fc_{nullptr};  // not owned; has its own lock
 
+    /// Last geometry pushed into fc_->set_geometry (flip mirror axes).
+    /// set_geometry takes the chain mutex and re-parameterises the flip
+    /// stages; skipping unchanged values keeps it off the per-batch path.
+    int last_geo_w_{-1};
+    int last_geo_h_{-1};
+
     void rebuild_filter_locked(int w, int h);
     void rebuild_undistort_lut_locked(int w, int h);
 };

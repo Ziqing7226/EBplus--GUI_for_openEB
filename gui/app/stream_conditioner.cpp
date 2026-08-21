@@ -28,6 +28,10 @@ void StreamConditioner::init(int sensor_w, int sensor_h) {
     sensor_h_ = sensor_h;
     undistort_lut_valid_ = false;  // geometry changed → LUT needs rebuild
     undistort_lut_failed_ = false; // re-arm: new geometry gets one attempt
+    // Force one set_geometry on the next flip-active batch (the shared
+    // chain may have been re-geometried externally at reconnect).
+    last_geo_w_ = -1;
+    last_geo_h_ = -1;
     const int w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_ : sensor_w_;
     const int h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_ : sensor_h_;
     rebuild_filter_locked(w, h);
@@ -311,9 +315,15 @@ StreamConditioner::apply(const Metavision::EventCD* begin,
     if (fc_geo) {
         // The flips must mirror within the coordinate system of THIS stream:
         // ROI dims in ROI mode, source dims otherwise (RONI pass-through).
+        // set_geometry takes the chain lock and re-parameterises the stages,
+        // so only push it when the geometry actually changed.
         const int w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_ : sensor_w_;
         const int h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_ : sensor_h_;
-        if (w > 0 && h > 0) fc_->set_geometry(w, h);
+        if (w > 0 && h > 0 && (w != last_geo_w_ || h != last_geo_h_)) {
+            fc_->set_geometry(w, h);
+            last_geo_w_ = w;
+            last_geo_h_ = h;
+        }
         geo_buf_.clear();
         fc_->process_geometry(out, out + n, geo_buf_);
         out = geo_buf_.data();
