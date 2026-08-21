@@ -199,10 +199,17 @@ facility::Roi* CameraController::roi_facility() {
 bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
                                        std::optional<bool> roni) {
     const bool roni_mode = roni.value_or(roi_roni_);
+    // Snapshot the OLD output geometry for the transition ordering below.
+    const int old_out_w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_
+                                                       : sensor_info_.width;
+    const int old_out_h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_
+                                                       : sensor_info_.height;
     if (is_file_) {
         // File playback: no hardware — software crop with the same
         // "sensor outputs only ROI events" semantics (Phase 2.6). RONI
-        // inverts the crop (Phase 2.6 debug D-5).
+        // inverts the crop (Phase 2.6 debug D-5). No ordering constraints
+        // here: rendering and the bridge resize both run on the GUI thread
+        // and cannot interleave.
         frame_pipeline_.set_file_roi(enabled, x, y, w, h, roni_mode);
         roi_roni_ = roni_mode;
         bool en = false;
@@ -245,11 +252,35 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
     // shifted back to its absolute position by FramePipeline; the rest stays
     // the palette background) — the overlay / Zoom-to-ROI / Replace-composite
     // strategies are built around full frames.
-    conditioner_.set_roi(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_,
-                         roi_roni_);
-    frame_pipeline_.set_display_roi_origin(roi_enabled_ && !roi_roni_,
-                                           roi_x0_, roi_y0_);
-    emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
+    //
+    // TRANSITION ORDERING (review 2026-08-21, race fix): the conditioner
+    // decides the coordinate regime read by the SDK thread; roi_state_changed
+    // synchronously resizes backends (direct connection). In-flight batches
+    // must stay in-bounds in EVERY intermediate state, so order by geometry:
+    //   output SHRINKS (new dims ≤ old) → conditioner first (new small
+    //     coords into not-yet-shrunk big buffers — safe, no loss);
+    //   output GROWS (new dims > old)   → resize first (old small coords
+    //     into already-grown buffers — safe; the conditioner keeps dropping
+    //     outside-the-old-rect events for the few ms until it flips, events
+    //     hw I_ROI was discarding the instant before anyway).
+    // No hot-path cost: this only reorders two statements on a user action.
+    const int new_out_w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_
+                                                       : sensor_info_.width;
+    const int new_out_h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_
+                                                       : sensor_info_.height;
+    const auto apply_conditioner = [this] {
+        conditioner_.set_roi(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_,
+                             roi_roni_);
+        frame_pipeline_.set_display_roi_origin(roi_enabled_ && !roi_roni_,
+                                               roi_x0_, roi_y0_);
+    };
+    if (new_out_w <= old_out_w && new_out_h <= old_out_h) {
+        apply_conditioner();
+        emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
+    } else {
+        emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
+        apply_conditioner();
+    }
     return true;
 }
 
