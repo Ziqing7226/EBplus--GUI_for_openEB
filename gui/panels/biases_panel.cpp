@@ -75,31 +75,34 @@ void BiasesPanel::build_auto_bias_section(QVBoxLayout* outer) {
     auto_bias_cb_ = new QCheckBox(tr("Enable"), auto_group_);
     lay->addWidget(auto_bias_cb_);
 
-    auto* row = new QWidget(auto_group_);
-    auto* hl = new QHBoxLayout(row);
-    hl->setContentsMargins(0, 0, 0, 0);
-    hl->setSpacing(6);
-    // No artificial ceiling on the max — the hardware bias range is the
-    // real limit (spinbox max is set high enough to never bind).
-    auto* lo_lab = new QLabel(tr("Min"), row);
-    rate_min_sp_ = new QDoubleSpinBox(row);
-    rate_min_sp_->setRange(0.05, 1000.0);
-    rate_min_sp_->setDecimals(1);
-    rate_min_sp_->setSingleStep(0.5);
-    rate_min_sp_->setValue(1.0);
-    rate_min_sp_->setSuffix(tr(" Mev/s"));
-    auto* hi_lab = new QLabel(tr("Max"), row);
-    rate_max_sp_ = new QDoubleSpinBox(row);
-    rate_max_sp_->setRange(0.1, 100000.0);
-    rate_max_sp_->setDecimals(1);
-    rate_max_sp_->setSingleStep(0.5);
-    rate_max_sp_->setValue(10.0);
-    rate_max_sp_->setSuffix(tr(" Mev/s"));
-    hl->addWidget(lo_lab, 0);
-    hl->addWidget(rate_min_sp_, 1);
-    hl->addWidget(hi_lab, 0);
-    hl->addWidget(rate_max_sp_, 1);
-    lay->addWidget(row);
+    // Rate band: one field per row (Min / Max, Mev/s). No artificial
+    // ceiling on the max — the hardware bias range is the real limit
+    // (spinbox max is set high enough to never bind).
+    auto make_spin = [this](double lo, double hi, double def) {
+        auto* sp = new QDoubleSpinBox(auto_group_);
+        sp->setRange(lo, hi);
+        sp->setDecimals(1);
+        sp->setSingleStep(0.5);
+        sp->setValue(def);
+        sp->setSuffix(tr(" Mev/s"));
+        return sp;
+    };
+    auto* min_row = new QWidget(auto_group_);
+    auto* min_hl = new QHBoxLayout(min_row);
+    min_hl->setContentsMargins(0, 0, 0, 0);
+    min_hl->setSpacing(6);
+    min_hl->addWidget(new QLabel(tr("Min rate"), min_row), 0);
+    rate_min_sp_ = make_spin(0.05, 1000.0, 1.0);
+    min_hl->addWidget(rate_min_sp_, 1);
+    lay->addWidget(min_row);
+    auto* max_row = new QWidget(auto_group_);
+    auto* max_hl = new QHBoxLayout(max_row);
+    max_hl->setContentsMargins(0, 0, 0, 0);
+    max_hl->setSpacing(6);
+    max_hl->addWidget(new QLabel(tr("Max rate"), max_row), 0);
+    rate_max_sp_ = make_spin(0.1, 100000.0, 50.0);
+    max_hl->addWidget(rate_max_sp_, 1);
+    lay->addWidget(max_row);
 
     outer->addWidget(auto_group_);
     auto_group_->setVisible(true);

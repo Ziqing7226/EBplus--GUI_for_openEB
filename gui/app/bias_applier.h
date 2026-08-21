@@ -91,6 +91,25 @@ public:
         }
     }
 
+    /// @brief Moves both diff biases one step (at most @p max_step units)
+    ///        toward 0 — the factory default. Returns true when a register
+    ///        actually changed (already at 0 → false, no write).
+    bool home(int max_step) {
+        if (!biases_) return false;
+        try {
+            const int cur_on = biases_->get(name_on_);
+            const int cur_off = biases_->get(name_off_);
+            const int tgt_on = step_toward(cur_on, max_step, lo_on_, hi_on_);
+            const int tgt_off = step_toward(cur_off, max_step, lo_off_, hi_off_);
+            if (tgt_on == cur_on && tgt_off == cur_off) return false;
+            if (tgt_on != cur_on) biases_->set(name_on_, tgt_on);
+            if (tgt_off != cur_off) biases_->set(name_off_, tgt_off);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
     /// @brief Writes the attach-time snapshot back. Returns false when the
     ///        facility calls fail (device already gone).
     bool restore() {
@@ -111,6 +130,15 @@ public:
     }
 
 private:
+    /// One step from @p v toward 0, staying inside [lo, hi] (0 may sit
+    /// outside the writable range — then we stop at the nearest limit).
+    static int step_toward(int v, int max_step, int lo, int hi) {
+        int target = v > 0 ? v - max_step : v + max_step;
+        if (v > 0 && target < 0) target = 0;
+        if (v < 0 && target > 0) target = 0;
+        return std::clamp(target, lo, hi);
+    }
+
     Metavision::I_LL_Biases* biases_{nullptr};
     std::string name_on_, name_off_;
     int lo_on_{0}, hi_on_{0}, lo_off_{0}, hi_off_{0};
