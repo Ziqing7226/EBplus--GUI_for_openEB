@@ -74,6 +74,8 @@ public:
     static constexpr int kHomeIntervalTicks = 30;
     /// Polarity-balance deadband (normalized ON-OFF difference).
     static constexpr double kBalanceTol = 0.15;
+    /// Default per-command bias-delta cap (also the homing step ceiling).
+    static constexpr int kDefaultMaxStep = 32;
 
     /// @brief Constructs the controller.
     /// @param rate_min_mev,rate_max_mev Target total-rate band in Mev/s
@@ -81,7 +83,7 @@ public:
     ///        the real limit).
     /// @param max_step Maximum per-command bias delta, [1, 100].
     AutoBiasController(float rate_min_mev = 1.0F, float rate_max_mev = 50.0F,
-                       int max_step = 32)
+                       int max_step = kDefaultMaxStep)
         : max_step_(clamp_step(max_step)) {
         set_rate_bounds(rate_min_mev, rate_max_mev);
     }

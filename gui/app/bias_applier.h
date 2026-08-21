@@ -91,16 +91,22 @@ public:
         }
     }
 
-    /// @brief Moves both diff biases one step (at most @p max_step units)
-    ///        toward 0 — the factory default. Returns true when a register
-    ///        actually changed (already at 0 → false, no write).
-    bool home(int max_step) {
+    /// @brief Moves both diff biases toward 0 — the factory default. The
+    ///        per-bias step is HALF the remaining distance, clipped to
+    ///        [1, @p cap]: far from 0 it converges fast (binary-search
+    ///        decay), near 0 it slows to single units, and it can never
+    ///        overshoot past 0. A step that large may push the event rate
+    ///        out of band — the correction loops pull it back within one
+    ///        hold cycle, and homing is suspended while they do.
+    ///        Returns true when a register actually changed (already at 0
+    ///        → false, no write).
+    bool home(int cap) {
         if (!biases_) return false;
         try {
             const int cur_on = biases_->get(name_on_);
             const int cur_off = biases_->get(name_off_);
-            const int tgt_on = step_toward(cur_on, max_step, lo_on_, hi_on_);
-            const int tgt_off = step_toward(cur_off, max_step, lo_off_, hi_off_);
+            const int tgt_on = step_toward(cur_on, cap, lo_on_, hi_on_);
+            const int tgt_off = step_toward(cur_off, cap, lo_off_, hi_off_);
             if (tgt_on == cur_on && tgt_off == cur_off) return false;
             if (tgt_on != cur_on) biases_->set(name_on_, tgt_on);
             if (tgt_off != cur_off) biases_->set(name_off_, tgt_off);
@@ -130,10 +136,13 @@ public:
     }
 
 private:
-    /// One step from @p v toward 0, staying inside [lo, hi] (0 may sit
-    /// outside the writable range — then we stop at the nearest limit).
-    static int step_toward(int v, int max_step, int lo, int hi) {
-        int target = v > 0 ? v - max_step : v + max_step;
+    /// Half the distance from @p v to 0, clipped to [1, cap], applied
+    /// toward 0 and clamped to the writable range [lo, hi] (0 may sit
+    /// outside the range — then we stop at the nearest limit).
+    static int step_toward(int v, int cap, int lo, int hi) {
+        const int dist = std::abs(v);
+        const int step = std::clamp(dist / 2, 1, cap);
+        int target = v > 0 ? v - step : v + step;
         if (v > 0 && target < 0) target = 0;
         if (v < 0 && target > 0) target = 0;
         return std::clamp(target, lo, hi);

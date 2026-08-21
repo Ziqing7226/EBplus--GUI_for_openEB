@@ -438,12 +438,13 @@ void CameraController::auto_bias_tick(const Metavision::EventCD* b,
         // The controller may have been disabled since the tick — the
         // snapshot restore already ran, don't fight it.
         if (!auto_bias_enabled_.load(std::memory_order_relaxed)) return;
-        // Home commands move both biases one unit toward 0 (factory
-        // default); at 0 they no-op and emit nothing.
-        const bool changed = home ? bias_applier_.home(1)
-                                  : bias_applier_.apply(cmd.delta_on,
-                                                        cmd.delta_off) !=
-                                        BiasApplier::Status::NoBias;
+        // Home commands move both biases half the remaining distance to 0
+        // (factory default), clipped to [1, kDefaultMaxStep]; at 0 they
+        // no-op and emit nothing.
+        const bool changed =
+            home ? bias_applier_.home(gui_algo::AutoBiasController::kDefaultMaxStep)
+                 : bias_applier_.apply(cmd.delta_on, cmd.delta_off) !=
+                       BiasApplier::Status::NoBias;
         if (changed) emit auto_bias_applied();
     }, Qt::QueuedConnection);
 }
