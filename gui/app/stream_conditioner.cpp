@@ -22,19 +22,31 @@ using backend_detail::from_b;
 using backend_detail::apply_noise_filter_param;
 using backend_detail::get_noise_filter_param;
 
+void StreamConditioner::set_filter_chain(FilterChain* fc) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    fc_ = fc;
+    // A freshly attached chain needs this conditioner's output geometry for
+    // its flip stages before the first batch runs.
+    push_geometry_locked();
+}
+
+void StreamConditioner::push_geometry_locked() {
+    if (!fc_) return;
+    const int w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_ : sensor_w_;
+    const int h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_ : sensor_h_;
+    if (w > 0 && h > 0) fc_->set_geometry(w, h);
+}
+
 void StreamConditioner::init(int sensor_w, int sensor_h) {
     std::lock_guard<std::mutex> lk(mutex_);
     sensor_w_ = sensor_w;
     sensor_h_ = sensor_h;
     undistort_lut_valid_ = false;  // geometry changed → LUT needs rebuild
     undistort_lut_failed_ = false; // re-arm: new geometry gets one attempt
-    // Force one set_geometry on the next flip-active batch (the shared
-    // chain may have been re-geometried externally at reconnect).
-    last_geo_w_ = -1;
-    last_geo_h_ = -1;
     const int w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_ : sensor_w_;
     const int h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_ : sensor_h_;
     rebuild_filter_locked(w, h);
+    push_geometry_locked();
 }
 
 void StreamConditioner::set_roi(bool enabled, int x0, int y0, int x1, int y1,
@@ -51,6 +63,7 @@ void StreamConditioner::set_roi(bool enabled, int x0, int y0, int x1, int y1,
     const int w = (enabled && !roni) ? x1 - x0 : sensor_w_;
     const int h = (enabled && !roni) ? y1 - y0 : sensor_h_;
     rebuild_filter_locked(w, h);
+    push_geometry_locked();
 }
 
 bool StreamConditioner::set_param(const std::string& k, const std::string& v) {
@@ -313,17 +326,11 @@ StreamConditioner::apply(const Metavision::EventCD* begin,
 
     // --- Stage 6: FilterChain geometry stages (flips, after undistort) -----
     if (fc_geo) {
-        // The flips must mirror within the coordinate system of THIS stream:
-        // ROI dims in ROI mode, source dims otherwise (RONI pass-through).
-        // set_geometry takes the chain lock and re-parameterises the stages,
-        // so only push it when the geometry actually changed.
-        const int w = (roi_enabled_ && !roi_roni_) ? roi_x1_ - roi_x0_ : sensor_w_;
-        const int h = (roi_enabled_ && !roi_roni_) ? roi_y1_ - roi_y0_ : sensor_h_;
-        if (w > 0 && h > 0 && (w != last_geo_w_ || h != last_geo_h_)) {
-            fc_->set_geometry(w, h);
-            last_geo_w_ = w;
-            last_geo_h_ = h;
-        }
+        // The flips mirror within this stream's coordinate system (ROI dims
+        // in ROI mode, source dims otherwise) — the geometry is kept current
+        // by push_geometry_locked() at every geometry mutation point
+        // (init / set_roi / set_filter_chain, GUI thread); the batch path
+        // never touches it.
         geo_buf_.clear();
         fc_->process_geometry(out, out + n, geo_buf_);
         out = geo_buf_.data();

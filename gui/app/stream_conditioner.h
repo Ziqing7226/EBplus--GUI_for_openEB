@@ -72,8 +72,9 @@ public:
 
     /// @brief Attaches the FilterChain (Display Transform). May be null.
     /// The chain object is shared; its geometry stages are re-geometried to
-    /// this conditioner's output dims inside apply().
-    void set_filter_chain(FilterChain* fc) { fc_ = fc; }
+    /// this conditioner's output dims at every geometry change (init /
+    /// set_roi) and when the chain is attached — never on the batch path.
+    void set_filter_chain(FilterChain* fc);
 
     /// @brief Unified ROI. ROI mode (roni=false): crop+shift to ROI-relative.
     /// RONI (roni=true): drop inside-rect, keep absolute coordinates.
@@ -141,11 +142,11 @@ private:
 
     FilterChain* fc_{nullptr};  // not owned; has its own lock
 
-    /// Last geometry pushed into fc_->set_geometry (flip mirror axes).
-    /// set_geometry takes the chain mutex and re-parameterises the flip
-    /// stages; skipping unchanged values keeps it off the per-batch path.
-    int last_geo_w_{-1};
-    int last_geo_h_{-1};
+    /// Pushes the current output geometry into fc_->set_geometry (flip
+    /// mirror axes). Called only from geometry MUTATION points (init /
+    /// set_roi / set_filter_chain, all GUI thread) — apply() relies on it
+    /// being current and never touches the chain geometry.
+    void push_geometry_locked();
 
     void rebuild_filter_locked(int w, int h);
     void rebuild_undistort_lut_locked(int w, int h);
