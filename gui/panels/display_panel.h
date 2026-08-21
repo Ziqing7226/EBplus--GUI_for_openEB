@@ -68,7 +68,7 @@ signals:
 private:
     /// @brief Shows/hides the decay-time row for the current mode (only
     /// TimeDecay and EventsIntegration use it).
-    void update_decay_visibility();
+    void update_frame_mode_rows();
 
     QFormLayout* form_{nullptr};
     QSlider* accum_slider_{nullptr};
