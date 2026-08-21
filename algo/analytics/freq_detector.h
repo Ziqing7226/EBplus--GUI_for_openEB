@@ -79,9 +79,20 @@ public:
             if (e.t > latest_t_) latest_t_ = e.t;
             if (total_events_ == 0) first_t_ = e.t;
             ++total_events_;
+            // Count safety valve: at full-sensor PWM-noise rates (~100 Mev/s)
+            // a 20 s time window would retain BILLIONS of events (~25 GB —
+            // the process gets OOM-killed). Cap the buffer; the analysis
+            // window gracefully degrades to whatever is retained (at
+            // kMaxBufferEvents the resolution still covers the 100 Hz–10 kHz
+            // band comfortably).
+            while (buffer_.size() > max_buffer_events_) drop_front();
         }
         prune();
     }
+
+    /// @brief Hard cap on retained events (default kMaxBufferEvents).
+    void set_max_buffer_events(std::size_t n) { max_buffer_events_ = n; }
+    std::size_t max_buffer_events() const { return max_buffer_events_; }
 
     /// @brief Current lifecycle phase (see Phase).
     Phase phase() const {
@@ -310,6 +321,13 @@ private:
     /// Minimum bin count to attempt the DFT.
     static constexpr int kMinBins = 16;
 
+public:
+    /// Default hard cap on retained events (~240 MB of Event payloads) —
+    /// the OOM safety valve (see process()).
+    static constexpr std::size_t kMaxBufferEvents = 20'000'000;
+
+private:
+
     static constexpr double kPi = 3.14159265358979323846;
 
     static float clamp_fmin(float f) {
@@ -346,19 +364,23 @@ private:
         return cv::Vec3b(b8(b), b8(g), b8(r));
     }
 
+    /// @brief Drops the oldest buffered event, undoing its heatmap count.
+    void drop_front() {
+        if (buffer_.empty()) return;
+        const Event& e = buffer_.front();
+        if (e.x < width_ && e.y < height_) {
+            const std::size_t idx =
+                static_cast<std::size_t>(e.y) * width_ + e.x;
+            if (heatmap_[idx] > 0) --heatmap_[idx];
+        }
+        buffer_.pop_front();
+    }
+
     void prune() {
         const Metavision::timestamp max_us =
             static_cast<Metavision::timestamp>(max_duration_s_ * 1.0e6);
         const Metavision::timestamp t_lo = latest_t_ - max_us;
-        while (!buffer_.empty() && buffer_.front().t < t_lo) {
-            const Event& e = buffer_.front();
-            if (e.x < width_ && e.y < height_) {
-                const std::size_t idx =
-                    static_cast<std::size_t>(e.y) * width_ + e.x;
-                if (heatmap_[idx] > 0) --heatmap_[idx];
-            }
-            buffer_.pop_front();
-        }
+        while (!buffer_.empty() && buffer_.front().t < t_lo) drop_front();
     }
 
     /// @brief One detected spectral peak (frequency + DFT magnitude).
@@ -518,6 +540,7 @@ private:
     float update_interval_s_{2.0f};
 
     std::deque<Event> buffer_;
+    std::size_t max_buffer_events_{kMaxBufferEvents};
     std::vector<int> heatmap_;
     Metavision::timestamp latest_t_{0};
     Metavision::timestamp first_t_{0};

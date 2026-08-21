@@ -941,6 +941,32 @@ TEST(FreqDetectorTest, MinTotalEventsGate) {
     EXPECT_TRUE(d.analyze().empty());
 }
 
+TEST(FreqDetectorTest, BufferCapEvictsOldestAndUndoesHeatmap) {
+    FreqDetector d(32, 32);
+    d.set_first_analysis_s(0.5f);   // min clamp
+    d.set_heatmap_threshold(1);
+    d.set_min_cc_area(3);
+    // Tiny cap: at most 150 of the 400 events below are retained.
+    d.set_max_buffer_events(150);
+    // LED A around (5..7): 200 events over 0..1 s, then LED B around
+    // (20..22): 200 events over 1..2 s. The cap keeps only the tail -> all
+    // of A is evicted (its heatmap counts must be undone) and only B forms
+    // a cluster.
+    std::vector<Event> ev;
+    for (int i = 0; i < 200; ++i)
+        ev.emplace_back(5 + i % 3, 5 + (i / 3) % 3, static_cast<uint8_t>(i & 1),
+                        static_cast<Metavision::timestamp>(i * 5000));
+    for (int i = 0; i < 200; ++i)
+        ev.emplace_back(20 + i % 3, 20 + (i / 3) % 3, static_cast<uint8_t>(i & 1),
+                        static_cast<Metavision::timestamp>(1000000 + i * 5000));
+    d.process(ev.data(), ev.size());
+    ASSERT_EQ(d.phase(), FreqDetector::Phase::Running);
+    auto sources = d.analyze();
+    ASSERT_EQ(sources.size(), 1u);
+    EXPECT_GE(sources[0].u0, 19);
+    EXPECT_LE(sources[0].u0, 23);
+}
+
 TEST(FreqDetectorTest, ResetRestartsInitPhase) {
     FreqDetector d(32, 32);
     auto ev = make_blinking_led(1200, 5000, 0);  // 6 s > 5 s warm-up
