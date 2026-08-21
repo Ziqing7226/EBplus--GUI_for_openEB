@@ -889,14 +889,14 @@ static std::vector<Event> make_blinking_led(std::size_t count,
 
 TEST(FreqDetectorTest, InitPhaseGatesAnalyze) {
     FreqDetector d(32, 32);
-    // 1 s of stream (200 events at 5 ms): below first_analysis_s (2 s).
-    auto ev = make_blinking_led(200, 5000, 0);
+    // 3 s of stream (600 events at 5 ms): below first_analysis_s (5 s).
+    auto ev = make_blinking_led(600, 5000, 0);
     d.process(ev.data(), ev.size());
     EXPECT_EQ(d.phase(), FreqDetector::Phase::Initializing);
     EXPECT_GT(d.init_remaining_s(), 0.0f);
     EXPECT_TRUE(d.analyze().empty());
-    // Cross the warm-up threshold (2 s).
-    auto ev2 = make_blinking_led(250, 5000, 1000000);
+    // Cross the warm-up threshold (5 s).
+    auto ev2 = make_blinking_led(500, 5000, 3000000);
     d.process(ev2.data(), ev2.size());
     EXPECT_EQ(d.phase(), FreqDetector::Phase::Running);
     EXPECT_FLOAT_EQ(d.init_remaining_s(), 0.0f);
@@ -912,10 +912,30 @@ TEST(FreqDetectorTest, InitPhaseGatesAnalyze) {
     EXPECT_NEAR(sources[0].blink_freq_hz, 100.0f, 5.0f);
 }
 
+TEST(FreqDetectorTest, FreezesAfterMaxDuration) {
+    FreqDetector d(32, 32);
+    // Run past max_duration_s (20 s): the last computed result is frozen.
+    auto ev = make_blinking_led(4300, 5000, 0);  // spans 0..21.5 s
+    d.process(ev.data(), ev.size());
+    ASSERT_EQ(d.phase(), FreqDetector::Phase::Running);
+    auto frozen = d.analyze();
+    ASSERT_EQ(frozen.size(), 1u);
+    // Feed a different pattern after the freeze: the result must not change.
+    std::vector<Event> other;
+    for (int i = 0; i < 500; ++i) {
+        other.emplace_back(2, 2, 1, 22000000 + i * 2500);
+    }
+    d.process(other.data(), other.size());
+    auto after = d.analyze();
+    ASSERT_EQ(after.size(), frozen.size());
+    EXPECT_EQ(after[0].u0, frozen[0].u0);
+    EXPECT_NEAR(after[0].blink_freq_hz, frozen[0].blink_freq_hz, 1e-3f);
+}
+
 TEST(FreqDetectorTest, MinTotalEventsGate) {
     FreqDetector d(32, 32);
-    // 3 s of stream but only 50 events: below the 100-event guard.
-    auto ev = make_blinking_led(50, 60000, 0);
+    // 6 s of stream but only 50 events: below the 100-event guard.
+    auto ev = make_blinking_led(50, 120000, 0);
     d.process(ev.data(), ev.size());
     EXPECT_EQ(d.phase(), FreqDetector::Phase::Initializing);
     EXPECT_TRUE(d.analyze().empty());
@@ -923,7 +943,7 @@ TEST(FreqDetectorTest, MinTotalEventsGate) {
 
 TEST(FreqDetectorTest, ResetRestartsInitPhase) {
     FreqDetector d(32, 32);
-    auto ev = make_blinking_led(500, 5000, 0);
+    auto ev = make_blinking_led(1200, 5000, 0);  // 6 s > 5 s warm-up
     d.process(ev.data(), ev.size());
     ASSERT_EQ(d.phase(), FreqDetector::Phase::Running);
     d.reset();

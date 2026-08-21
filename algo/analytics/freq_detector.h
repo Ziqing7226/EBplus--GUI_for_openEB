@@ -10,11 +10,14 @@
 //
 // Pipeline aligned with the reference tool:
 //   - Initialization phase: no results until the stream has accumulated
-//     first_analysis_s_ of events (default 2 s) AND at least kMinTotalEvents.
+//     first_analysis_s_ of events (default 5 s) AND at least kMinTotalEvents.
 //   - Growing window: every analysis covers the whole retained buffer (capped
 //     at max_duration_s_ by pruning), so frequency accuracy improves as the
-//     window grows. Deviation for continuous GUI use: the reference freezes
-//     after max_duration_s; we keep the window rolling at that cap.
+//     window grows.
+//   - Freeze: like the reference, analysis stops after max_duration_s_ of
+//     stream — analyze() keeps returning the last computed result. Deviation
+//     for continuous GUI use: the camera keeps running and events keep
+//     accumulating (the reference stops collection outright).
 
 #ifndef GUI_ALGO_ANALYTICS_FREQ_DETECTOR_H
 #define GUI_ALGO_ANALYTICS_FREQ_DETECTOR_H
@@ -104,20 +107,27 @@ public:
     }
 
     /// @brief Runs the full detection pipeline and returns detected sources.
-    ///        Empty while the initialization phase has not completed.
+    ///        Empty while the initialization phase has not completed; after
+    ///        max_duration_s_ of stream the result is FROZEN: the FIRST
+    ///        analyze() past the boundary computes one final result over the
+    ///        full max_duration_s_ window, every later call returns it
+    ///        unchanged.
     std::vector<LightSource> analyze() {
-        std::vector<LightSource> out;
-        if (width_ <= 0 || height_ <= 0) return out;
-        if (phase() != Phase::Running) return out;
+        if (width_ <= 0 || height_ <= 0) return {};
+        if (phase() != Phase::Running) return {};
         const Metavision::timestamp t_end = latest_t_;
         const Metavision::timestamp max_us =
             static_cast<Metavision::timestamp>(max_duration_s_ * 1.0e6);
+        const bool frozen = (t_end - first_t_ >= max_us);
+        if (frozen && freeze_final_done_) return frozen_result_;
+        std::vector<LightSource> out;
         const Metavision::timestamp window_lo =
             (t_end > max_us) ? (t_end - max_us) : 0;
         // Growing analysis window: the whole retained buffer (pruning keeps it
-        // at max_duration_s_), so accuracy improves as the window grows.
+        // at max_duration_s_), so accuracy improves as the window grows. The
+        // freeze-boundary analysis covers the FULL window by construction.
         const Metavision::timestamp t_start =
-            buffer_.empty() ? t_end : buffer_.front().t;
+            buffer_.empty() ? t_end : std::max(buffer_.front().t, window_lo);
         // Threshold the heatmap (restricted to the analysis window).
         cv::Mat mask(height_, width_, CV_8UC1, cv::Scalar(0));
         for (int y = 0; y < height_; ++y) {
@@ -153,6 +163,8 @@ public:
             compute_frequency(u, v, t_start, t_end, window_lo, src);
             out.push_back(src);
         }
+        frozen_result_ = out;
+        if (frozen) freeze_final_done_ = true;
         last_analyze_t_ = t_end;
         return out;
     }
@@ -230,7 +242,7 @@ public:
     float max_duration_s() const { return max_duration_s_; }
 
     void set_update_interval_s(float s) {
-        update_interval_s_ = clamp_range(s, 0.1f, 5.0f);
+        update_interval_s_ = clamp_range(s, 0.1f, 10.0f);
     }
     float update_interval_s() const { return update_interval_s_; }
 
@@ -242,6 +254,8 @@ public:
         first_t_ = 0;
         last_analyze_t_ = 0;
         total_events_ = 0;
+        frozen_result_.clear();
+        freeze_final_done_ = false;
     }
 
     int width() const { return width_; }
@@ -457,9 +471,9 @@ private:
     int min_cc_area_{3};
     int region_radius_{1};
     float peak_alpha_{5.0f};
-    float first_analysis_s_{2.0f};
+    float first_analysis_s_{5.0f};
     float max_duration_s_{20.0f};
-    float update_interval_s_{1.0f};
+    float update_interval_s_{5.0f};
 
     std::deque<Event> buffer_;
     std::vector<int> heatmap_;
@@ -467,6 +481,8 @@ private:
     Metavision::timestamp first_t_{0};
     Metavision::timestamp last_analyze_t_{0};
     std::size_t total_events_{0};
+    std::vector<LightSource> frozen_result_;  ///< Final result computed at the freeze boundary.
+    bool freeze_final_done_{false};
 };
 
 }  // namespace gui_algo
