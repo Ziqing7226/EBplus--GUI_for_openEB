@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -127,6 +128,17 @@ public:
     /// Backends holding w×h algorithm state must additionally rebuild or
     /// resize the algorithm here.
     virtual void set_sensor_dimensions(int /*width*/, int /*height*/) {}
+
+    /// @brief Per-batch OUTPUT event span for stream-filtering algorithms
+    /// (Phase 7 P6-A): the display pipeline and processed recording consume
+    /// this span INSTEAD of the conditioned input when non-null — so an
+    /// in-place filter (hot_pixel_filter) visibly removes events and EIS
+    /// displays stabilized coordinates. Zero-copy: the span points into a
+    /// backend-owned buffer that stays valid until the next push_events.
+    /// Default {nullptr, 0} = pass-through (the input span is unchanged);
+    /// detectors return nothing on purpose — they annotate, not filter.
+    virtual std::pair<const Metavision::EventCD*, std::size_t>
+    output_span() const { return {nullptr, 0}; }
 };
 
 /// @brief 工厂：按算法名字创建具体后端。

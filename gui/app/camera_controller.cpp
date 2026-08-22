@@ -568,15 +568,20 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
                     // use, and the old pre-rework paths guarded exactly this
                     // (`if (!filtered.empty())`). The listener still runs: it
                     // owns the raw-count profiler tick for empty batches.
-                    if (cn > 0) {
-                        frame_pipeline_.add_events(cb, ce);
-                    }
                     ConditionedListener listener;
                     {
                         std::lock_guard<std::mutex> lk(conditioned_mutex_);
                         listener = conditioned_listener_;
                     }
-                    if (listener) listener(b, e, cb, ce);
+                    // P6-A: the listener runs BEFORE the display push and may
+                    // substitute the output span (stream-filter algorithm
+                    // output — hot_pixel_filter / EIS stabilization).
+                    const Metavision::EventCD* ob = cb;
+                    const Metavision::EventCD* oe = ce;
+                    if (listener) listener(b, e, cb, ce, ob, oe);
+                    if (ob != nullptr && oe != nullptr && ob < oe) {
+                        frame_pipeline_.add_events(ob, oe);
+                    }
                 }
                 // Optional CD broadcast for calibration tools — always the
                 // RAW span. The atomic check is cheap; the buffer comes from

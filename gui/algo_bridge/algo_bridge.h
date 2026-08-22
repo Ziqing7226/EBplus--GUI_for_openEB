@@ -142,6 +142,12 @@ public:
     /// Pull the latest result (filtered events + overlay + frame).
     AlgoResult pull_result();
 
+    /// @brief Forwards the backend's per-batch output span (P6-A) —
+    /// {nullptr, 0} for pass-through/annotating algorithms. The caller
+    /// (live conditioned listener) substitutes the display/recorded span
+    /// with it when non-null. Valid until the next push_events.
+    std::pair<const Metavision::EventCD*, std::size_t> output_span();
+
     /// Dispatches the already-pulled @p result to this instance's display
     /// strategy (selected at construction from info().display_mode). The
     /// caller fills @p ctx with its display members; apply_strategy() then

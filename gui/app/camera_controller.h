@@ -151,14 +151,22 @@ public:
     /// @brief Conditioned-listener signature: raw span [rb,re) as delivered
     /// by the SDK, plus the conditioned span [cb,ce) (ROI → polarity stages →
     /// noise filter → thin → undistort → flips — see StreamConditioner).
+    /// The listener runs BEFORE the display push and may REWRITE the output
+    /// references [ob,oe) (initially the conditioned span): a stream-filter
+    /// algorithm's per-batch output (AlgoBackend::output_span, Phase 7 P6-A)
+    /// replaces the display/recorded span, so hot_pixel_filter visibly
+    /// removes events and EIS displays stabilized coordinates. Leaving
+    /// ob/oe untouched = pass-through.
     using ConditionedListener = std::function<void(
         const Metavision::EventCD* rb, const Metavision::EventCD* re,
-        const Metavision::EventCD* cb, const Metavision::EventCD* ce)>;
+        const Metavision::EventCD* cb, const Metavision::EventCD* ce,
+        const Metavision::EventCD*& ob, const Metavision::EventCD*& oe)>;
 
     /// @brief Registers the live-mode consumer of the conditioned stream
-    /// (algorithm feeding, XYT display). Invoked on the SDK CD thread AFTER
-    /// the display pipeline received the same span — one conditioning pass
-    /// for everyone. File sources never invoke it (file playback feeds
+    /// (algorithm feeding, XYT display). Invoked on the SDK CD thread BEFORE
+    /// the display pipeline receives the span — so a filtering algorithm can
+    /// substitute the display/recorded span via the ob/oe references
+    /// (one conditioning pass for everyone). File sources never invoke it (file playback feeds
     /// algorithms via FramePipeline::events_window_ready, synchronized with
     /// the displayed frame).
     void set_conditioned_listener(ConditionedListener cb);

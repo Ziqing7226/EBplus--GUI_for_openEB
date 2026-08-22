@@ -71,6 +71,9 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); last_kept_ = 0; }
+    std::pair<const Metavision::EventCD*, std::size_t> output_span() const override {
+        return {buf_.data(), last_kept_};
+    }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
         // The algo holds a sensor-sized hot-pixel mask — rebuild it at the
@@ -155,6 +158,9 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); }
+    std::pair<const Metavision::EventCD*, std::size_t> output_span() const override {
+        return {buf_.data(), buf_.size()};
+    }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
         algo_ = gui_algo::OpticalGyro(w, h);  // sensor-sized motion maps

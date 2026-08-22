@@ -236,6 +236,15 @@ AlgoResult AlgoInstance::pull_result() {
     return r;
 }
 
+std::pair<const Metavision::EventCD*, std::size_t>
+AlgoInstance::output_span() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (backend_ && enabled_ && !overloaded_) {
+        return backend_->output_span();
+    }
+    return {nullptr, 0};
+}
+
 void AlgoInstance::reset() {
     std::lock_guard<std::mutex> lk(mutex_);
     if (backend_) {

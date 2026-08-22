@@ -286,6 +286,49 @@ TEST(AlgoBridgeInstances, EnableDisableState) {
     EXPECT_FALSE(inst->is_enabled());
 }
 
+// P6-A stream write-back: a filtering algorithm (hot_pixel_filter) exposes a
+// per-batch output span after push_events; an annotating detector
+// (blob_detector) exposes none (nullptr = pass-through, the display keeps
+// the conditioned span). Disabled instances never expose a span.
+TEST(AlgoBridgeInstances, OutputSpanFilterVsDetector) {
+    AlgoBridge bridge;
+
+    auto filt = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(filt, nullptr);
+    filt->set_enabled(true);
+    {
+        auto [fb, fn] = filt->output_span();
+        EXPECT_EQ(fb, nullptr);
+        EXPECT_EQ(fn, 0u);
+    }
+    auto evs = make_events(100);
+    filt->push_events(evs.data(), evs.data() + evs.size());
+    {
+        auto [fb, fn] = filt->output_span();
+        ASSERT_NE(fb, nullptr);
+        EXPECT_LE(fn, evs.size());
+        // Span points at the kept events: contents are in-bounds EventCDs.
+        for (std::size_t i = 0; i < fn; ++i) {
+            EXPECT_GE(fb[i].x, 0);
+        }
+    }
+    filt->set_enabled(false);
+    {
+        auto [fb, fn] = filt->output_span();
+        EXPECT_EQ(fb, nullptr);
+    }
+
+    auto det = bridge.find_or_create("blob_detector");
+    ASSERT_NE(det, nullptr);
+    det->set_enabled(true);
+    det->push_events(evs.data(), evs.data() + evs.size());
+    {
+        auto [fb, fn] = det->output_span();
+        EXPECT_EQ(fb, nullptr);  // detectors annotate, they don't filter
+        EXPECT_EQ(fn, 0u);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Flood guard (design §5.6.7, rate-based): the instance measures the
 // wall-clock event rate over a sliding 1s window; when the rate exceeds

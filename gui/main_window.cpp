@@ -1616,7 +1616,8 @@ void MainWindow::install_algo_callback() {
     // on_events_window_ready), synchronized with each displayed frame.
     camera_.set_conditioned_listener(
         [this](const Metavision::EventCD* rb, const Metavision::EventCD* re,
-               const Metavision::EventCD* cb, const Metavision::EventCD* ce) {
+               const Metavision::EventCD* cb, const Metavision::EventCD* ce,
+               const Metavision::EventCD*& ob, const Metavision::EventCD*& oe) {
             // Conditioned-empty (or empty raw) batch: still tick the profiler
             // with the RAW count so the event rate reflects camera output.
             if (rb == nullptr || re == nullptr || rb >= re) return;
@@ -1638,6 +1639,23 @@ void MainWindow::install_algo_callback() {
                         if (inst->is_enabled()) {
                             inst->push_events(cb, ce);
                         }
+                    }
+                    // P6-A stream write-back: the algorithm slot is mutually
+                    // exclusive, so at most one instance can own the stream.
+                    // If it exposes a per-batch output span (hot_pixel_filter
+                    // removes events, EIS compensates coordinates), the
+                    // display/recorded span is substituted with it. The span
+                    // points into a backend buffer that stays valid until the
+                    // next push_events (same thread), and add_events copies
+                    // synchronously — no dangling.
+                    for (auto& inst : instances) {
+                        if (!inst->is_enabled()) continue;
+                        auto [fb, fn] = inst->output_span();
+                        if (fb != nullptr && fn > 0) {
+                            ob = fb;
+                            oe = fb + fn;
+                        }
+                        break;  // single algorithm slot
                     }
                 } catch (const std::exception& e) {
                     // Audit §五-H3: never let an algorithm exception die
