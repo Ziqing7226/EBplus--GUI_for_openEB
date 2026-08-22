@@ -770,7 +770,9 @@ void AlgoBridge::register_self_cv() {
     add({"blob_detector", "Blob Detector", "cv", "self",
          AlgoDisplayMode::Overlay,
          {pfloat("threshold", "Threshold", "5", "1", "254"),
-          pfloat("learning_rate", "Learning rate", "0.05", "0.001", "1.0")}});
+          pfloat("learning_rate", "Learning rate", "0.05", "0.001", "1.0"),
+          pfloat("accumulation_ms", "Accumulation window (ms)", "33.3", "1", "1000"),
+          pint("min_area", "Min blob area (px)", "10", "1", "100000")}});
 
     // §4.3.11 Object Tracker (4 modes, jAER RectangularClusterTracker)
     add({"object_tracker", "Object Tracker", "cv", "self",

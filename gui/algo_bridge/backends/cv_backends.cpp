@@ -366,11 +366,15 @@ public:
         if (roi_.set_param(k, v)) return;
         if (k == "threshold") algo_.set_threshold(static_cast<int>(to_d(v)));
         else if (k == "learning_rate") algo_.set_learning_rate(to_d(v));
+        else if (k == "accumulation_ms") algo_.set_accumulation_ms(to_d(v));
+        else if (k == "min_area") algo_.set_min_area(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "threshold") return from_d(algo_.threshold());
         if (k == "learning_rate") return from_d(algo_.learning_rate());
+        if (k == "accumulation_ms") return from_d(algo_.accumulation_ms());
+        if (k == "min_area") return from_i(algo_.min_area());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -394,7 +398,15 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
+        const int thr = algo_.threshold();
+        const double lr = algo_.learning_rate();
+        const double acc = algo_.accumulation_ms();
+        const int ma = algo_.min_area();
         algo_ = gui_algo::BlobDetector(w, h);  // sensor-sized background map
+        algo_.set_threshold(thr);
+        algo_.set_learning_rate(lr);
+        algo_.set_accumulation_ms(acc);
+        algo_.set_min_area(ma);
     }
 };
 

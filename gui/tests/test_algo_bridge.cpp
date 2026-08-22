@@ -247,6 +247,15 @@ TEST(AlgoBridgeInstances, ParamRoundTrip) {
 
     // sparse flow (P7): BlockMatch params now registered + round-trip; the
     // arrow scale param round-trips too.
+    // blob_detector (P leftover 2): accumulation_ms / min_area now registered
+    // and round-trip through the backend.
+    auto bl = bridge.find_or_create("blob_detector");
+    ASSERT_NE(bl, nullptr);
+    bl->set_param("accumulation_ms", "50");
+    bl->set_param("min_area", "25");
+    EXPECT_EQ(bl->get_param("accumulation_ms"), "50");
+    EXPECT_EQ(bl->get_param("min_area"), "25");
+
     auto sf = bridge.find_or_create("sparse_optical_flow");
     ASSERT_NE(sf, nullptr);
     sf->set_param("bm_time_window_us", "33000");

@@ -1,11 +1,13 @@
 // algo/cv/blob_detector.h — connected-component blob detection with background model.
 //
-// Self-developed (design §4.3.10). Accumulates events into a count frame over
-// an accumulation window, separates foreground from a learned background model
-// (Histogram2DFilter-style EMA, approximating the rolling HxW event-count
-// histogram), thresholds and runs cv::connectedComponents, then filters blobs
-// by minimum area. Output is a vector of bounding boxes for overlay.
-// Header-only.
+// Self-developed (design §4.3.10). Accumulates events into a per-pixel count
+// frame over an accumulation window (default 33.3 ms), separates foreground
+// from a learned EMA background model (accum - EMA(accum) > threshold — a
+// frame-differencing novelty detector, NOT jAER Histogram2DFilter, which has
+// no background subtraction/EMA; the faithful H2F port is
+// background_mask_filter), thresholds the residual and runs
+// cv::connectedComponents, then filters blobs by minimum area. Output is a
+// vector of bounding boxes for overlay. Header-only.
 
 #ifndef GUI_ALGO_CV_BLOB_DETECTOR_H
 #define GUI_ALGO_CV_BLOB_DETECTOR_H
