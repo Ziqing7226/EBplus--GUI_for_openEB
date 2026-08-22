@@ -637,6 +637,27 @@ TEST_F(RawAlgoTest, DirectionSelectiveLabelsValid) {
 }
 
 // =========================================================================
+// 21b. DirectionSelectiveFilter orientation-aware path (jAER chain): an
+// OrientationFilter labels each event first, the direction search then runs
+// on the typed event (classify(e, ori)). This is the flow the backend now
+// uses (embedded pre-stage) — labels stay valid and the run is finite.
+// =========================================================================
+TEST_F(RawAlgoTest, DirectionSelectiveOrientationAwarePath) {
+    const auto& s = stream();
+    DirectionSelectiveFilter dsf(s.width(), s.height());
+    OrientationFilter ori(s.width(), s.height());
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        if (batch.empty()) continue;
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            const int o = ori.classify(batch[i]);
+            const int d = dsf.classify(batch[i], o);
+            EXPECT_GE(d, -1);
+            if (d >= 0) EXPECT_LT(d, DirectionSelectiveFilter::kNumDirections);
+        }
+    }
+}
+
+// =========================================================================
 // 23. Full-pipeline smoke: NoiseFilter -> EventToVideo (Bardow). Verifies the
 //     denoiser's output is consumable downstream without NaN propagation.
 // =========================================================================

@@ -132,6 +132,13 @@ public:
 /// Supports ROI (design §5.6.6): only ROI events feed the histogram.
 class DirectionSelectiveBackend final : public AlgoBackend {
     gui_algo::DirectionSelectiveFilter algo_;
+    // Embedded orientation pre-stage (jAER algorithm flow: rbodo
+    // DirectionSelectiveFlow instantiates a SimpleOrientationFilter as an
+    // enclosed filter and runs in = oriFilter.filterPacket(in) BEFORE the
+    // direction search — direction_selective only makes sense on
+    // orientation-typed input, so the backend performs the same chain
+    // internally instead of running the raw 8-neighbour degraded path).
+    gui_algo::OrientationFilter ori_algo_;
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
@@ -140,7 +147,7 @@ class DirectionSelectiveBackend final : public AlgoBackend {
     // the SAME subsequence they were classified on (audit §五-G2).
     std::vector<Metavision::EventCD> filtered_;
 public:
-    DirectionSelectiveBackend(int w, int h) : algo_(w, h) {
+    DirectionSelectiveBackend(int w, int h) : algo_(w, h), ori_algo_(w, h) {
         roi_.init(w, h);
         algo_.set_enable_global_mode(true);
     }
@@ -151,6 +158,10 @@ public:
         else if (k == "search_distance") algo_.set_search_distance(to_i(v));
         else if (k == "tau_low_ms") algo_.set_tau_low_ms(to_i(v));
         else if (k == "enable_global_mode") algo_.set_enable_global_mode(to_b(v));
+        else if (k == "ori_min_dt_threshold_us")
+            ori_algo_.set_min_dt_threshold_us(to_i(v));
+        else if (k == "ori_dt_reject_threshold_us")
+            ori_algo_.set_dt_reject_threshold_us(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -159,6 +170,10 @@ public:
         if (k == "search_distance") return from_i(algo_.search_distance());
         if (k == "tau_low_ms") return from_i(algo_.tau_low_ms());
         if (k == "enable_global_mode") return from_b(algo_.enable_global_mode());
+        if (k == "ori_min_dt_threshold_us")
+            return from_i(ori_algo_.min_dt_threshold_us());
+        if (k == "ori_dt_reject_threshold_us")
+            return from_i(ori_algo_.dt_reject_threshold_us());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -171,7 +186,11 @@ public:
                          reinterpret_cast<const Metavision::EventCD*>(ev + n));
         last_dirs_.resize(n);
         for (std::size_t i = 0; i < n; ++i) {
-            last_dirs_[i] = algo_.classify(ev[i]);
+            // jAER chain: orientation label first (enclosed SimpleOrientationFilter),
+            // then the orientation-aware direction search on the typed event.
+            // An undetermined label (-1) falls back to the raw 8-neighbour path.
+            const int ori = ori_algo_.classify(ev[i]);
+            last_dirs_[i] = algo_.classify(ev[i], ori);
         }
     }
     AlgoResult pull_result() override {
@@ -243,13 +262,26 @@ public:
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); filtered_.clear(); last_dirs_.clear(); }
+    void reset() override { algo_.reset(); ori_algo_.reset(); passthrough_.clear(); roi_buf_.clear(); filtered_.clear(); last_dirs_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        // Rebuild sensor-sized SAE maps; preserve the global-mode default the
-        // constructor establishes (other params revert to ctor defaults).
+        // Rebuild sensor-sized SAE maps; preserve the tuned params across the
+        // rebuild (the auto-ROI resize hits the live instance).
+        const int tau_us = algo_.time_window_us();
+        const int min_dt = algo_.min_dt_us();
+        const int sd = algo_.search_distance();
+        const int tlow = algo_.tau_low_ms();
+        const int ori_min_dt = ori_algo_.min_dt_threshold_us();
+        const int ori_reject = ori_algo_.dt_reject_threshold_us();
         algo_ = gui_algo::DirectionSelectiveFilter(w, h);
         algo_.set_enable_global_mode(true);
+        algo_.set_time_window_us(tau_us);
+        algo_.set_min_dt_us(min_dt);
+        algo_.set_search_distance(sd);
+        algo_.set_tau_low_ms(tlow);
+        ori_algo_ = gui_algo::OrientationFilter(w, h);
+        ori_algo_.set_min_dt_threshold_us(ori_min_dt);
+        ori_algo_.set_dt_reject_threshold_us(ori_reject);
     }
 };
 

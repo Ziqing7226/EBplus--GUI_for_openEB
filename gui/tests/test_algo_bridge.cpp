@@ -244,6 +244,15 @@ TEST(AlgoBridgeInstances, ParamRoundTrip) {
     EXPECT_EQ(inst->get_param("learning_window_s"), "10.0");
     // Unknown key returns an empty string.
     EXPECT_EQ(inst->get_param("no_such_key"), "");
+
+    // direction_selective: embedded orientation pre-stage params round-trip
+    // (jAER enclosed SimpleOrientationFilter alignment).
+    auto ds = bridge.find_or_create("direction_selective");
+    ASSERT_NE(ds, nullptr);
+    ds->set_param("ori_min_dt_threshold_us", "2000");
+    ds->set_param("ori_dt_reject_threshold_us", "300000");
+    EXPECT_EQ(ds->get_param("ori_min_dt_threshold_us"), "2000");
+    EXPECT_EQ(ds->get_param("ori_dt_reject_threshold_us"), "300000");
 }
 
 // time_surface decay/tau_us/refresh_rate_hz must round-trip through the

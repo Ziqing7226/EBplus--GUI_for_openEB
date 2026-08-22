@@ -726,7 +726,10 @@ void AlgoBridge::register_self_cv() {
           pint("min_dt_us", "Min dt (us)", "100", "0", "1000000"),
           pint("search_distance", "Search distance (px)", "3", "1", "12"),
           pint("tau_low_ms", "Tau low-pass (ms)", "100", "1", "100000"),
-          pbool("enable_global_mode", "Global motion mode", "true")}});
+          pbool("enable_global_mode", "Global motion mode", "true"),
+          // Embedded orientation pre-stage (jAER enclosed SimpleOrientationFilter)
+          pint("ori_min_dt_threshold_us", "Ori min dt (us)", "1000", "0", "1000000"),
+          pint("ori_dt_reject_threshold_us", "Ori dt reject (us)", "200000", "0", "1000000")}});
 
     // §4.3.9 Sparse Optical Flow (4 modes: LocalPlanes/LucasKanade/BlockMatch/ClusterOF)
     add({"sparse_optical_flow", "Sparse Optical Flow", "cv", "self",

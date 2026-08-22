@@ -80,9 +80,9 @@ public:
     int classify(const Event& e) {
         int dir = -1;
         if (e.x < width_ && e.y < height_) {
+            surface_[idx_of(e.x, e.y)] = e.t;  // own timestamp first (jAER order)
             const DirResult r = compute_direction(e);
             dir = r.dir;
-            surface_[idx_of(e.x, e.y)] = e.t;
             if (dir >= 0) {
                 if (enable_global_mode_) ++global_hist_[dir];
                 update_motion(e, r);
@@ -102,9 +102,14 @@ public:
         int dir = -1;
         if (e.x < width_ && e.y < height_) {
             const int pol = e.p ? 1 : 0;
+            // jAER order (rbodo AbstractMotionFlowIMU.extractEventInfo ->
+            // isInvalidTimestamp): the event's own timestamp is written to
+            // lastTimesMap[x][y][type] BEFORE the perpendicular search.
+            // Functionally equivalent for s >= 1 (the own pixel is never
+            // searched), kept for strict flow alignment.
+            ori_surface_[idx_of_ori(e.x, e.y, ori, pol)] = e.t;
             const DirResult r = compute_direction_ori(e, ori, pol);
             dir = r.dir;
-            ori_surface_[idx_of_ori(e.x, e.y, ori, pol)] = e.t;
             if (dir >= 0) {
                 if (enable_global_mode_) ++global_hist_[dir];
                 update_motion(e, r);
