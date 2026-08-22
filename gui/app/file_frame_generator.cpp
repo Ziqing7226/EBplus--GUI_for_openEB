@@ -11,6 +11,11 @@
 
 namespace gui {
 
+void FileFrameGenerator::set_algo_feed_callback(
+    std::function<std::pair<const Metavision::EventCD*, std::size_t>()> cb) {
+    algo_feed_cb_ = std::move(cb);
+}
+
 FileFrameGenerator::FileFrameGenerator(QObject* parent) : QObject(parent) {
     timer_.setTimerType(Qt::PreciseTimer);
     connect(&timer_, &QTimer::timeout, this, &FileFrameGenerator::on_timer);
@@ -364,6 +369,34 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
     // feed above these are NOT shifted back. Emitted before frame_ready so
     // results are ready when the frame is displayed.
     emit events_window_ready(window_events, start_us);
+
+    // P6-A file-mode write-back: if a stream-filter algorithm exposed an
+    // output span for this window (hot_pixel_filter removed events, EIS
+    // compensated coordinates), REPAINT the frame from those events so the
+    // filtering is visible during playback, matching the live mode.
+    if (algo_feed_cb_) {
+        auto [fb, fn] = algo_feed_cb_();
+        if (fb != nullptr && fn > 0) {
+            const Metavision::EventCD* draw2 = fb;
+            std::vector<Metavision::EventCD> shifted;
+            if (render_origin_active_) {
+                shifted.reserve(fn);
+                for (std::size_t i = 0; i < fn; ++i) {
+                    shifted.push_back(fb[i]);
+                    shifted.back().x = fb[i].x + static_cast<std::uint16_t>(render_origin_x_);
+                    shifted.back().y = fb[i].y + static_cast<std::uint16_t>(render_origin_y_);
+                }
+                draw2 = shifted.data();
+            }
+            frame_.setTo(cv::Scalar(bg[0], bg[1], bg[2]));
+            for (std::size_t i = 0; i < fn; ++i) {
+                const auto& ev = draw2[i];
+                if (ev.x >= static_cast<std::uint16_t>(w) ||
+                    ev.y >= static_cast<std::uint16_t>(h)) continue;
+                frame_.ptr<cv::Vec3b>(ev.y)[ev.x] = ev.p ? on : off;
+            }
+        }
+    }
 }
 
 } // namespace gui

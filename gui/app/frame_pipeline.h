@@ -94,6 +94,15 @@ public:
     /// @brief Clears the file conditioner's temporal state (seek/loop).
     void reset_file_conditioner() { file_generator_.reset_conditioner(); }
 
+    /// @brief Forwards the per-window algorithm feed hook to the file
+    /// generator (P6-A file-mode write-back): the callback is invoked inside
+    /// render_frame() so a stream-filter algorithm's output repaints the
+    /// displayed frame during playback.
+    void set_file_algo_feed_callback(
+        std::function<std::pair<const Metavision::EventCD*, std::size_t>()> cb) {
+        file_generator_.set_algo_feed_callback(std::move(cb));
+    }
+
     /// @brief Tells the display path where the unified ROI sits. When the
     /// ROI is active the display renders on the FULL-sensor frame (ROI
     /// content shifted back to its absolute position; the rest stays the

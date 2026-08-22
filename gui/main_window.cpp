@@ -978,6 +978,23 @@ void MainWindow::wire_signals() {
     connect(camera_.frame_pipeline(), &FramePipeline::events_window_ready,
             this, &MainWindow::on_events_window_ready);
 
+    // P6-A file-mode write-back: a stream-filter algorithm's per-window
+    // output span repaints the playback frame (hot_pixel_filter removes
+    // events, EIS compensates coordinates) — the file-mode counterpart of
+    // the live conditioned-listener substitution.
+    if (auto* fp = camera_.frame_pipeline()) {
+        fp->set_file_algo_feed_callback([this]() {
+            auto instances = algo_bridge_.list_live();
+            for (auto& inst : instances) {
+                if (!inst->is_enabled()) continue;
+                auto [fb, fn] = inst->output_span();
+                if (fb != nullptr && fn > 0) return std::make_pair(fb, fn);
+                break;  // single algorithm slot
+            }
+            return std::pair<const Metavision::EventCD*, std::size_t>{nullptr, 0};
+        });
+    }
+
     // File loop: reset all algorithm instances when the cursor wraps to 0.
     // Stateful algorithms (time_surface current_t_, E2VID log_intensity_,
     // InteractingMaps I_map_, etc.) only increase their internal timestamps,

@@ -28,6 +28,8 @@
 #include <QTimer>
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <utility>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -49,6 +51,17 @@ class FrameModeRenderer;  ///< Forward decl — non-integration display frame mo
 class FileFrameGenerator : public QObject {
     Q_OBJECT
 public:
+    /// @brief Per-window algorithm feed hook (P6-A file-mode write-back).
+    /// Called synchronously inside render_frame() AFTER the window events are
+    /// conditioned and emitted to events_window_ready. When the callback
+    /// returns a non-null span (a stream-filter algorithm's per-batch output,
+    /// e.g. hot_pixel_filter / EIS), the rendered frame is REPAINTED from
+    /// those events instead of the conditioned window — so in-place filtering
+    /// is visible during file playback, matching the live-mode behaviour.
+    /// The span must remain valid until the callback returns.
+    void set_algo_feed_callback(
+        std::function<std::pair<const Metavision::EventCD*, std::size_t>()> cb);
+
     explicit FileFrameGenerator(QObject* parent = nullptr);
     ~FileFrameGenerator();
 
@@ -186,12 +199,15 @@ signals:
     /// streaming thread (queued to listeners on the GUI thread).
     void buffer_truncated();
 
+    /// @brief Per-window algorithm feed hook (P6-A file-mode write-back).
+    /// Called synchronously inside render_frame() AFTER the window events are
 private:
     void on_timer();
     void render_frame(Metavision::timestamp start_us, Metavision::timestamp end_us);
 
     // Event buffer — appended from SDK thread, read from GUI thread.
     std::vector<Metavision::EventCD> events_;
+    std::function<std::pair<const Metavision::EventCD*, std::size_t>()> algo_feed_cb_;
     mutable std::mutex mutex_;
     // OOM guard state (audit §六-C2), guarded by mutex_.
     bool truncated_{false};
