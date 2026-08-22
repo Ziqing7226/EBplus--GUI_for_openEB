@@ -242,6 +242,35 @@ TEST(HoughCircleTrackerTest, DecayMatchesJaeRAtRenderCadence) {
     EXPECT_NEAR(v1 / v0, 1.0f / 3.0f, 0.01f);
 }
 
+// P9 regression: the decay is CADENCE-INVARIANT — 30 x 1 ms packets must
+// decay the accumulator by the same total factor as a single 30 ms packet
+// (the former exp((dt-T)/T) small-dt branch wiped ~0.4 per 1 ms packet,
+// 25x faster than jAER's cadence, killing live detection).
+TEST(HoughCircleTrackerTest, DecayIsCadenceInvariant) {
+    auto prime = [](HoughCircleTracker& t) {
+        std::vector<Event> ev;
+        ev.emplace_back(32, 24, 1, 1000);
+        auto pkt = make_packet(ev);
+        t.accumulate_only(pkt);
+        return *std::max_element(t.accum().begin(), t.accum().end());
+    };
+    HoughCircleTracker a(64, 48), b(64, 48);
+    a.set_max_radius_px(8);
+    b.set_max_radius_px(8);
+    const float v0a = prime(a);
+    const float v0b = prime(b);
+    ASSERT_GT(v0a, 0.0F);
+    std::vector<Event> empty;
+    auto ep = make_packet(empty);
+    for (int i = 1; i <= 30; ++i) a.accumulate_only(ep, 1000 + i * 1000);  // 30x1ms
+    b.accumulate_only(ep, 31000);                                           // 1x30ms
+    const float va = *std::max_element(a.accum().begin(), a.accum().end());
+    const float vb = *std::max_element(b.accum().begin(), b.accum().end());
+    EXPECT_NEAR(va / v0a, vb / v0b, 0.01f);
+    // And the total factor matches jAER's accumulated 1/3 per 30 ms.
+    EXPECT_NEAR(va / v0a, 1.0F / 3.0F, 0.02F);
+}
+
 // --- 4.3.17 OrientationCluster ---
 TEST(OrientationClusterTest, Construction) {
     OrientationCluster c(64, 48);

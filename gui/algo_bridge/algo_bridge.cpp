@@ -817,12 +817,15 @@ void AlgoBridge::register_self_cv() {
     // §4.3.15 Hough Circle Tracker (jAER HoughCircleTracker) — tightened
     // defaults to reduce lag: narrower radius range (8-30 → 23 radii vs
     // 5-50 → 46) and higher threshold (50 vs 30) so find_peaks scans fewer
-    // candidates. min_radius and accumulator_decay_us are NOT registered:
-    // the algo never reads them (§三-32) — exposing them was a no-op control.
+    // candidates. min_radius and accumulator_decay_us are NOT registered:    // Hough Circle (jAER HoughCircleTracker port). NOTE: "radius" is the
+    // SINGLE fixed circle radius (jAER `radius`) — there is no multi-radius
+    // sweep; until set explicitly the backend derives it from the working
+    // resolution (min(w,h)/8). min_radius and accumulator_decay_us are NOT
+    // registered: the algo never reads them (§三-32).
     add({"hough_circle", "Hough Circle Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("max_radius", "Max radius (px)", "30", "5", "500"),
-          pint("threshold", "Threshold", "50", "2", "500"),
+         {pint("radius", "Radius (px)", "30", "5", "500"),
+          pint("threshold", "Threshold", "15", "2", "500"),
           pfloat("decay", "Decay factor", "1.0", "0.0", "10.0"),
           pint("buffer_length", "Buffer length", "4000", "100", "100000"),
           pint("nr_max", "Max circles", "1", "1", "20"),

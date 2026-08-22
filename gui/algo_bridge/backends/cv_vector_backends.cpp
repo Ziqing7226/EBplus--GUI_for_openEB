@@ -167,7 +167,7 @@ class HoughCircleBackend final : public AlgoBackend {
     // min_radius / accumulator_decay_us were removed algo-side as dead
     // params (§三-32); the ctor no longer takes them.
     int max_radius_{30};
-    int threshold_{50};
+    int threshold_{15};  // jAER default since P9
     // Adaptive defaults: while the user hasn't explicitly set a param,
     // rebuild() derives it from the WORKING resolution (post-ROI,
     // post-downsample) so the detector stays sane across ROI sizes:
@@ -176,7 +176,6 @@ class HoughCircleBackend final : public AlgoBackend {
     //   threshold  = 0.25 * 2π * max_radius  (≈ a quarter of the circle
     //                            perimeter in votes; ≈ jAER's 15 at r=8)
     bool radius_user_set_{false};
-    bool threshold_user_set_{false};
     // jAER params (persisted so rebuild() preserves them)
     float decay_{1.0f};
     int buffer_length_{4000};
@@ -211,10 +210,10 @@ public:
         if (!radius_user_set_) {
             max_radius_ = std::max(5, std::min(500, std::min(w, h) / 8));
         }
-        if (!threshold_user_set_) {
-            threshold_ = std::max(2, std::min(500,
-                static_cast<int>(std::lround(0.25 * 2.0 * M_PI * max_radius_))));
-        }
+        // threshold: plain jAER value (default 15) — the former adaptive
+        // 0.25*2πr default (≈71 at the adaptive radius 45) sat 3-5x above
+        // jAER and, combined with the over-decay bug, made live detection
+        // nearly impossible (P9).
         algo_ = std::make_unique<gui_algo::HoughCircleTracker>(
             w, h, max_radius_, threshold_,
             decay_, buffer_length_, nr_max_, decay_mode_, loc_depression_);
@@ -236,8 +235,8 @@ public:
         // Note: AlgoInstance replays the REGISTRY DEFAULTS through set_param
         // at construction — that must not count as "user set", so the flag
         // only flips when the value differs from the registered default.
-        if (k == "max_radius") { max_radius_ = to_i(v); if (max_radius_ != 30) radius_user_set_ = true; need_rebuild = true; }
-        else if (k == "threshold") { threshold_ = to_i(v); if (threshold_ != 50) threshold_user_set_ = true; if (algo_) algo_->set_threshold(threshold_); }
+        if (k == "radius") { max_radius_ = to_i(v); if (max_radius_ != 30) radius_user_set_ = true; need_rebuild = true; }
+        else if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
         else if (k == "decay") { decay_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_decay(decay_); }
         else if (k == "buffer_length") { buffer_length_ = to_i(v); if (algo_) algo_->set_buffer_length(buffer_length_); }
         else if (k == "nr_max") { nr_max_ = to_i(v); if (algo_) algo_->set_nr_max(nr_max_); }
@@ -256,7 +255,7 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "max_radius") return from_i(max_radius_);
+        if (k == "radius") return from_i(max_radius_);
         if (k == "threshold") return from_i(threshold_);
         if (k == "decay" && algo_) return from_d(algo_->decay());
         if (k == "buffer_length" && algo_) return from_i(algo_->buffer_length());

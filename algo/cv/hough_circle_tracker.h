@@ -61,7 +61,7 @@ public:
     /// @param width, height      Accumulator dimensions (pixels).
     /// @param max_radius_px      The single fixed circle radius (jAER `radius`).
     /// @param threshold          Detection threshold (jAER `threshold`; default
-    ///                           30 here vs jAER 15, intentional).
+    ///                           15, jAER-aligned since P9).
     /// @param decay              jAER decay coefficient (default 1.0).
     /// @param buffer_length      FIFO event history length (default 4000).
     /// @param nr_max             Number of maxima to track (default 1).
@@ -69,7 +69,7 @@ public:
     /// @param loc_depression     If true, suppress detected neighborhoods.
     HoughCircleTracker(int width, int height,
                        int max_radius_px = 50,
-                       int threshold = 30,
+                       int threshold = 15,
                        float decay = 1.0f,
                        int buffer_length = 4000,
                        int nr_max = 1,
@@ -106,27 +106,25 @@ public:
             cur_t = packet[packet.size() - 1].t;
         }
 
-        // jAER non-exponential decay: factor = 1/(0.0001*decay*dt) = T/dt
-        // with T = 1/(0.0001*decay) (10 ms at decay=1).
+        // Decay (P9, 2026-08-22): TIME-INVARIANT exp(-dt/tau) with
+        // tau = 3T/ln3, T = 1/(0.0001*decay) (jAER's "T" = 10 ms at decay=1).
+        // Rationale: jAER applies factor = T/dt ONCE PER RENDER PACKET
+        // (~30 ms), where it compounds to ~1/3 per 30 ms. Our packets are
+        // SDK batches (live ~1-5 ms) — reusing T/dt or the former
+        // exp((dt-T)/T) small-dt branch multiplied the accumulator by ~0.4
+        // at EVERY 1 ms batch (0.4^30 ≈ 2e-12 per 30 ms vs jAER's 1/3, a
+        // ~25x over-decay that made live detection nearly impossible).
+        // exp(-dt/tau) with tau = 3T/ln3 matches jAER's accumulated decay at
+        // its native 30 ms cadence (exp(-30/27.3) ≈ 1/3) and is composable
+        // at any packet cadence; factor → 1 as dt → 0.
         // Apply even when the packet is empty (cur_t provided) so last_t_
         // stays monotonic across ROI-filtered empty packets (§11.2-H).
-        //
-        // 与 jAER 的文档化差异（cadence 自适应）：jAER 原公式在 dt < T 时
-        // factor > 1（放大而非衰减），但 jAER 的包节奏是渲染周期（~30ms），
-        // 该分支永远不会触发；本 GUI 的包节奏是 SDK 批次（live ~1-5ms）或
-        // 显示窗（文件 33ms），G4 修复后每包都衰减：
-        //   - dt >= T：factor = T/dt，与 jAER 逐位一致；
-        //   - dt <  T：factor = exp((dt-T)/T)，在 dt=T 处连续、dt→0 时
-        //     趋于 e^-1——真实衰减。直接 clamp 到 1 曾导致小 dt 下零衰减、
-        //     票数只增不减，表现为满屏误检圆；不 clamp 则累加器指数饱和，
-        //     平局裁决产生右下角幻影圆。
         if (width_ > 0 && height_ > 0 && decay_mode_ && decay_ > 0.0f) {
             const float dt = static_cast<float>(cur_t - last_t_);
             if (dt > 0.0f) {
                 const float ref_us = 1.0f / (0.0001f * decay_);  // jAER "T"
-                const float decay_factor =
-                    (dt >= ref_us) ? (ref_us / dt)
-                                   : std::exp((dt - ref_us) / ref_us);
+                const float tau = ref_us * 3.0f / std::log(3.0f);
+                const float decay_factor = std::exp(-dt / tau);
                 for (float& v : accum_) v *= decay_factor;
             }
         }
