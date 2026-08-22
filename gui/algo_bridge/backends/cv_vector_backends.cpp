@@ -39,6 +39,8 @@ class HoughLineBackend final : public AlgoBackend {
     // Persisted so rebuild() re-applies it (the algo ctor takes it directly;
     // accumulator_decay_us was removed algo-side as a dead param, §7.3).
     float hough_decay_factor_{0.6F};
+    double output_tau_ms_{10.0};
+    double favor_vertical_range_deg_{90.0};
     std::unique_ptr<gui_algo::HoughLineTracker> algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
@@ -57,7 +59,7 @@ public:
         const int f = preproc_.factor();
         algo_ = std::make_unique<gui_algo::HoughLineTracker>(
             aw / f, ah / f, num_theta_bins_, num_rho_bins_, threshold_,
-            hough_decay_factor_);
+            hough_decay_factor_, output_tau_ms_, favor_vertical_range_deg_);
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (preproc_.set_param(k, v)) {
@@ -81,6 +83,8 @@ public:
             hough_decay_factor_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_hough_decay_factor(hough_decay_factor_);
         }
+        else if (k == "output_tau_ms") { output_tau_ms_ = to_d(v); if (algo_) algo_->set_output_tau_ms(output_tau_ms_); }
+        else if (k == "favor_vertical_range_deg") { favor_vertical_range_deg_ = to_d(v); if (algo_) algo_->set_favor_vertical_range_deg(favor_vertical_range_deg_); }
         // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
         else if (roi_changed) {
@@ -99,6 +103,8 @@ public:
         if (k == "num_rho_bins") return from_i(num_rho_bins_);
         if (k == "hough_decay_factor" && algo_) return from_d(algo_->hough_decay_factor());
         return {};
+        if (k == "output_tau_ms") return from_d(output_tau_ms_);
+        if (k == "favor_vertical_range_deg") return from_d(favor_vertical_range_deg_);
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);

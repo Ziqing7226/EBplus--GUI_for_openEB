@@ -812,7 +812,9 @@ void AlgoBridge::register_self_cv() {
          {pint("threshold", "Threshold", "50", "2", "500"),
           pint("num_theta_bins", "Theta bins", "90", "8", "360"),
           pint("num_rho_bins", "Rho bins (0=auto)", "0", "0", "4000"),
-          pfloat("hough_decay_factor", "Per-packet decay factor", "0.6", "0.0", "1.0")}});
+          pfloat("hough_decay_factor", "Per-packet decay factor", "0.6", "0.0", "1.0"),
+          pfloat("output_tau_ms", "Output smoothing tau (ms)", "10", "1", "1000"),
+          pfloat("favor_vertical_range_deg", "Favor vertical range (deg)", "90", "5", "90")}});
 
     // §4.3.15 Hough Circle Tracker (jAER HoughCircleTracker) — tightened
     // defaults to reduce lag: narrower radius range (8-30 → 23 radii vs

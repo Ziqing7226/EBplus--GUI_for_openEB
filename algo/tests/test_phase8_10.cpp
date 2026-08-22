@@ -143,6 +143,32 @@ TEST(HoughLineTrackerTest, Params) {
     t.set_hough_decay_factor(0.5F);
     EXPECT_FLOAT_EQ(t.hough_decay_factor(), 0.5F);
 }
+// P1 (jAER single-line semantics): a strong vertical line produces AT MOST
+// ONE output line; favor_vertical_range_deg restricts voting to the band
+// around vertical so a horizontal band of events yields no line when the
+// range is narrowed.
+TEST(HoughLineTrackerTest, SingleLineOutputAndFavorVertical) {
+    HoughLineTracker t(100, 100, 90, 0, 50, 0.6F);
+    // Vertical line at x=50.
+    std::vector<Event> ev;
+    for (int i = 0; i < 400; ++i) ev.emplace_back(50, 5 + i % 90, 1, i);
+    auto pkt = make_packet(ev);
+    auto lines = t.process(pkt);
+    EXPECT_LE(lines.size(), 1u);
+    if (!lines.empty()) {
+        // Near-vertical line: endpoints span the image height.
+        EXPECT_NEAR(lines[0].angle, 90.0, 25.0);
+    }
+
+    // Narrow favor-vertical range (5 deg): a HORIZONTAL band of events must
+    // not reach threshold — its votes fall outside the allowed theta band.
+    HoughLineTracker h(100, 100, 90, 0, 50, 0.6F, 10.0, 5.0);
+    std::vector<Event> hev;
+    for (int i = 0; i < 400; ++i) hev.emplace_back(5 + i % 90, 50, 1, i);
+    auto hpkt = make_packet(hev);
+    EXPECT_TRUE(h.process(hpkt).empty());
+}
+
 TEST(HoughLineTrackerTest, ProcessEmpty) {
     HoughLineTracker t(32, 32);
     std::vector<Event> empty;
