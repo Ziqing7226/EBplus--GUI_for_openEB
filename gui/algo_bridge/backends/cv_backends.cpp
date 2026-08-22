@@ -76,10 +76,13 @@ public:
     }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        // The algo holds a sensor-sized hot-pixel mask — rebuild it at the
-        // new dimensions (params revert to ctor defaults; MainWindow resets
-        // instances on source change anyway).
+        const double lw = algo_.learning_window_s();
+        const bool fpn = algo_.enable_fpn_correction();
+        const double fr = algo_.fpn_target_rate_hz();
         algo_ = gui_algo::HotPixelFilter(w, h);
+        algo_.set_learning_window_s(lw);
+        algo_.set_enable_fpn_correction(fpn);
+        algo_.set_fpn_target_rate_hz(fr);
     }
 };
 
@@ -163,7 +166,13 @@ public:
     }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::OpticalGyro(w, h);  // sensor-sized motion maps
+        const float str = algo_.stabilization_strength();
+        const float sw = algo_.smoothing_window_ms();
+        const bool rot = algo_.rotation_enabled();
+        algo_ = gui_algo::OpticalGyro(w, h);
+        algo_.set_stabilization_strength(str);
+        algo_.set_smoothing_window_ms(sw);
+        algo_.set_rotation_enabled(rot);
     }
 };
 
@@ -332,7 +341,16 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::CornerDetector(w, h, algo_.mode());
+        const auto m = algo_.mode();
+        const double thr = algo_.threshold();
+        const int tr = algo_.track_radius_px();
+        const int arc_r = algo_.arc_corner_range_us();
+        const double arc_resp = algo_.arc_min_response_us();
+        algo_ = gui_algo::CornerDetector(w, h, m);
+        algo_.set_threshold(thr);
+        algo_.set_track_radius_px(tr);
+        algo_.set_arc_corner_range_us(arc_r);
+        algo_.set_arc_min_response_us(arc_resp);
     }
 };
 

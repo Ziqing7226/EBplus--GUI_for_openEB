@@ -385,7 +385,11 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::LineSegmentDetector(w, h);  // sensor-sized buckets
+        const int ml = algo_.min_line_length_px();
+        const int gap = algo_.max_line_gap_px();
+        const int age = algo_.max_age_us();
+        algo_ = gui_algo::LineSegmentDetector(w, h, ml, gap);
+        algo_.set_max_age_us(age);
     }
 };
 
@@ -452,7 +456,15 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::OrientationCluster(w, h);  // sensor-sized grids
+        const float dt = algo_.dt();
+        const float factor = algo_.factor();
+        const int rf = algo_.rf_width();
+        const int tl = algo_.display_length();
+        algo_ = gui_algo::OrientationCluster(w, h);
+        algo_.set_dt(dt);
+        algo_.set_factor(factor);
+        algo_.set_rf_width(rf);
+        algo_.set_display_length(tl);
     }
 };
 
@@ -505,7 +517,13 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::ClusterLIF(w, h);  // sensor-sized neuron grid
+        const float tau = algo_.tau_ms();
+        const float thr = algo_.threshold();
+        const float rv = algo_.reset_value();
+        const int rf = algo_.receptive_field_size_pixels();
+        const float ini = algo_.initial_potential_percent();
+        const float jump = algo_.jump_after_firing_percent();
+        algo_ = gui_algo::ClusterLIF(w, h, tau, thr, rv, rf, ini, jump);
     }
 };
 

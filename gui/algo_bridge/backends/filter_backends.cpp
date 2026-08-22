@@ -124,7 +124,15 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); filtered_.clear(); last_orientations_.clear(); std::fill(hist_, hist_ + 4, 0.0F); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::OrientationFilter(w, h);  // sensor-sized SAE maps
+        const int mdt = algo_.min_dt_threshold_us();
+        const bool avg = algo_.use_average_dt();
+        const bool hist = algo_.ori_history_enabled();
+        const int rej = algo_.dt_reject_threshold_us();
+        algo_ = gui_algo::OrientationFilter(w, h);
+        algo_.set_min_dt_threshold_us(mdt);
+        algo_.set_use_average_dt(avg);
+        algo_.set_ori_history_enabled(hist);
+        algo_.set_dt_reject_threshold_us(rej);
     }
 };
 

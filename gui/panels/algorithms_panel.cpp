@@ -381,10 +381,22 @@ bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
     // full-sensor now — freq_detector throttles its sweep to
     // update_interval_s and frequency_map to update_interval_ms, which keeps
     // the GUI responsive without the ROI crutch.
+    // Phase 7 P10: the compute-heavy full-sensor algorithms join the list
+    // (sparse/dense flow, corner, hot pixel, orientation filter/cluster,
+    // EIS, cluster LIF). All their backends now re-apply tuned params
+    // across the set_sensor_dimensions rebuild the ROI enable triggers.
     return algo_name == "event_to_video" ||
            algo_name == "time_surface" ||
            algo_name == "hough_line" ||
-           algo_name == "hough_circle";
+           algo_name == "hough_circle" ||
+           algo_name == "sparse_optical_flow" ||
+           algo_name == "dense_optical_flow" ||
+           algo_name == "corner_detector" ||
+           algo_name == "hot_pixel_filter" ||
+           algo_name == "orientation_filter" ||
+           algo_name == "orientation_cluster" ||
+           algo_name == "optical_gyro" ||
+           algo_name == "cluster_lif";
 }
 
 void AlgorithmsPanel::set_algo_status(const std::string& name, const QString& text) {
