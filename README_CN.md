@@ -84,7 +84,7 @@ EB plus 内置 **28 个自研算法** + **7 项 openEB 封装能力**，全部�
 
 | 类别 | 示例 |
 |------|------|
-| **滤波** | Hot Pixel Filter、Background Mask、Bandpass Filter、Trigger Synced |
+| **滤波** | Hot Pixel Filter、Background Mask |
 | **运动** | Sparse Optical Flow（4 模式）、Direction Selective、EIS / Optical Gyro |
 | **检测** | Blob Detector、Corner Detector（Harris/FAST/AGAST）、Line Segment（ELiSeD）|
 | **跟踪** | Object Tracker（RCT/Median/Kalman/MultiHypothesis）、Hough Circle、Hough Line |

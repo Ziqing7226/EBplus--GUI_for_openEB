@@ -1,5 +1,5 @@
 // gui/algo_bridge/backends/filter_backends.cpp — OrientationFilter, DirectionSelective,
-// BackgroundMask, BandpassFilter (design §3.4). Split from the former algo_backend.cpp monolith.
+// BackgroundMask (design §3.4). Split from the former algo_backend.cpp monolith.
 
 #include "algo_bridge/algo_backend.h"
 #include "algo_bridge/backends/backend_common.h"
@@ -11,7 +11,6 @@
 #include "algo/cv/orientation_filter.h"
 #include "algo/cv/direction_selective_filter.h"
 #include "algo/cv/background_mask_filter.h"
-#include "algo/cv/bandpass_filter.h"
 
 using namespace gui::backend_detail;
 
@@ -327,63 +326,6 @@ public:
     }
 };
 
-/// BandpassFilter backend — event-rate band-pass, text overlay.
-/// Supports ROI (design §5.6.6): rate computed from ROI events only.
-class BandpassFilterBackend final : public AlgoBackend {
-    gui_algo::BandpassFilter algo_;
-    std::vector<Metavision::EventCD> passthrough_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
-    Metavision::timestamp last_t_{0};
-    double low_cutoff_hz_{1.0};
-    double high_cutoff_hz_{10.0};
-public:
-    BandpassFilterBackend(int w, int h) : algo_(1.0F, 10.0F, 1, 0.033) { roi_.init(w, h); }
-    void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "low_cutoff_hz") {
-            low_cutoff_hz_ = to_d(v);
-            algo_.set_cutoffs(low_cutoff_hz_, high_cutoff_hz_);
-        } else if (k == "high_cutoff_hz") {
-            high_cutoff_hz_ = to_d(v);
-            algo_.set_cutoffs(low_cutoff_hz_, high_cutoff_hz_);
-        }
-    }
-    std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "low_cutoff_hz") return from_d(low_cutoff_hz_);
-        if (k == "high_cutoff_hz") return from_d(high_cutoff_hz_);
-        return {};
-    }
-    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
-        passthrough_.assign(b, e);
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
-                                   passthrough_.size(), roi_buf_);
-        if (!passthrough_.empty()) {
-            const auto t = passthrough_.back().t;
-            algo_.add_events(n, t);
-            last_t_ = t;
-        }
-    }
-    AlgoResult pull_result() override {
-        AlgoResult r;
-        r.filtered_events = passthrough_;
-        OverlayText t;
-        t.x = 10; t.y = 60;
-        t.text = "bp: " + std::to_string(algo_.value()) + " ev/s";
-        r.texts.push_back(t);
-        r.status = "bandpass: " + std::to_string(algo_.value()) + " ev/s" +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
-        return r;
-    }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_t_ = 0; }
-    void set_sensor_dimensions(int w, int h) override {
-        // The algo holds no sensor-sized state (rate filter) — only the ROI
-        // geometry needs updating (audit §五-D1).
-        roi_.set_sensor_dimensions(w, h);
-    }
-};
-
 
 // --- Per-category factory (called by create_algo_backend in backend_factory.cpp)
 std::unique_ptr<AlgoBackend> create_filter_backend(const std::string& name,
@@ -391,7 +333,6 @@ std::unique_ptr<AlgoBackend> create_filter_backend(const std::string& name,
     if (name == "orientation_filter")          return std::make_unique<OrientationFilterBackend>(width, height);
     if (name == "direction_selective")         return std::make_unique<DirectionSelectiveBackend>(width, height);
     if (name == "background_mask")             return std::make_unique<BackgroundMaskBackend>(width, height);
-    if (name == "bandpass_filter")             return std::make_unique<BandpassFilterBackend>(width, height);
     return nullptr;
 }
 

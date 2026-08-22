@@ -40,8 +40,7 @@ std::unique_ptr<AlgoBackend> create_analytics_extra_backend(const std::string& n
 std::unique_ptr<AlgoBackend> create_display_backend(const std::string& name,
                                                      int width, int height);
 
-/// Filters: orientation_filter, direction_selective, background_mask,
-/// bandpass_filter.
+/// Filters: orientation_filter, direction_selective, background_mask.
 std::unique_ptr<AlgoBackend> create_filter_backend(const std::string& name,
                                                     int width, int height);
 

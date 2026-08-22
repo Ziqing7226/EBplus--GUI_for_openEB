@@ -60,19 +60,19 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 // trigger_synced / active_marker were self-invented or input-less). sensor_self_test is
 // intentionally NOT registered (it is a Devices-panel diagnostic, not an
 // algorithm — its instance is created via create_with_info).
-// Live registry: 21 self-developed + 4 OpenEB = 25.
+// Live registry: 20 self-developed + 4 OpenEB = 24.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 25u);
+    EXPECT_EQ(algos.size(), 24u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
         if (a.source == "self") ++self_count;
         else if (a.source == "openeb") ++openeb_count;
     }
-    EXPECT_EQ(self_count, 21u);
+    EXPECT_EQ(self_count, 20u);
     EXPECT_EQ(openeb_count, 4u);
 }
 

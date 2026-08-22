@@ -20,7 +20,6 @@
 #include "algo/cv/orientation_cluster.h"
 #include "algo/cv/cluster_lif.h"
 #include "algo/cv/background_mask_filter.h"
-#include "algo/cv/bandpass_filter.h"
 #include "algo/cv/optical_gyro.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
@@ -44,7 +43,6 @@ using gui_algo::HoughCircleTracker;
 using gui_algo::OrientationCluster;
 using gui_algo::ClusterLIF;
 using gui_algo::BackgroundMaskFilter;
-using gui_algo::BandpassFilter;
 using gui_algo::OpticalGyro;
 using gui_algo::XYTVisualizer;
 using gui_algo::TimeSurface;
@@ -300,32 +298,6 @@ TEST(BackgroundMaskFilterTest, ProcessEmpty) {
     EXPECT_FALSE(mask.empty());
 }
 
-
-// --- 4.3.22 BandpassFilter ---
-TEST(BandpassFilterTest, Construction) {
-    BandpassFilter f;
-    EXPECT_DOUBLE_EQ(f.value(), 0.0);
-}
-TEST(BandpassFilterTest, Params) {
-    BandpassFilter f(2.0f, 20.0f, 2, 0.01);
-    f.set_cutoffs(5.0, 50.0);
-    f.set_sample_dt(0.02);
-    SUCCEED();
-}
-TEST(BandpassFilterTest, ProcessScalar) {
-    BandpassFilter f;
-    double y = f.process(100.0);
-    EXPECT_TRUE(std::isfinite(y));
-}
-// Regression: bandpass order must be hp(lp(x)) — low-pass first, then high-pass.
-// Match the common building block algo/common/filter/bandpass.h and jAER.
-// Verify by comparing output to the reference BandpassFilter for a DC input:
-// a band-pass must remove DC, so a constant input must converge toward 0.
-TEST(BandpassFilterTest, RemovesDcAfterConvergence) {
-    BandpassFilter f(0.5f, 10.0f, 4, 0.01);
-    for (int i = 0; i < 1000; ++i) f.process(1.0);
-    EXPECT_NEAR(f.value(), 0.0, 1e-3);
-}
 
 // --- 4.3.23 OpticalGyro ---
 TEST(OpticalGyroTest, Construction) {

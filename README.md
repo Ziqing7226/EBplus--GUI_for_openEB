@@ -82,7 +82,7 @@ EB plus ships **28 self-developed algorithms** plus **7 OpenEB-wrapped capabilit
 
 | Category | Examples |
 |----------|----------|
-| **Filtering** | Hot Pixel Filter, Background Mask, Bandpass Filter, Trigger Synced |
+| **Filtering** | Hot Pixel Filter, Background Mask |
 | **Motion** | Sparse Optical Flow (4 modes), Direction Selective, EIS / Optical Gyro |
 | **Detection** | Blob Detector, Corner Detector (Harris/FAST/AGAST), Line Segment (ELiSeD) |
 | **Tracking** | Object Tracker (RCT/Median/Kalman/MultiHypothesis), Hough Circle, Hough Line |

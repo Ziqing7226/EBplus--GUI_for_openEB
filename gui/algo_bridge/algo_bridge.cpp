@@ -850,11 +850,11 @@ void AlgoBridge::register_self_cv() {
     // faithful jAER FilterSyncedEvents port, but the GUI never wired an
     // external trigger source, so the output was always empty (§5-G3).
 
-    // §4.3.22 Bandpass Filter
-    add({"bandpass_filter", "Bandpass Filter", "cv", "self",
-         AlgoDisplayMode::Overlay,
-         {pfloat("low_cutoff_hz", "Low cutoff (Hz)", "1.0", "0.01", "100"),
-          pfloat("high_cutoff_hz", "High cutoff (Hz)", "10.0", "0.01", "1000")}});
+    // §4.3.22 Bandpass Filter removed (2026-08-22, user decision):
+    // self-invented combination (jAER has no standalone bandpass algorithm —
+    // LowpassFilter/HighpassFilter are internal tracker utilities there);
+    // its only output was a single event-rate text label. The jAER-equivalent
+    // building blocks remain in algo/common/filter/.
 
     // §4.3.23 Optical Gyro (EIS) — Overlay: draws translation/rotation
     // vectors on top of the stabilized event display (jAER OpticalGyro
