@@ -113,6 +113,32 @@ TEST(DisplayStrategyOverlay, DrawsPrimitivesOntoFrame) {
     EXPECT_NE(frame.pixel(50, 50), before.pixel(50, 50));
 }
 
+// P7: flow arrows are drawn on the frame (sparse/dense optical flow).
+TEST(DisplayStrategyOverlay, FlowArrowsPaintOnFrame) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("object_tracker");  // Overlay
+    ASSERT_NE(inst, nullptr);
+    inst->set_enabled(true);
+
+    QImage frame(80, 80, QImage::Format_RGB888);
+    frame.fill(Qt::black);
+    const QImage before = frame.copy();
+
+    AlgoResult r;
+    gui::OverlayFlowArrow a;
+    a.x1 = 20; a.y1 = 40; a.x2 = 60; a.y2 = 40;
+    r.flow_arrows.push_back(a);
+
+    QHash<std::string, QPointer<gui::AlgoWindow>> windows;
+    FrameAnnotator annotator;
+    auto ctx = make_ctx(annotator, windows);
+
+    inst->apply_strategy(frame, r, ctx);
+    EXPECT_NE(frame, before);
+    // A pixel on the arrow shaft must have changed.
+    EXPECT_NE(frame.pixel(40, 40), before.pixel(40, 40));
+}
+
 // Regression (P0, 2026-08-22): colored_events must actually paint on the
 // display pipeline's Format_RGB888 frames. QImage::setPixel only supports
 // 32-bit/indexed formats and silently no-ops on 24-bit RGB888 — orientation

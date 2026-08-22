@@ -732,19 +732,33 @@ void AlgoBridge::register_self_cv() {
           pint("ori_dt_reject_threshold_us", "Ori dt reject (us)", "200000", "0", "1000000")}});
 
     // §4.3.9 Sparse Optical Flow (4 modes: LocalPlanes/LucasKanade/BlockMatch/ClusterOF)
+    // mode_filter scopes each param to its mode(s) (Phase 7 P7): the panel
+    // shows only what the selected mode consumes. pps_scale (arrow length =
+    // speed * pps_scale, jAER rbodo drawVector) is common.
     add({"sparse_optical_flow", "Sparse Optical Flow", "cv", "self",
          AlgoDisplayMode::Overlay,
          {penum("mode", "Mode", "0", {"0=LocalPlanes", "1=LucasKanade",
            "2=BlockMatch", "3=ClusterOF"}),
-          pint("search_radius", "Search radius (px)", "4", "3", "30"),
-          pint("time_window_us", "Time window (us)", "20000", "1000", "100000"),
-          pfloat("cluster_ema_alpha", "Cluster EMA alpha", "0.05", "0.001", "1.0")}});
+          pfloat("pps_scale", "Arrow scale (px per px/s)", "0.03", "0.001", "1.0"),
+          pint("time_window_us", "Time window (us)", "20000", "1000", "100000", "0,1,3"),
+          pint("spatial_radius", "Spatial radius (px)", "8", "3", "30", "0,3"),
+          pint("min_events_per_cluster", "Min events/cluster", "10", "1", "1000", "0,3"),
+          pint("search_radius", "Search radius (px)", "4", "1", "16", "1,2"),
+          pfloat("lk_thr", "LK lambda threshold", "1.0", "0", "1000", "1"),
+          pfloat("cluster_ema_alpha", "Cluster EMA alpha", "0.05", "0.001", "1.0", "3"),
+          pint("bm_time_window_us", "BM time window (us)", "20000", "1000", "100000", "2"),
+          pint("downsample_factor", "BM downsample factor", "2", "1", "8", "2"),
+          pint("num_scales", "BM num scales", "3", "1", "5", "2"),
+          pint("max_slice_value", "BM max slice value", "15", "1", "255", "2"),
+          pfloat("valid_pix_occupancy", "BM valid occupancy", "0.01", "0", "1", "2"),
+          pfloat("weight_distance", "BM distance weight", "0.95", "0", "1", "2")}});
 
     // §4.3.9b Dense Optical Flow (3 modes, from published methods)
     add({"dense_optical_flow", "Dense Optical Flow", "cv", "self",
          AlgoDisplayMode::Overlay,
          {penum("mode", "Mode", "0", {"0=PlaneFitting", "1=TimeGradient",
            "2=TripletMatching"}),
+          pfloat("pps_scale", "Arrow scale (px per px/s)", "0.03", "0.001", "1.0"),
           pint("time_window_us", "Time window (us)", "10000", "1000", "500000"),
           pint("spatial_radius", "Spatial radius (px)", "3", "1", "16"),
           pfloat("max_velocity_px_s", "Max velocity (px/s)", "20000", "100", "100000")}});
@@ -782,8 +796,8 @@ void AlgoBridge::register_self_cv() {
          {penum("mode", "Mode", "0", {"0=EndStopped", "1=TypeCoincidence", "2=Harris",
            "3=Arc"}),
           pfloat("min_score", "Min score", "0.1", "0", "1.0"),
-          pint("arc_corner_range_us", "Arc corner range (us)", "5000", "100", "1000000"),
-          pfloat("arc_min_response_us", "Arc min response (us)", "1", "0", "1000000")}});
+          pint("arc_corner_range_us", "Arc corner range (us)", "5000", "100", "1000000", "3"),
+          pfloat("arc_min_response_us", "Arc min response (us)", "1", "0", "1000000", "3")}});
 
     // §4.3.13 Line Segment Detector (ELiSeD)
     add({"line_segment", "Line Segment (ELiSeD)", "cv", "self",

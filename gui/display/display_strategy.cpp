@@ -173,6 +173,17 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
                                      QPoint(t.x + ox, t.y + oy));
         }
     }
+    // Flow arrows (sparse/dense optical flow): endpoints pre-scaled by the
+    // algo's pps_scale; shift by the ROI origin like every other primitive.
+    if (!r.flow_arrows.empty()) {
+        std::vector<FrameAnnotator::FlowArrow> arrows;
+        arrows.reserve(r.flow_arrows.size());
+        for (const auto& a : r.flow_arrows) {
+            arrows.push_back({QPointF(a.x1 + ox, a.y1 + oy),
+                              QPointF(a.x2 + ox, a.y2 + oy)});
+        }
+        ctx.annotator->draw_flow_arrows(frame, arrows);
+    }
     // Colored events (orientation/direction per-event coloring).
     if (!r.colored_events.empty()) {
         std::vector<std::tuple<int, int, QColor>> cevs;

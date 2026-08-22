@@ -245,6 +245,17 @@ TEST(AlgoBridgeInstances, ParamRoundTrip) {
     // Unknown key returns an empty string.
     EXPECT_EQ(inst->get_param("no_such_key"), "");
 
+    // sparse flow (P7): BlockMatch params now registered + round-trip; the
+    // arrow scale param round-trips too.
+    auto sf = bridge.find_or_create("sparse_optical_flow");
+    ASSERT_NE(sf, nullptr);
+    sf->set_param("bm_time_window_us", "33000");
+    sf->set_param("num_scales", "4");
+    sf->set_param("pps_scale", "0.1");
+    EXPECT_EQ(sf->get_param("bm_time_window_us"), "33000");
+    EXPECT_EQ(sf->get_param("num_scales"), "4");
+    EXPECT_EQ(sf->get_param("pps_scale"), "0.1");
+
     // direction_selective: embedded orientation pre-stage params round-trip
     // (jAER enclosed SimpleOrientationFilter alignment).
     auto ds = bridge.find_or_create("direction_selective");

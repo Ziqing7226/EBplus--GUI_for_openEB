@@ -46,6 +46,11 @@ struct OverlayColoredPoint {
     std::uint8_t r{255}, g{255}, b{255};
 };
 
+/// @brief 光流箭头(端点已按 pps_scale 缩放,含起点抖动)。
+struct OverlayFlowArrow {
+    int x1{0}, y1{0}, x2{0}, y2{0};
+};
+
 /// @brief 叠加层圆（霍夫圆输出）。
 struct OverlayCircle {
     int cx{0}, cy{0}, r{0};
@@ -82,6 +87,7 @@ struct AlgoResult {
     std::vector<OverlayLine> lines;
     std::vector<OverlayPoint> points;
     std::vector<OverlayColoredPoint> colored_points;
+    std::vector<OverlayFlowArrow> flow_arrows;      ///< 光流箭头(sparse/dense flow)
     std::vector<OverlayCircle> circles;
     std::vector<OverlayText> texts;
     std::vector<ColoredEvent> colored_events;       ///< 朝向/方向着色事件

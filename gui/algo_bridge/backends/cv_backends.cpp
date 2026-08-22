@@ -363,13 +363,18 @@ public:
     }
 };
 
-/// SparseOpticalFlow backend — flow vectors as overlay lines.
+/// SparseOpticalFlow backend — flow vectors as pps-scaled overlay arrows.
+/// jAER rbodo drawVector scheme: arrow length = speed(px/s) * pps_scale
+/// (user-tunable, default 0.03) with a ±0.5 px origin jitter so overlapping
+/// vectors stay distinguishable (AbstractDirectionSelectiveFilter
+/// jitterVectorLocations, default on).
 class SparseOpticalFlowBackend final : public AlgoBackend {
     gui_algo::SparseOpticalFlow algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::FlowVector> flows_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
+    double pps_scale_{0.03};
 public:
     SparseOpticalFlowBackend(int w, int h)
         : algo_(w, h, gui_algo::SparseOpticalFlow::Mode::LocalPlanes) { roi_.init(w, h); }
@@ -381,6 +386,14 @@ public:
         } else if (k == "search_radius") algo_.set_search_radius_px(to_i(v));
         else if (k == "time_window_us") algo_.set_time_window_us(to_i(v));
         else if (k == "cluster_ema_alpha") algo_.set_cluster_ema_alpha(static_cast<float>(to_d(v)));
+        else if (k == "pps_scale") pps_scale_ = to_d(v);
+        else if (k == "lk_thr") algo_.set_lk_thr(to_d(v));
+        else if (k == "bm_time_window_us") algo_.set_block_match_time_window_us(to_i(v));
+        else if (k == "downsample_factor") algo_.set_downsample_factor(to_i(v));
+        else if (k == "num_scales") algo_.set_num_scales(to_i(v));
+        else if (k == "max_slice_value") algo_.set_max_slice_value(to_i(v));
+        else if (k == "valid_pix_occupancy") algo_.set_valid_pix_occupancy(to_d(v));
+        else if (k == "weight_distance") algo_.set_weight_distance(to_d(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -388,77 +401,78 @@ public:
         if (k == "search_radius") return from_i(algo_.search_radius_px());
         if (k == "time_window_us") return from_i(algo_.time_window_us());
         if (k == "cluster_ema_alpha") return from_d(algo_.cluster_ema_alpha());
+        if (k == "pps_scale") return from_d(pps_scale_);
+        if (k == "lk_thr") return from_d(algo_.lk_thr());
+        if (k == "bm_time_window_us") return from_i(algo_.block_match_time_window_us());
+        if (k == "downsample_factor") return from_i(algo_.downsample_factor());
+        if (k == "num_scales") return from_i(algo_.num_scales());
+        if (k == "max_slice_value") return from_i(algo_.max_slice_value());
+        if (k == "valid_pix_occupancy") return from_d(algo_.valid_pix_occupancy());
+        if (k == "weight_distance") return from_d(algo_.weight_distance());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
-        flows_.clear();
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()), passthrough_.size(), roi_buf_);
-        algo_.process(ev, n, flows_);
+        auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
+                                   passthrough_.size(), roi_buf_);
+        std::vector<gui_algo::FlowVector> fresh;
+        algo_.process(ev, n, fresh);
+        if (!fresh.empty()) {
+            flows_ = std::move(fresh);
+        } else if (algo_.mode() != gui_algo::SparseOpticalFlow::Mode::BlockMatch) {
+            // Per-batch modes reflect the current batch (empty batch -> no
+            // vectors). BlockMatch only emits once per bm_time_window_us —
+            // hold the last result between emission boundaries instead of
+            // blanking every intermediate batch.
+            flows_.clear();
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
-        // Optical-flow visualization: render each flow vector as a single
-        // colored pixel/square at its origin. Color encodes direction (HSV
-        // hue 0..360° mapped to the (vx,vy) angle) and brightness encodes
-        // magnitude. This is the standard dense-flow visualization style
-        // (Farneback/OpenCV hue-intensity scheme) and avoids the previous
-        // "long lines all over the screen" problem caused by drawing
-        // vx*10/vy*10 line segments.
-        r.colored_points.reserve(flows_.size());
+        r.flow_arrows.reserve(flows_.size());
         for (const auto& f : flows_) {
-            OverlayColoredPoint cp;
-            cp.x = f.x;
-            cp.y = f.y;
-            // Direction -> hue (atan2 returns -pi..pi, map to 0..1).
-            const float angle_rad = std::atan2(f.vy, f.vx);
-            static constexpr float kInv2Pi = 1.0F / (2.0F * static_cast<float>(M_PI));
-            float hue = (angle_rad + static_cast<float>(M_PI)) * kInv2Pi;
-            if (hue < 0.0f) hue = 0.0f;
-            if (hue > 1.0f) hue = 1.0f;
-            // Magnitude -> value (normalize against a typical px/s reference).
-            const float mag = std::sqrt(f.vx * f.vx + f.vy * f.vy);
-            static constexpr float kInv1000 = 1.0F / 1000.0F;
-            const float val = std::min(1.0f, mag * kInv1000);  // 1000 px/s -> full brightness
-            hsv_to_rgb(hue, 1.0f, val, cp.r, cp.g, cp.b);
-            r.colored_points.push_back(cp);
+            if (!std::isfinite(f.vx) || !std::isfinite(f.vy)) continue;
+            OverlayFlowArrow a;
+            const float jx = jitter(), jy = jitter();
+            a.x1 = static_cast<int>(f.x + jx);
+            a.y1 = static_cast<int>(f.y + jy);
+            a.x2 = static_cast<int>(f.x + jx + f.vx * pps_scale_);
+            a.y2 = static_cast<int>(f.y + jy + f.vy * pps_scale_);
+            r.flow_arrows.push_back(a);
         }
-        r.status = "flow: " + std::to_string(flows_.size()) + " vectors" +
+        r.status = "flow: " + std::to_string(r.flow_arrows.size()) + " vectors" +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); flows_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::SparseOpticalFlow(w, h, algo_.mode());
+        // Persist tuned params across the rebuild (the auto-ROI resize hits
+        // the live instance).
+        const auto m = algo_.mode();
+        const int tw = algo_.time_window_us();
+        const int sr = algo_.search_radius_px();
+        const int bm_tw = algo_.block_match_time_window_us();
+        const double lk_thr = algo_.lk_thr();
+        const float ema = algo_.cluster_ema_alpha();
+        algo_ = gui_algo::SparseOpticalFlow(w, h, m);
+        algo_.set_time_window_us(tw);
+        algo_.set_search_radius_px(sr);
+        algo_.set_block_match_time_window_us(bm_tw);
+        algo_.set_lk_thr(lk_thr);
+        algo_.set_cluster_ema_alpha(ema);
     }
 private:
-    /// HSV (h,s,v in [0,1]) -> RGB (r,g,b in [0,255]).
-    static void hsv_to_rgb(float h, float s, float v,
-                           std::uint8_t& r, std::uint8_t& g, std::uint8_t& b) {
-        const float c = v * s;
-        const float hp = h * 6.0f;
-        const float x = c * (1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f));
-        float rf = 0.0f, gf = 0.0f, bf = 0.0f;
-        if (hp < 1.0f)      { rf = c; gf = x; bf = 0.0f; }
-        else if (hp < 2.0f) { rf = x; gf = c; bf = 0.0f; }
-        else if (hp < 3.0f) { rf = 0.0f; gf = c; bf = x; }
-        else if (hp < 4.0f) { rf = 0.0f; gf = x; bf = c; }
-        else if (hp < 5.0f) { rf = x; gf = 0.0f; bf = c; }
-        else                { rf = c; gf = 0.0f; bf = x; }
-        const float m = v - c;
-        r = static_cast<std::uint8_t>((rf + m) * 255.0f + 0.5f);
-        g = static_cast<std::uint8_t>((gf + m) * 255.0f + 0.5f);
-        b = static_cast<std::uint8_t>((bf + m) * 255.0f + 0.5f);
-    }
+    /// ±0.5 px uniform jitter (jAER jitterAmountPixels default).
+    static float jitter() { return (static_cast<float>(std::rand() % 1000) / 999.0F - 0.5F); }
 };
-
 
 /// DenseOpticalFlow backend — per-pixel flow map rendered as HSV-colored
 /// points (hue = direction, brightness = magnitude, scaled by confidence).
 class DenseOpticalFlowBackend final : public AlgoBackend {
     gui_algo::DenseOpticalFlow algo_;
+    double pps_scale_{0.03};
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
@@ -474,6 +488,7 @@ public:
         } else if (k == "time_window_us") algo_.set_time_window_us(to_i(v));
         else if (k == "spatial_radius")  algo_.set_spatial_radius_px(to_i(v));
         else if (k == "max_velocity_px_s") algo_.set_max_velocity_px_s(static_cast<float>(to_d(v)));
+        else if (k == "pps_scale") pps_scale_ = to_d(v);
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -481,6 +496,7 @@ public:
         if (k == "time_window_us") return from_i(algo_.time_window_us());
         if (k == "spatial_radius") return from_i(algo_.spatial_radius_px());
         if (k == "max_velocity_px_s") return from_d(algo_.max_velocity_px_s());
+        if (k == "pps_scale") return from_d(pps_scale_);
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -493,11 +509,9 @@ public:
         r.filtered_events = passthrough_;
         cv::Mat flow, conf;
         algo_.get_flow(flow, conf);
-        // Brightness reference: fraction of the max-velocity clamp.
-        const float val_ref = std::max(1.0f, algo_.max_velocity_px_s() * 0.2f);
-        static constexpr float kInv2Pi = 1.0F / (2.0F * static_cast<float>(M_PI));
+        // pps-scaled arrows (jAER rbodo drawVector scheme), same as sparse.
         int count = 0;
-        r.colored_points.reserve(4096);
+        r.flow_arrows.reserve(4096);
         for (int y = 0; y < algo_.height(); ++y) {
             const cv::Vec2f* frow = flow.ptr<cv::Vec2f>(y);
             const float* crow = conf.ptr<float>(y);
@@ -505,17 +519,13 @@ public:
                 if (crow[x] <= 0.0f) continue;
                 const float vx = frow[x][0], vy = frow[x][1];
                 if (vx == 0.0f && vy == 0.0f) continue;
-                const float angle_rad = std::atan2(vy, vx);
-                float hue = (angle_rad + static_cast<float>(M_PI)) * kInv2Pi;
-                if (hue < 0.0f) hue = 0.0f;
-                if (hue > 1.0f) hue = 1.0f;
-                const float mag = std::sqrt(vx * vx + vy * vy);
-                const float val = std::min(1.0f, mag / val_ref) * crow[x];
-                OverlayColoredPoint cp;
-                cp.x = x;
-                cp.y = y;
-                hsv_to_rgb(hue, 1.0f, val, cp.r, cp.g, cp.b);
-                r.colored_points.push_back(cp);
+                if (!std::isfinite(vx) || !std::isfinite(vy)) continue;
+                OverlayFlowArrow a;
+                a.x1 = x;
+                a.y1 = y;
+                a.x2 = static_cast<int>(x + vx * pps_scale_);
+                a.y2 = static_cast<int>(y + vy * pps_scale_);
+                r.flow_arrows.push_back(a);
                 ++count;
             }
         }
@@ -526,7 +536,16 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        algo_ = gui_algo::DenseOpticalFlow(w, h, algo_.mode());
+        // Persist tuned params across the rebuild (the auto-ROI resize hits
+        // the live instance).
+        const auto m = algo_.mode();
+        const int tw = algo_.time_window_us();
+        const int sr = algo_.spatial_radius_px();
+        const float mv = algo_.max_velocity_px_s();
+        algo_ = gui_algo::DenseOpticalFlow(w, h, m);
+        algo_.set_time_window_us(tw);
+        algo_.set_spatial_radius_px(sr);
+        algo_.set_max_velocity_px_s(mv);
     }
 private:
     /// HSV (h,s,v in [0,1]) -> RGB (r,g,b in [0,255]). Mirrors the sparse-flow
