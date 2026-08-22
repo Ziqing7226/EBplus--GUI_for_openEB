@@ -25,14 +25,13 @@
 //     1.0)（jAER MPJumpAfterFiringPercentTh，默认 10% → 1.5，下限 1.0）。
 //   - 非单调时间戳：时间回退时 MP=0（与 jAER incrementMP 一致）。
 //
-// 在每个事件包处理完成后，把本包内所有发放神经元收集为二值掩码，对其做
-// 4-连通连通分量标记（以 4-CC 近似 jAER 的 inside/border 全包围分组：jAER
-// 只在发放神经元的全部邻居也在发放时才成组，本实现稀疏发放时会产生
-// jAER 没有的小簇），每个连通分量即一个簇：质心按发放次数加权（神经元中心像素坐标，
-// 对应 jAER NeuronGroup 的 effectiveMP=numSpikes 加权 location；jAER 还有
-// 按 lastEventTimestamp 差的 exp(dt/tau) 时间折扣因子，未移植）、记录
-// 神经元数 (size)、总发放数 (mass)、外接框；再按最近邻匹配跨包跟踪并
-// 估计速度。输出: vector<LifCluster>，每个含
+// 在每个事件包处理完成后按 jAER updateNeurons 的 inside/border 全包围语义
+// 分组：只有全部邻居均在发放的神经元是 INSIDE，组 = INSIDE 神经元 + 其直接
+// 发放邻居（BORDER）；无 INSIDE 核的稀疏发放不成组（P3：旧 4-CC 近似会产出
+// jAER 没有的小簇）。簇质心按 jAER NeuronGroup.add 折叠：成员按发放时间升序
+// 逐个并入，较旧一侧乘 exp(dt/tau) 时间折扣，权重 = numSpikes
+// (effectiveMP)；并记录神经元数 (size)、总发放数 (mass)、外接框；再按最近邻
+// 匹配跨包跟踪并估计速度。输出: vector<LifCluster>，每个含
 // (track_id, cx, cy, size, mass, vx, vy)。Header-only.
 
 #ifndef GUI_ALGO_CV_CLUSTER_LIF_H
@@ -130,24 +129,59 @@ public:
             route_event(e);
         }
 
-        // 2) Connected-component labelling (4-connectivity, iterative BFS
-        //    with an explicit stack — jAER uses strict 4-neighbour
-        //    inside/border grouping; we use the equivalent 4-CC).
+        // 2) jAER inside/border full-enclosure grouping (updateNeurons): a
+        //    neuron is FIRING_INSIDE only when ALL its grid neighbours are
+        //    firing; its firing neighbours become the group BORDER. Groups
+        //    form ONLY around an inside neuron — sparse firing with no fully
+        //    enclosed core yields no cluster at all (the former 4-CC
+        //    approximation produced small clusters jAER never emits).
         const std::size_t n = static_cast<std::size_t>(num_neurons_x_) *
                               num_neurons_y_;
+        // Eligible mask: inside neurons + firing neurons adjacent to an
+        // inside neuron (jAER updateGroup adds exactly the inside neuron and
+        // its firing neighbours).
+        eligible_.assign(n, 0);
+        inside_.assign(n, 0);
+        bool any_inside = false;
+        for (int y = 0; y < num_neurons_y_; ++y) {
+            for (int x = 0; x < num_neurons_x_; ++x) {
+                const std::size_t idx =
+                    static_cast<std::size_t>(y) * num_neurons_x_ + x;
+                if (!fire_mask_[idx]) continue;
+                bool all = true;
+                if (x > 0 && !fire_mask_[idx - 1]) all = false;
+                if (x + 1 < num_neurons_x_ &&
+                    !fire_mask_[idx + 1]) all = false;
+                if (y > 0 && !fire_mask_[idx - num_neurons_x_]) all = false;
+                if (y + 1 < num_neurons_y_ &&
+                    !fire_mask_[idx + num_neurons_x_]) all = false;
+                if (all) {
+                    inside_[idx] = 1;
+                    any_inside = true;
+                    eligible_[idx] = 1;
+                    if (x > 0) eligible_[idx - 1] = 1;
+                    if (x + 1 < num_neurons_x_) eligible_[idx + 1] = 1;
+                    if (y > 0) eligible_[idx - num_neurons_x_] = 1;
+                    if (y + 1 < num_neurons_y_) eligible_[idx + num_neurons_x_] = 1;
+                }
+            }
+        }
+        if (!any_inside) return result;  // jAER emits no group without a core
+
+        // 4-connectivity BFS within the eligible set.
         label_.assign(n, -1);
         auto& label = label_;
+        struct Member { double px, py, wt; Metavision::timestamp ts; };
         struct Comp {
-            double sx{0.0};   // sum(centre_x * weight)
-            double sy{0.0};   // sum(centre_y * weight)
-            double sm{0.0};   // sum(weight) == total firings (mass)
-            int size{0};      // distinct neurons
+            std::vector<Member> members;
+            double cx{0.0}, cy{0.0};      // time-discounted weighted centroid
+            double total_mp{0.0};         // discounted effectiveMP sum
+            int raw_mass{0};              // raw spike count sum
             int minx{0}, miny{0}, maxx{0}, maxy{0};
         };
         std::vector<Comp> comps;
         std::vector<std::size_t> stack;
         stack.reserve(n);
-        // 4-connectivity neighbours (up/down/left/right) — jAER style.
         static const int dx[4] = {-1, 1, 0, 0};
         static const int dy[4] = {0, 0, -1, 1};
         const std::size_t w = static_cast<std::size_t>(num_neurons_x_);
@@ -156,14 +190,12 @@ public:
         for (int y = 0; y < hi; ++y) {
             for (int x = 0; x < wi; ++x) {
                 const std::size_t idx = static_cast<std::size_t>(y) * w + x;
-                if (!fire_mask_[idx] || label[idx] >= 0) continue;
+                if (!eligible_[idx] || label[idx] >= 0) continue;
                 const int cid = static_cast<int>(comps.size());
                 comps.emplace_back();
                 Comp& c = comps.back();
-                const int px0 = neuron_centre_x(x);
-                const int py0 = neuron_centre_y(y);
-                c.minx = px0; c.maxx = px0;
-                c.miny = py0; c.maxy = py0;
+                c.minx = neuron_centre_x(x); c.maxx = c.minx;
+                c.miny = neuron_centre_y(y); c.maxy = c.miny;
                 stack.clear();
                 stack.push_back(idx);
                 label[idx] = cid;
@@ -174,11 +206,9 @@ public:
                     const int cy = static_cast<int>(cur / w);
                     const int px = neuron_centre_x(cx);
                     const int py = neuron_centre_y(cy);
-                    const double wt = static_cast<double>(fire_count_[cur]);
-                    c.sx += static_cast<double>(px) * wt;
-                    c.sy += static_cast<double>(py) * wt;
-                    c.sm += wt;
-                    ++c.size;
+                    c.members.push_back(Member{
+                        static_cast<double>(px), static_cast<double>(py),
+                        static_cast<double>(fire_count_[cur]), fire_t_[cur]});
                     if (px < c.minx) c.minx = px;
                     if (px > c.maxx) c.maxx = px;
                     if (py < c.miny) c.miny = py;
@@ -189,7 +219,7 @@ public:
                         if (nx < 0 || ny < 0 || nx >= wi || ny >= hi) continue;
                         const std::size_t nidx =
                             static_cast<std::size_t>(ny) * w + nx;
-                        if (!fire_mask_[nidx] || label[nidx] >= 0) continue;
+                        if (!eligible_[nidx] || label[nidx] >= 0) continue;
                         label[nidx] = cid;
                         stack.push_back(nidx);
                     }
@@ -197,18 +227,55 @@ public:
             }
         }
 
+        // 2b) jAER NeuronGroup.add centroid: fold members in ascending spike
+        //     time; the OLDER side of each pair is discounted by
+        //     exp(dt/tau) (jAER leakyFactor), weight = numSpikes
+        //     (effectiveMP when MPJumpAfterFiring > 0).
+        const double tau = static_cast<double>(tau_us_);
+        for (auto& c : comps) {
+            std::sort(c.members.begin(), c.members.end(),
+                      [](const Member& a, const Member& b) { return a.ts < b.ts; });
+            double lx = 0.0, ly = 0.0, total = 0.0;
+            Metavision::timestamp gt = 0;
+            bool first = true;
+            int raw_mass = 0;
+            for (const auto& m : c.members) {
+                raw_mass += static_cast<int>(m.wt);
+                if (first) {
+                    lx = m.px; ly = m.py; total = m.wt; gt = m.ts;
+                    first = false;
+                    continue;
+                }
+                if (gt < m.ts) {
+                    const double leaky = std::exp(
+                        static_cast<double>(gt - m.ts) / tau);
+                    const double prev = total;
+                    total = m.wt + prev * leaky;
+                    lx = (m.px * m.wt + lx * prev * leaky) / total;
+                    ly = (m.py * m.wt + ly * prev * leaky) / total;
+                    gt = m.ts;
+                } else {
+                    const double leaky = std::exp(
+                        static_cast<double>(m.ts - gt) / tau);
+                    const double prev = total;
+                    total = prev + m.wt * leaky;
+                    lx = (m.px * m.wt * leaky + lx * prev) / total;
+                    ly = (m.py * m.wt * leaky + ly * prev) / total;
+                }
+            }
+            c.cx = lx; c.cy = ly; c.total_mp = total;
+        }
         // 3) Drop stale tracks, then build one cluster per component and match
         //    it to the nearest existing track (nearest-neighbour association).
         prune_tracks(batch_t);
         result.reserve(comps.size());
         for (const auto& c : comps) {
             LifCluster out;
-            const double mass = c.sm > 0.0 ? c.sm : 1.0;
-            out.position = cv::Point2f(static_cast<float>(c.sx / mass),
-                                       static_cast<float>(c.sy / mass));
+            out.position = cv::Point2f(static_cast<float>(c.cx),
+                                       static_cast<float>(c.cy));
             out.potential = threshold_;
-            out.size = c.size;
-            out.mass = static_cast<int>(c.sm);
+            out.size = static_cast<int>(c.members.size());
+            out.mass = c.raw_mass;
             out.bbox = cv::Rect(c.minx, c.miny,
                                 c.maxx - c.minx + 1,
                                 c.maxy - c.miny + 1);
@@ -322,6 +389,9 @@ private:
                               num_neurons_y_;
         fire_mask_.assign(n, 0);
         fire_count_.assign(n, 0);
+        fire_t_.assign(n, 0);
+        eligible_.assign(n, 0);
+        inside_.assign(n, 0);
     }
 
     /// @brief Routes an event to its 4 overlapping receptive-field neurons
@@ -363,6 +433,7 @@ private:
                 static_cast<std::size_t>(ny) * num_neurons_x_ + nx;
             fire_mask_[idx] = 1;
             ++fire_count_[idx];
+            fire_t_[idx] = e.t;  // last spike time (NeuronGroup.add discount)
         }
     }
 
@@ -435,6 +506,9 @@ private:
     Metavision::timestamp stale_us_;
     std::vector<uint8_t> fire_mask_;
     std::vector<int> fire_count_;
+    std::vector<Metavision::timestamp> fire_t_;  // per-neuron last spike time
+    std::vector<uint8_t> eligible_;              // inside + their firing neighbours
+    std::vector<uint8_t> inside_;
     std::vector<int> label_;  // reused per-packet label buffer (OPT-27)
     std::vector<Track> tracks_;
     int next_track_id_{0};

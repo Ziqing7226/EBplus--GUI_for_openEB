@@ -332,6 +332,38 @@ TEST(ClusterLIFTest, ProcessEmpty) {
     EXPECT_TRUE(result.empty());
 }
 
+// P3 (jAER updateNeurons full-enclosure semantics): sparse firing with no
+// neuron whose ALL neighbours are firing must produce NO cluster — the old
+// 4-CC approximation emitted small clusters jAER never forms. A compact
+// 2x2 block with all four firing IS a cluster (each member has firing
+// neighbours; the interior members are inside neurons).
+TEST(ClusterLIFTest, SparseFiringFormsNoGroup) {
+    ClusterLIF c(64, 48, 22.0f, 2.0f, 0.0f, 8, 50.0f, 10.0f);
+    // One isolated firing neuron: no inside core -> no cluster (jAER).
+    std::vector<Event> ev;
+    ev.emplace_back(16, 16, 1, 1000);
+    for (int k = 0; k < 40; ++k) ev.emplace_back(16, 16, 1, 2000 + k);
+    auto pkt = make_packet(ev);
+    auto result = c.process(pkt);
+    EXPECT_TRUE(result.empty()) << "sparse firing must not form a jAER group";
+}
+
+TEST(ClusterLIFTest, CompactBlockFormsGroup) {
+    ClusterLIF c(64, 48, 22.0f, 2.0f, 0.0f, 8, 50.0f, 10.0f);
+    // Events spread across a 16x16 px area (centred at (16,16)) drive the
+    // four neurons whose centres are (8,8),(16,8),(8,16),(16,16); repeated
+    // firing saturates MP so all four fire -> inside core -> one group.
+    std::vector<Event> ev;
+    for (int k = 0; k < 200; ++k) {
+        const int x = 8 + (k % 16);
+        const int y = 8 + ((k / 16) % 16);
+        ev.emplace_back(x, y, 1, 1000 + k);
+    }
+    auto pkt = make_packet(ev);
+    auto result = c.process(pkt);
+    EXPECT_FALSE(result.empty()) << "a fully-firing block must form a group";
+}
+
 // --- 4.3.19 BackgroundMaskFilter ---
 TEST(BackgroundMaskFilterTest, Construction) {
     BackgroundMaskFilter f(64, 48);
