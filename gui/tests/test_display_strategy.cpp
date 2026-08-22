@@ -113,6 +113,38 @@ TEST(DisplayStrategyOverlay, DrawsPrimitivesOntoFrame) {
     EXPECT_NE(frame.pixel(50, 50), before.pixel(50, 50));
 }
 
+// Regression (P0, 2026-08-22): colored_events must actually paint on the
+// display pipeline's Format_RGB888 frames. QImage::setPixel only supports
+// 32-bit/indexed formats and silently no-ops on 24-bit RGB888 — orientation
+// / direction coloring was therefore never visible. The annotator now
+// writes RGB888 through the scanline pointer.
+TEST(DisplayStrategyOverlay, ColoredEventsPaintOnRgb888) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("object_tracker");  // Overlay
+    ASSERT_NE(inst, nullptr);
+    inst->set_enabled(true);
+
+    QImage frame(80, 80, QImage::Format_RGB888);
+    frame.fill(Qt::black);
+    const QImage before = frame.copy();
+
+    AlgoResult r;
+    gui::ColoredEvent ce;
+    ce.event.x = 40; ce.event.y = 40;
+    ce.event.p = 1;
+    ce.r = 255; ce.g = 0; ce.b = 0;
+    r.colored_events.push_back(ce);
+
+    QHash<std::string, QPointer<gui::AlgoWindow>> windows;
+    FrameAnnotator annotator;
+    auto ctx = make_ctx(annotator, windows);
+
+    inst->apply_strategy(frame, r, ctx);
+    EXPECT_NE(frame, before);
+    // (40,40) must now be red (qRgb(255,0,0) = 0xFFFF0000).
+    EXPECT_EQ(frame.pixel(40, 40), 0xFFFF0000);
+}
+
 // Overlay with no primitives and ROI off: frame unchanged (nothing to draw).
 TEST(DisplayStrategyOverlay, EmptyResultLeavesFrameUnchanged) {
     AlgoBridge bridge;

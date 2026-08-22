@@ -179,7 +179,26 @@ void FrameAnnotator::draw_colored_events(
         const std::vector<std::tuple<int, int, QColor>>& events) {
     if (img.isNull() || events.empty()) return;
     // Direct pixel manipulation is much faster than QPainter for per-event
-    // coloring (potentially 10k+ events per frame).
+    // coloring (potentially 10k+ events per frame). QImage::setPixel only
+    // supports 32-bit-depth and 8-bit-indexed formats — on the display
+    // pipeline's Format_RGB888 (24-bit) frames it warns and silently
+    // no-ops, so RGB888/BGR888 are written through the scanline pointer
+    // instead.
+    if (img.format() == QImage::Format_RGB888 ||
+        img.format() == QImage::Format_BGR888) {
+        const int bpl = img.bytesPerLine();
+        const bool bgr = img.format() == QImage::Format_BGR888;
+        uchar* bits = img.bits();
+        for (const auto& [x, y, color] : events) {
+            if (x < 0 || x >= img.width() || y < 0 || y >= img.height()) continue;
+            uchar* px = bits + static_cast<long>(y) * bpl + 3 * x;
+            px[0] = static_cast<uchar>(bgr ? color.blue() : color.red());
+            px[1] = static_cast<uchar>(color.green());
+            px[2] = static_cast<uchar>(bgr ? color.red() : color.blue());
+        }
+        return;
+    }
+    if (img.depth() != 32) return;  // setPixel would no-op with a warning
     for (const auto& [x, y, color] : events) {
         if (x < 0 || x >= img.width() || y < 0 || y >= img.height()) continue;
         img.setPixel(x, y, color.rgba());
