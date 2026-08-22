@@ -178,14 +178,11 @@ class ObjectTrackerBackend final : public AlgoBackend {
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
 public:
-    ObjectTrackerBackend(int w, int h)
-        : algo_(w, h, gui_algo::ObjectTracker::Mode::RCT) { roi_.init(w, h); }
+    ObjectTrackerBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
-        if (k == "mode") {
-            int m = to_i(v);
-            if (m >= 0 && m <= 3) algo_.set_mode(static_cast<gui_algo::ObjectTracker::Mode>(m));
-        } else if (k == "cluster_size_px") algo_.set_cluster_size_px(to_i(v));
+        if (k == "cluster_size_fraction") algo_.set_cluster_size_fraction(to_d(v));
+        else if (k == "max_clusters") algo_.set_max_clusters(to_i(v));
         else if (k == "cluster_time_us") algo_.set_cluster_time_us(to_i(v));
         else if (k == "min_cluster_events") algo_.set_min_cluster_events(to_i(v));
         else if (k == "max_lost_age_s") algo_.set_max_lost_age_s(to_d(v));
@@ -197,8 +194,8 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "mode") return from_i(static_cast<int>(algo_.mode()));
-        if (k == "cluster_size_px") return from_i(algo_.cluster_size_px());
+        if (k == "cluster_size_fraction") return from_d(algo_.cluster_size_fraction());
+        if (k == "max_clusters") return from_i(algo_.max_clusters());
         if (k == "cluster_time_us") return from_i(algo_.cluster_time_us());
         if (k == "min_cluster_events") return from_i(algo_.min_cluster_events());
         if (k == "max_lost_age_s") return from_d(algo_.max_lost_age_s());
@@ -262,9 +259,29 @@ public:
     void reset() override { algo_.reset(); passthrough_.clear(); }
     void set_sensor_dimensions(int w, int h) override {
         roi_.set_sensor_dimensions(w, h);
-        // Rebuild sensor-sized internal state, preserving the current mode
-        // (other params revert to ctor defaults).
-        algo_ = gui_algo::ObjectTracker(w, h, algo_.mode());
+        // Rebuild sensor-sized internal state, re-applying the tuned params
+        // (the auto-ROI resize hits the live instance).
+        const double frac = algo_.cluster_size_fraction();
+        const int ct = algo_.cluster_time_us();
+        const int mce = algo_.min_cluster_events();
+        const double mla = algo_.max_lost_age_s();
+        const bool evp = algo_.enable_velocity_prediction();
+        const float lmf = algo_.location_mixing_factor();
+        const float pvf = algo_.predictive_velocity_factor();
+        const int tau = algo_.mass_decay_tau_us();
+        const float tmv = algo_.threshold_mass_for_visible();
+        const int mc = algo_.max_clusters();
+        algo_ = gui_algo::ObjectTracker(w, h);
+        algo_.set_cluster_size_fraction(frac);
+        algo_.set_cluster_time_us(ct);
+        algo_.set_min_cluster_events(mce);
+        algo_.set_max_lost_age_s(mla);
+        algo_.set_enable_velocity_prediction(evp);
+        algo_.set_location_mixing_factor(lmf);
+        algo_.set_predictive_velocity_factor(pvf);
+        algo_.set_mass_decay_tau_us(tau);
+        algo_.set_threshold_mass_for_visible(tmv);
+        algo_.set_max_clusters(mc);
     }
 };
 

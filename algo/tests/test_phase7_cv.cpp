@@ -465,27 +465,50 @@ TEST(ObjectTrackerTest, Construction) {
     ObjectTracker t(64, 48);
     EXPECT_EQ(t.width(), 64);
     EXPECT_EQ(t.height(), 48);
-    EXPECT_EQ(t.mode(), ObjectTracker::Mode::RCT);
-}
-
-TEST(ObjectTrackerTest, ModeSwitching) {
-    ObjectTracker t(32, 32);
-    t.set_mode(ObjectTracker::Mode::Median);
-    EXPECT_EQ(t.mode(), ObjectTracker::Mode::Median);
-    t.set_mode(ObjectTracker::Mode::Kalman);
-    EXPECT_EQ(t.mode(), ObjectTracker::Mode::Kalman);
-    t.set_mode(ObjectTracker::Mode::MultiHypothesis);
-    EXPECT_EQ(t.mode(), ObjectTracker::Mode::MultiHypothesis);
+    // jAER semantics: cluster size is a fraction of the sensor's max
+    // dimension (default 0.15 → radius 0.15*64 = 9.6 px).
+    EXPECT_FLOAT_EQ(t.radius(), 9.6F);
 }
 
 TEST(ObjectTrackerTest, Params) {
-    ObjectTracker t(32, 32);
-    t.set_cluster_size_px(15);
-    EXPECT_EQ(t.cluster_size_px(), 15);
+    ObjectTracker t(100, 50);
+    t.set_cluster_size_fraction(0.2);
+    EXPECT_DOUBLE_EQ(t.cluster_size_fraction(), 0.2);
+    EXPECT_FLOAT_EQ(t.radius(), 20.0F);  // fraction * max(100,50)
     t.set_cluster_time_us(3000);
     EXPECT_EQ(t.cluster_time_us(), 3000);
     t.set_max_lost_age_s(2.0f);
     EXPECT_FLOAT_EQ(t.max_lost_age_s(), 2.0f);
+    t.set_max_clusters(5);
+    EXPECT_EQ(t.max_clusters(), 5);
+    t.set_threshold_mass_for_visible(30.0f);
+    EXPECT_FLOAT_EQ(t.threshold_mass_for_visible(), 30.0f);
+}
+
+TEST(ObjectTrackerTest, MaxClustersCapsProliferation) {
+    // jAER maxNumClusters: the cluster list is hard-capped — 100 spatially
+    // distinct seed positions must not create more than max_clusters.
+    ObjectTracker t(200, 200);
+    t.set_max_clusters(10);
+    t.set_cluster_size_fraction(0.02);  // 4 px radius: seeds stay distinct
+    t.set_threshold_mass_for_visible(0.0F);
+    t.set_min_cluster_events(1);
+    std::vector<Event> ev;
+    for (int i = 0; i < 100; ++i) {
+        ev.emplace_back(10 + (i % 10) * 15, 10 + (i / 10) * 15, 1, 1000 + i);
+    }
+    auto pkt = make_packet(ev);
+    t.process(pkt);
+    // objects() only lists visible clusters; query the cap indirectly by
+    // feeding again with every position re-hit (all clusters stay hot).
+    std::vector<Event> ev2;
+    for (int i = 0; i < 100; ++i) {
+        ev2.emplace_back(10 + (i % 10) * 15, 10 + (i / 10) * 15, 1,
+                         100000 + i);
+    }
+    auto pkt2 = make_packet(ev2);
+    t.process(pkt2);
+    EXPECT_LE(static_cast<int>(t.objects().size()), 10);
 }
 
 TEST(ObjectTrackerTest, ProcessEmpty) {
@@ -497,7 +520,7 @@ TEST(ObjectTrackerTest, ProcessEmpty) {
 }
 
 TEST(ObjectTrackerTest, ProcessWithEvents) {
-    ObjectTracker t(32, 32, ObjectTracker::Mode::RCT);
+    ObjectTracker t(32, 32);
     // Feed a burst of events in a small area to form a cluster.
     std::vector<Event> ev;
     for (int i = 0; i < 100; ++i) {

@@ -398,7 +398,7 @@ TEST_F(RawAlgoTest, BlobDetectorEmitsValidBlobs) {
 // =========================================================================
 TEST_F(RawAlgoTest, ObjectTrackerPositionsAreFinite) {
     const auto& s = stream();
-    ObjectTracker ot(s.width(), s.height(), ObjectTracker::Mode::RCT);
+    ObjectTracker ot(s.width(), s.height());
     for (const auto& batch : s.batches(kBatchWindowUs)) {
         ot.process(batch.data(), batch.size());
     }
@@ -414,7 +414,7 @@ TEST_F(RawAlgoTest, ObjectTrackerPositionsAreFinite) {
         EXPECT_TRUE(is_finite(o.vx));
         EXPECT_TRUE(is_finite(o.vy));
         EXPECT_TRUE(is_finite(o.age));
-        const float margin = 10.0F * static_cast<float>(ot.cluster_size_px());
+        const float margin = 10.0F * ot.radius();
         EXPECT_GE(o.x, -margin) << "S1 regression: position drifted out of bounds";
         EXPECT_LE(o.x, static_cast<float>(s.width()) + margin)
             << "S1 regression: position drifted out of bounds";

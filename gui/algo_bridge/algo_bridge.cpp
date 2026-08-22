@@ -775,8 +775,7 @@ void AlgoBridge::register_self_cv() {
     // §4.3.11 Object Tracker (4 modes, jAER RectangularClusterTracker)
     add({"object_tracker", "Object Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {penum("mode", "Mode", "0", {"0=RCT", "1=Median", "2=Kalman", "3=MultiHypothesis"}),
-          pint("cluster_size_px", "Cluster size (px)", "10", "3", "50"),
+         {pfloat("cluster_size_fraction", "Cluster size (fraction of sensor)", "0.15", "0.01", "0.5"),
           pint("cluster_time_us", "Cluster time (us)", "5000", "1000", "50000"),
           pint("min_cluster_events", "Min cluster events", "50", "10", "500"),
           pfloat("max_lost_age_s", "Max lost age (s)", "1.0", "0.1", "5.0"),
@@ -784,7 +783,8 @@ void AlgoBridge::register_self_cv() {
           pfloat("location_mixing_factor", "Location mixing factor", "0.05", "0.0", "1.0"),
           pfloat("predictive_velocity_factor", "Predictive velocity factor", "1.0", "0.0", "10.0"),
           pint("mass_decay_tau_us", "Mass decay tau (us)", "10000", "1", "1000000"),
-          pfloat("threshold_mass_for_visible", "Threshold mass visible", "10.0", "0.0", "1000000.0")}});
+          pfloat("threshold_mass_for_visible", "Visible mass threshold", "30", "0", "1000000"),
+          pint("max_clusters", "Max clusters", "10", "1", "100")}});
 
     // §4.3.12 Corner Detector (4 modes). The enum labels must match
     // algo/cv/corner_detector.h's Mode enum order exactly (the backend maps
