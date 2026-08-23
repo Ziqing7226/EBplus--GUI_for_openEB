@@ -35,7 +35,7 @@ class HoughLineBackend final : public AlgoBackend {
     ProcessRegion roi_;
     int num_theta_bins_{90};
     int num_rho_bins_{0};
-    int threshold_{50};
+    int threshold_{30};
     // Persisted so rebuild() re-applies it (the algo ctor takes it directly;
     // accumulator_decay_us was removed algo-side as a dead param, §7.3).
     float hough_decay_factor_{0.6F};

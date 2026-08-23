@@ -55,7 +55,7 @@ public:
     HoughLineTracker(int width, int height,
                      int num_theta_bins = 90,
                      int num_rho_bins = 0,
-                     int threshold = 50,
+                     int threshold = 30,
                      float hough_decay_factor = 0.6F,
                      double output_tau_ms = 10.0,
                      double favor_vertical_range_deg = 90.0)

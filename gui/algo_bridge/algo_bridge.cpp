@@ -811,7 +811,7 @@ void AlgoBridge::register_self_cv() {
     // is NOT registered: the algo stores it but never uses it (§7.3).
     add({"hough_line", "Hough Line Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("threshold", "Threshold", "50", "2", "500"),
+         {pint("threshold", "Threshold", "30", "2", "500"),
           pint("num_theta_bins", "Theta bins", "90", "8", "360"),
           pint("num_rho_bins", "Rho bins (0=auto)", "0", "0", "4000"),
           pfloat("hough_decay_factor", "Per-packet decay factor", "0.6", "0.0", "1.0"),
