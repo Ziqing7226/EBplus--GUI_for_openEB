@@ -225,6 +225,8 @@ private:
         int dir{-1};
         Metavision::timestamp delay{0};  // dt to the supporting neighbour (us)
         int distance{0};                 // pixels to the supporting neighbour
+        double speed_px_s{0.0};          // jAER aggregate speed (px/s) when
+                                         // distance==0 (aggregate path)
     };
 
     /// Raw/degraded: search the 8 immediate neighbours for the smallest positive
@@ -300,7 +302,11 @@ private:
             }
             best.dir = dirs[chosen];
             best.distance = 0;  // aggregate — per-neighbour distance not unique
-            // Aggregate speed px/s (jAER: sum(s/dt)*1e6 / count).
+            // jAER aggregate speed: sum(s/dt)/n * 1e6 (px/s).
+            best.speed_px_s =
+                static_cast<double>(n[chosen]) > 0
+                    ? speed_sum[chosen] / static_cast<double>(n[chosen]) * 1e6
+                    : 0.0;
             best.delay = best.delay > 0 ? best.delay : 1;
         }
         return best;
@@ -310,20 +316,20 @@ private:
     void update_motion(const Event& e, const DirResult& r) {
         last_delay_us_ = r.delay;
         last_distance_px_ = r.distance;
-        if (r.delay <= 0 || r.distance <= 0) {
+        // Aggregate path (orientation-aware): the speed was already computed
+        // in compute_direction_ori as the chosen side's mean s/dt (px/s).
+        // Raw path (distance>0): speed = distance/delay (single neighbour).
+        double speed = r.speed_px_s;
+        if (r.distance > 0 && r.delay > 0) {
+            speed = static_cast<double>(r.distance) /
+                    static_cast<double>(r.delay) * 1e6;
+        }
+        if (r.delay <= 0 || speed <= 0.0 || r.dir < 0) {
             last_speed_pps_ = 0.0F;
             last_vx_ = 0.0F;
             last_vy_ = 0.0F;
             return;
         }
-        // jAER aggregate speed: the chosen side's mean s/dt (px/us) * 1e6.
-        // DirResult.distance is 0 for the aggregate path, so speed is
-        // computed from delay only when a single nearest neighbour was used
-        // (raw path distance=1).
-        const double speed =
-            r.distance > 0
-                ? static_cast<double>(r.distance) / static_cast<double>(r.delay) * 1e6
-                : 0.0;
         last_speed_pps_ = static_cast<float>(speed);
         const int d = r.dir;
         // Unit vector of the source direction (diagonals normalised by sqrt(2)).

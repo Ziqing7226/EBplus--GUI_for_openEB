@@ -396,7 +396,8 @@ bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
            algo_name == "orientation_filter" ||
            algo_name == "orientation_cluster" ||
            algo_name == "optical_gyro" ||
-           algo_name == "cluster_lif";
+           algo_name == "cluster_lif" ||
+           algo_name == "direction_selective";
 }
 
 void AlgorithmsPanel::set_algo_status(const std::string& name, const QString& text) {
