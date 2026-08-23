@@ -240,8 +240,10 @@ TEST(HotPixelFilterTest, Params) {
     EXPECT_EQ(f.num_hot_pixels_max(), 500);
     f.set_enable_fpn_correction(true);
     EXPECT_TRUE(f.enable_fpn_correction());
-    f.set_fpn_target_rate_hz(100.0);
-    EXPECT_DOUBLE_EQ(f.fpn_target_rate_hz(), 100.0);
+    f.set_fpn_alpha(0.9);
+    EXPECT_DOUBLE_EQ(f.fpn_alpha(), 0.9);
+    f.set_fpn_mixing_factor(0.01);
+    EXPECT_DOUBLE_EQ(f.fpn_mixing_factor(), 0.01);
 }
 
 TEST(HotPixelFilterTest, ParamClamping) {

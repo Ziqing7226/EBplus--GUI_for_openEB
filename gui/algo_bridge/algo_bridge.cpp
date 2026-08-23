@@ -707,7 +707,8 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Passive,
          {pfloat("learning_window_s", "Learning window (s)", "5.0", "0.1", "60.0"),
           pbool("enable_fpn_correction", "FPN correction", "false"),
-          pfloat("fpn_target_rate_hz", "FPN target rate (Hz)", "100", "1", "1000")}});
+          pfloat("fpn_alpha", "FPN alpha", "0.9", "0.01", "1.0"),
+          pfloat("fpn_mixing_factor", "FPN mixing factor", "0.01", "0.0001", "1.0")}});
 
     // §4.3.7 Orientation Filter (jAER SimpleOrientationFilter min-dt WTA)
     add({"orientation_filter", "Orientation Filter", "cv", "self",

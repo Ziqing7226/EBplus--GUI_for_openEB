@@ -238,9 +238,9 @@ TEST(AlgoBridgeInstances, ParamRoundTrip) {
     AlgoBridge bridge;
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
-    inst->set_param("fpn_target_rate_hz", "250");
+    inst->set_param("fpn_alpha", "0.5");
     inst->set_param("learning_window_s", "10.0");
-    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "250");
+    EXPECT_EQ(inst->get_param("fpn_alpha"), "0.5");
     EXPECT_EQ(inst->get_param("learning_window_s"), "10.0");
     // Unknown key returns an empty string.
     EXPECT_EQ(inst->get_param("no_such_key"), "");
@@ -297,8 +297,8 @@ TEST(AlgoBridgeInstances, DefaultsAppliedAtConstruction) {
     AlgoBridge bridge;
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
-    // The default fpn_target_rate_hz declared in the registry is "100".
-    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "100");
+    // The default fpn_alpha declared in the registry is "0.9".
+    EXPECT_EQ(inst->get_param("fpn_alpha"), "0.9");
     // n_sigma was removed from the registry (algo marks it unused, audit
     // §三-31) — it is now an unknown key and returns an empty string.
     EXPECT_EQ(inst->get_param("n_sigma"), "");

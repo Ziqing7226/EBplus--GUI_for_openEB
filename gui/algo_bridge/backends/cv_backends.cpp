@@ -38,13 +38,15 @@ public:
         if (roi_.set_param(k, v)) return;
         if (k == "learning_window_s") algo_.set_learning_window_s(to_d(v));
         else if (k == "enable_fpn_correction") algo_.set_enable_fpn_correction(to_b(v));
-        else if (k == "fpn_target_rate_hz") algo_.set_fpn_target_rate_hz(to_d(v));
+        else if (k == "fpn_alpha") algo_.set_fpn_alpha(to_d(v));
+        else if (k == "fpn_mixing_factor") algo_.set_fpn_mixing_factor(to_d(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "learning_window_s") return from_d(algo_.learning_window_s());
         if (k == "enable_fpn_correction") return from_b(algo_.enable_fpn_correction());
-        if (k == "fpn_target_rate_hz") return from_d(algo_.fpn_target_rate_hz());
+        if (k == "fpn_alpha") return from_d(algo_.fpn_alpha());
+        if (k == "fpn_mixing_factor") return from_d(algo_.fpn_mixing_factor());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -78,11 +80,13 @@ public:
         roi_.set_sensor_dimensions(w, h);
         const double lw = algo_.learning_window_s();
         const bool fpn = algo_.enable_fpn_correction();
-        const double fr = algo_.fpn_target_rate_hz();
+        const double fa = algo_.fpn_alpha();
+        const double fm = algo_.fpn_mixing_factor();
         algo_ = gui_algo::HotPixelFilter(w, h);
         algo_.set_learning_window_s(lw);
         algo_.set_enable_fpn_correction(fpn);
-        algo_.set_fpn_target_rate_hz(fr);
+        algo_.set_fpn_alpha(fa);
+        algo_.set_fpn_mixing_factor(fm);
     }
 };
 
