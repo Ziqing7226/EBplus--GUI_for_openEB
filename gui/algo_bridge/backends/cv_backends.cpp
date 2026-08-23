@@ -425,7 +425,9 @@ class SparseOpticalFlowBackend final : public AlgoBackend {
     std::vector<gui_algo::FlowVector> flows_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
-    double pps_scale_{0.01};
+    // Per-mode arrow scale, calibrated on screw.raw (median speed -> ~12px
+    // arrow): LP 0.003, LK 0.7, BM 0.09, CO 0.05.
+    double pps_scale_[4]{0.003, 0.7, 0.09, 0.05};
     int arrow_grid_px_{24};
 public:
     SparseOpticalFlowBackend(int w, int h)
@@ -438,7 +440,10 @@ public:
         } else if (k == "search_radius") algo_.set_search_radius_px(to_i(v));
         else if (k == "time_window_us") algo_.set_time_window_us(to_i(v));
         else if (k == "cluster_ema_alpha") algo_.set_cluster_ema_alpha(static_cast<float>(to_d(v)));
-        else if (k == "pps_scale") pps_scale_ = to_d(v);
+        else if (k == "pps_scale_lp" || k == "pps_scale_lk" ||
+                 k == "pps_scale_bm" || k == "pps_scale_co") {
+            pps_scale_[static_cast<int>(algo_.mode())] = to_d(v);
+        }
         else if (k == "arrow_grid_px") arrow_grid_px_ = to_i(v);
         else if (k == "lk_thr") algo_.set_lk_thr(to_d(v));
         else if (k == "bm_time_window_us") algo_.set_block_match_time_window_us(to_i(v));
@@ -454,7 +459,10 @@ public:
         if (k == "search_radius") return from_i(algo_.search_radius_px());
         if (k == "time_window_us") return from_i(algo_.time_window_us());
         if (k == "cluster_ema_alpha") return from_d(algo_.cluster_ema_alpha());
-        if (k == "pps_scale") return from_d(pps_scale_);
+        if (k == "pps_scale_lp" || k == "pps_scale_lk" ||
+            k == "pps_scale_bm" || k == "pps_scale_co") {
+            return from_d(pps_scale_[static_cast<int>(algo_.mode())]);
+        }
         if (k == "arrow_grid_px") return from_i(arrow_grid_px_);
         if (k == "lk_thr") return from_d(algo_.lk_thr());
         if (k == "bm_time_window_us") return from_i(algo_.block_match_time_window_us());
@@ -513,7 +521,7 @@ public:
                 const float vy = static_cast<float>(sy[ci] / cnt[ci]);
                 const float len = std::hypot(vx, vy);
                 if (len <= 0.0f) continue;
-                float scale = static_cast<float>(pps_scale_);
+                float scale = static_cast<float>(pps_scale_[static_cast<int>(algo_.mode())]);
                 const float draw_len = len * scale;
                 if (draw_len > static_cast<float>(g)) scale = static_cast<float>(g) / len;
                 const int ax = cx * g + g / 2;
@@ -557,7 +565,9 @@ private:
 /// points (hue = direction, brightness = magnitude, scaled by confidence).
 class DenseOpticalFlowBackend final : public AlgoBackend {
     gui_algo::DenseOpticalFlow algo_;
-    double pps_scale_{0.01};
+    // Per-mode arrow scale, calibrated on screw.raw: PF 0.002, TG 0.007,
+    // TM 0.009 (median speed -> ~12px arrow).
+    double pps_scale_[3]{0.002, 0.007, 0.009};
     int arrow_grid_px_{24};
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
@@ -574,7 +584,10 @@ public:
         } else if (k == "time_window_us") algo_.set_time_window_us(to_i(v));
         else if (k == "spatial_radius")  algo_.set_spatial_radius_px(to_i(v));
         else if (k == "max_velocity_px_s") algo_.set_max_velocity_px_s(static_cast<float>(to_d(v)));
-        else if (k == "pps_scale") pps_scale_ = to_d(v);
+        else if (k == "pps_scale_pf" || k == "pps_scale_tg" ||
+                 k == "pps_scale_tm") {
+            pps_scale_[static_cast<int>(algo_.mode())] = to_d(v);
+        }
         else if (k == "arrow_grid_px") arrow_grid_px_ = to_i(v);
     }
     std::string get_param(const std::string& k) const override {
@@ -583,7 +596,10 @@ public:
         if (k == "time_window_us") return from_i(algo_.time_window_us());
         if (k == "spatial_radius") return from_i(algo_.spatial_radius_px());
         if (k == "max_velocity_px_s") return from_d(algo_.max_velocity_px_s());
-        if (k == "pps_scale") return from_d(pps_scale_);
+        if (k == "pps_scale_pf" || k == "pps_scale_tg" ||
+            k == "pps_scale_tm") {
+            return from_d(pps_scale_[static_cast<int>(algo_.mode())]);
+        }
         if (k == "arrow_grid_px") return from_i(arrow_grid_px_);
         return {};
     }
@@ -633,7 +649,7 @@ public:
                 const float vy = static_cast<float>(sy[ci] / cnt[ci]);
                 const float len = std::hypot(vx, vy);
                 if (len <= 0.0f) continue;
-                float scale = static_cast<float>(pps_scale_);
+                float scale = static_cast<float>(pps_scale_[static_cast<int>(algo_.mode())]);
                 const float draw_len = len * scale;
                 if (draw_len > static_cast<float>(g)) scale = static_cast<float>(g) / len;
                 const int ax = cx * g + g / 2;

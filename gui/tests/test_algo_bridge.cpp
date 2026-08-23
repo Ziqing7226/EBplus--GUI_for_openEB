@@ -260,10 +260,10 @@ TEST(AlgoBridgeInstances, ParamRoundTrip) {
     ASSERT_NE(sf, nullptr);
     sf->set_param("bm_time_window_us", "33000");
     sf->set_param("num_scales", "4");
-    sf->set_param("pps_scale", "0.1");
+    sf->set_param("pps_scale_lk", "0.5");  // per-mode arrow scale (LK mode)
     EXPECT_EQ(sf->get_param("bm_time_window_us"), "33000");
     EXPECT_EQ(sf->get_param("num_scales"), "4");
-    EXPECT_EQ(sf->get_param("pps_scale"), "0.1");
+    EXPECT_EQ(sf->get_param("pps_scale_lk"), "0.5");
 
     // direction_selective: embedded orientation pre-stage params round-trip
     // (jAER enclosed SimpleOrientationFilter alignment).
