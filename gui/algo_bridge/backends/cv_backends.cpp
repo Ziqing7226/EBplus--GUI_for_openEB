@@ -425,7 +425,8 @@ class SparseOpticalFlowBackend final : public AlgoBackend {
     std::vector<gui_algo::FlowVector> flows_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
-    double pps_scale_{0.03};
+    double pps_scale_{0.01};
+    int arrow_grid_px_{24};
 public:
     SparseOpticalFlowBackend(int w, int h)
         : algo_(w, h, gui_algo::SparseOpticalFlow::Mode::LocalPlanes) { roi_.init(w, h); }
@@ -438,6 +439,7 @@ public:
         else if (k == "time_window_us") algo_.set_time_window_us(to_i(v));
         else if (k == "cluster_ema_alpha") algo_.set_cluster_ema_alpha(static_cast<float>(to_d(v)));
         else if (k == "pps_scale") pps_scale_ = to_d(v);
+        else if (k == "arrow_grid_px") arrow_grid_px_ = to_i(v);
         else if (k == "lk_thr") algo_.set_lk_thr(to_d(v));
         else if (k == "bm_time_window_us") algo_.set_block_match_time_window_us(to_i(v));
         else if (k == "downsample_factor") algo_.set_downsample_factor(to_i(v));
@@ -453,6 +455,7 @@ public:
         if (k == "time_window_us") return from_i(algo_.time_window_us());
         if (k == "cluster_ema_alpha") return from_d(algo_.cluster_ema_alpha());
         if (k == "pps_scale") return from_d(pps_scale_);
+        if (k == "arrow_grid_px") return from_i(arrow_grid_px_);
         if (k == "lk_thr") return from_d(algo_.lk_thr());
         if (k == "bm_time_window_us") return from_i(algo_.block_match_time_window_us());
         if (k == "downsample_factor") return from_i(algo_.downsample_factor());
@@ -481,16 +484,47 @@ public:
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
-        r.flow_arrows.reserve(flows_.size());
+        // Fixed-grid arrows: average the flow vectors inside each grid cell
+        // and draw ONE arrow per cell (cell centre), length = mean speed *
+        // pps_scale capped at the grid spacing so arrows never overflow
+        // their cell. Keeps the field readable instead of a dense tangle.
+        const int g = std::max(4, arrow_grid_px_);
+        const int gw = (algo_.width() / g) + 1;
+        const int gh = (algo_.height() / g) + 1;
+        std::vector<double> sx(static_cast<std::size_t>(gw) * gh, 0.0);
+        std::vector<double> sy(static_cast<std::size_t>(gw) * gh, 0.0);
+        std::vector<int> cnt(static_cast<std::size_t>(gw) * gh, 0);
         for (const auto& f : flows_) {
             if (!std::isfinite(f.vx) || !std::isfinite(f.vy)) continue;
-            OverlayFlowArrow a;
-            const float jx = jitter(), jy = jitter();
-            a.x1 = static_cast<int>(f.x + jx);
-            a.y1 = static_cast<int>(f.y + jy);
-            a.x2 = static_cast<int>(f.x + jx + f.vx * pps_scale_);
-            a.y2 = static_cast<int>(f.y + jy + f.vy * pps_scale_);
-            r.flow_arrows.push_back(a);
+            const int cx = static_cast<int>(f.x) / g;
+            const int cy = static_cast<int>(f.y) / g;
+            if (cx >= gw || cy >= gh) continue;
+            const std::size_t ci = static_cast<std::size_t>(cy) * gw + cx;
+            sx[ci] += f.vx;
+            sy[ci] += f.vy;
+            ++cnt[ci];
+        }
+        r.flow_arrows.reserve(static_cast<std::size_t>(gw) * gh);
+        for (int cy = 0; cy < gh; ++cy) {
+            for (int cx = 0; cx < gw; ++cx) {
+                const std::size_t ci = static_cast<std::size_t>(cy) * gw + cx;
+                if (cnt[ci] == 0) continue;
+                const float vx = static_cast<float>(sx[ci] / cnt[ci]);
+                const float vy = static_cast<float>(sy[ci] / cnt[ci]);
+                const float len = std::hypot(vx, vy);
+                if (len <= 0.0f) continue;
+                float scale = static_cast<float>(pps_scale_);
+                const float draw_len = len * scale;
+                if (draw_len > static_cast<float>(g)) scale = static_cast<float>(g) / len;
+                const int ax = cx * g + g / 2;
+                const int ay = cy * g + g / 2;
+                OverlayFlowArrow a;
+                a.x1 = ax;
+                a.y1 = ay;
+                a.x2 = ax + static_cast<int>(vx * scale);
+                a.y2 = ay + static_cast<int>(vy * scale);
+                r.flow_arrows.push_back(a);
+            }
         }
         r.status = "flow: " + std::to_string(r.flow_arrows.size()) + " vectors" +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
@@ -523,7 +557,8 @@ private:
 /// points (hue = direction, brightness = magnitude, scaled by confidence).
 class DenseOpticalFlowBackend final : public AlgoBackend {
     gui_algo::DenseOpticalFlow algo_;
-    double pps_scale_{0.03};
+    double pps_scale_{0.01};
+    int arrow_grid_px_{24};
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
@@ -540,6 +575,7 @@ public:
         else if (k == "spatial_radius")  algo_.set_spatial_radius_px(to_i(v));
         else if (k == "max_velocity_px_s") algo_.set_max_velocity_px_s(static_cast<float>(to_d(v)));
         else if (k == "pps_scale") pps_scale_ = to_d(v);
+        else if (k == "arrow_grid_px") arrow_grid_px_ = to_i(v);
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -548,6 +584,7 @@ public:
         if (k == "spatial_radius") return from_i(algo_.spatial_radius_px());
         if (k == "max_velocity_px_s") return from_d(algo_.max_velocity_px_s());
         if (k == "pps_scale") return from_d(pps_scale_);
+        if (k == "arrow_grid_px") return from_i(arrow_grid_px_);
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -560,9 +597,15 @@ public:
         r.filtered_events = passthrough_;
         cv::Mat flow, conf;
         algo_.get_flow(flow, conf);
-        // pps-scaled arrows (jAER rbodo drawVector scheme), same as sparse.
-        int count = 0;
-        r.flow_arrows.reserve(4096);
+        // Fixed-grid arrows: average the per-pixel flow inside each grid
+        // cell and draw ONE arrow per cell (cell centre), length = mean
+        // speed * pps_scale capped at the grid spacing.
+        const int g = std::max(4, arrow_grid_px_);
+        const int gw = (algo_.width() / g) + 1;
+        const int gh = (algo_.height() / g) + 1;
+        std::vector<double> sx(static_cast<std::size_t>(gw) * gh, 0.0);
+        std::vector<double> sy(static_cast<std::size_t>(gw) * gh, 0.0);
+        std::vector<int> cnt(static_cast<std::size_t>(gw) * gh, 0);
         for (int y = 0; y < algo_.height(); ++y) {
             const cv::Vec2f* frow = flow.ptr<cv::Vec2f>(y);
             const float* crow = conf.ptr<float>(y);
@@ -571,11 +614,35 @@ public:
                 const float vx = frow[x][0], vy = frow[x][1];
                 if (vx == 0.0f && vy == 0.0f) continue;
                 if (!std::isfinite(vx) || !std::isfinite(vy)) continue;
+                const int cx = x / g;
+                const int cy = y / g;
+                if (cx >= gw || cy >= gh) continue;
+                const std::size_t ci = static_cast<std::size_t>(cy) * gw + cx;
+                sx[ci] += vx;
+                sy[ci] += vy;
+                ++cnt[ci];
+            }
+        }
+        int count = 0;
+        r.flow_arrows.reserve(static_cast<std::size_t>(gw) * gh);
+        for (int cy = 0; cy < gh; ++cy) {
+            for (int cx = 0; cx < gw; ++cx) {
+                const std::size_t ci = static_cast<std::size_t>(cy) * gw + cx;
+                if (cnt[ci] == 0) continue;
+                const float vx = static_cast<float>(sx[ci] / cnt[ci]);
+                const float vy = static_cast<float>(sy[ci] / cnt[ci]);
+                const float len = std::hypot(vx, vy);
+                if (len <= 0.0f) continue;
+                float scale = static_cast<float>(pps_scale_);
+                const float draw_len = len * scale;
+                if (draw_len > static_cast<float>(g)) scale = static_cast<float>(g) / len;
+                const int ax = cx * g + g / 2;
+                const int ay = cy * g + g / 2;
                 OverlayFlowArrow a;
-                a.x1 = x;
-                a.y1 = y;
-                a.x2 = static_cast<int>(x + vx * pps_scale_);
-                a.y2 = static_cast<int>(y + vy * pps_scale_);
+                a.x1 = ax;
+                a.y1 = ay;
+                a.x2 = ax + static_cast<int>(vx * scale);
+                a.y2 = ay + static_cast<int>(vy * scale);
                 r.flow_arrows.push_back(a);
                 ++count;
             }

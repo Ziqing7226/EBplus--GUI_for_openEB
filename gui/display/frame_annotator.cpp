@@ -151,20 +151,21 @@ void FrameAnnotator::draw_flow_arrows(QImage& img, const std::vector<FlowArrow>&
     if (img.isNull() || arrows.empty()) return;
     QPainter p(&img);
     p.setRenderHint(QPainter::Antialiasing);
-    const QColor c = resolve(color);
-    p.setPen(QPen(c, pen_width_));
-    p.setBrush(c);
     for (const FlowArrow& a : arrows) {
+        const QColor c = a.color.isValid() ? a.color : resolve(color);
+        p.setPen(QPen(c, 1.0));  // thin arrows (the dense field reads better)
+        p.setBrush(c);
         p.drawLine(a.from, a.to);
-        // Arrowhead: two short segments at the tip.
+        // Arrowhead (OpenCV arrowedLine style): two segments from the tip,
+        // length = tipLength * shaft length, at +-tipAngle from the shaft.
         const double dx = a.to.x() - a.from.x();
         const double dy = a.to.y() - a.from.y();
         const double len = std::hypot(dx, dy);
         if (len < 1e-3) continue;
         const double ux = dx / len;
         const double uy = dy / len;
-        const double head = std::min(8.0, len * 0.4);
-        const double ang = 0.4;  // ~23°
+        const double head = std::min(10.0, len * 0.3);  // tipLength 30%
+        const double ang = 0.35;  // ~20°, sharper than the old 23°
         const QPointF h1(a.to.x() - head * (ux * std::cos(ang) + uy * std::sin(ang)),
                          a.to.y() - head * (uy * std::cos(ang) - ux * std::sin(ang)));
         const QPointF h2(a.to.x() - head * (ux * std::cos(ang) - uy * std::sin(ang)),

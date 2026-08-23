@@ -46,9 +46,10 @@ struct OverlayColoredPoint {
     std::uint8_t r{255}, g{255}, b{255};
 };
 
-/// @brief 光流箭头(端点已按 pps_scale 缩放,含起点抖动)。
+/// @brief 光流箭头(端点已按 pps_scale 缩放,含起点抖动;颜色 = 方向色编码)。
 struct OverlayFlowArrow {
     int x1{0}, y1{0}, x2{0}, y2{0};
+    std::uint8_t r{0}, g{0}, b{0};  ///< arrow colour; all-zero = use the default
 };
 
 /// @brief 叠加层圆（霍夫圆输出）。

@@ -180,7 +180,9 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
         arrows.reserve(r.flow_arrows.size());
         for (const auto& a : r.flow_arrows) {
             arrows.push_back({QPointF(a.x1 + ox, a.y1 + oy),
-                              QPointF(a.x2 + ox, a.y2 + oy)});
+                              QPointF(a.x2 + ox, a.y2 + oy),
+                              (a.r || a.g || a.b) ? QColor(a.r, a.g, a.b)
+                                                  : QColor()});
         }
         ctx.annotator->draw_flow_arrows(frame, arrows);
     }

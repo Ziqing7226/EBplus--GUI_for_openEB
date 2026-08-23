@@ -38,6 +38,7 @@ public:
     struct FlowArrow {
         QPointF from;
         QPointF to;
+        QColor color;  ///< per-arrow colour (direction-encoded); invalid = default
     };
 
     FrameAnnotator();
