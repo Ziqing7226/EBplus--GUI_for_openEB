@@ -9,7 +9,7 @@
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.7.0-blue)
+![Version](https://img.shields.io/badge/version-2.7.1-blue)
 
 ![主界面](pic/1.9.0.png)
 
@@ -60,7 +60,7 @@ cmake --build build -- -j$(nproc)
 - 实时统计：事件率、ON/OFF 比、FPS、时间戳
 
 ### 相机控制面板
-- **Biases 面板** —— 动态枚举所有 HAL bias，滑块 + 精确输入 + Reset，保存/加载 `.bias` 文件
+- **Biases 面板** —— 动态枚举所有 HAL bias，滑块 + 精确输入 + Reset，保存/加载 `.bias` 文件，Auto Bias 速率区间控制
 - **ROI 面板** —— 多矩形 ROI / RONI（`I_ROI`），显示区拖拽选区
 - **ESP 面板** —— Anti-Flicker（模式/频带/预设/占空比/阈值）、Trail Filter（类型/阈值）、ERC（目标事件率）
 - **Trigger 面板** —— Trigger In（逐通道启用）+ Trigger Out（启用/周期/占空比）
@@ -77,10 +77,10 @@ cmake --build build -- -j$(nproc)
 - 事件数据导出为 AVI 视频（可配置 FPS、累积时间、画质、色彩模式）
 
 ### 事件预处理滤波链
-8 级可叠加阶段，线程安全管线：Polarity Filter、Polarity Invert、Flip X、Flip Y、Rotate、Transpose、Rescale、ROI Filter。从侧栏切换。
+4 级可叠加阶段，线程安全管线：Polarity Filter、Polarity Invert、Flip X、Flip Y。从侧栏切换。
 
-### 算法（共 35 项）
-EB plus 内置 **28 个自研算法** + **7 项 openEB 封装能力**，全部注册在统一的 `AlgoBridge` 注册表中。
+### 算法（共 24 项）
+EB plus 内置 **20 个自研算法** + **4 项 openEB 滤波阶段**，全部注册在统一的 `AlgoBridge` 注册表中。
 
 | 类别 | 示例 |
 |------|------|

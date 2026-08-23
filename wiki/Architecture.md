@@ -107,7 +107,7 @@ GUI-for-openEB/
 ├── wiki/                  # this wiki
 ├── pic/                   # screenshots
 ├── run.sh                 # launcher (env vars)
-├── CMakeLists.txt         # v2.7.0
+├── CMakeLists.txt         # v2.7.1
 ├── LICENSE                # MIT (original code)
 ├── README.md              # English
 └── README_CN.md           # Chinese
@@ -185,7 +185,7 @@ RAW file → FileFrameGenerator → FramePipeline
 
 ## Build System
 
-- `CMakeLists.txt` (root) — project version 2.7.0, C++17, GCC 15 `<cstdint>` fix.
+- `CMakeLists.txt` (root) — project version 2.7.1, C++17, GCC 15 `<cstdint>` fix.
 - `find_package` for Qt6, MetavisionSDK 5.2.0, OpenCV.
 - ONNX Runtime auto-detected from `third_party/onnxruntime/` (with RPATH configured).
 - `enable_testing()` before `add_subdirectory` so GUI/algo tests register with CTest.

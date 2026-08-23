@@ -75,18 +75,14 @@ The display also supports overlays drawn by algorithms (bounding boxes, trajecto
 
 ## Preprocessing Filter Chain
 
-Thread-safe pipeline of 8 stackable stages, toggled from the Preprocessing panel. Applied in order:
+Thread-safe pipeline of 4 stackable stages, toggled from the Preprocessing panel. Applied in order:
 
 1. Polarity Filter (OFF / ON)
 2. Polarity Invert
 3. Flip X
 4. Flip Y
-5. Rotate (0 / 90 / 180 / 270)
-6. Transpose
-7. Rescale (Scale X, Scale Y)
-8. ROI Filter (X0, Y0, X1, Y1)
 
-The filter chain is applied to both display rendering and algorithm event windows, so flipped/rotated/filtered events stay consistent everywhere.
+The filter chain is applied to both display rendering and algorithm event windows, so flipped/filtered events stay consistent everywhere.
 
 ## Tools Menu
 
@@ -94,13 +90,17 @@ The **Tools** dropdown menu (in the custom title bar) hosts two calibration-adja
 
 ### Intrinsic Wizard
 
-A dialog that calibrates the camera intrinsics using only events (no APS frames). Workflow:
+A dialog that calibrates the camera intrinsics using only events (no APS frames). The pattern is embedded in the dialog: a **blinking chessboard** (9×6 inner corners = 10×7 squares — asymmetric so the checkerboard has a unique orientation) that alternates with a blank frame every 10 ms (a 20 ms full cycle), rendered as two cached pixmaps toggled by a timer for a stutter-free preview. The square size is a user-supplied millimeter value (measure one edge of a square with a ruler and type it in — screen DPI is deliberately not used, it is unreliable on X11).
 
-1. **Show Chessboard** — opens an independent fullscreen window displaying a black-and-white chessboard that inverts at 20 Hz (one flip every 50 ms). The board geometry is computed from the target screen's pixel dimensions and physical DPI, so the reported square size in millimeters is physically meaningful for `cv::calibrateCamera`'s object-point scale. Press **F** to toggle fullscreen, **Esc** to close.
-2. **Start Auto-Capture** — the wizard subscribes to CD events via `CameraController::cd_events_ready`, accumulates them in a 1 ms / 50 ms windowed buffer, and on each 50 ms tick picks the 1 ms sub-window with the most events (the one aligned with the chessboard flip burst). It renders that window to a grayscale frame (ON events white, OFF black, background grey), runs `cv::findChessboardCorners`, and rejects duplicates via MSE against the last accepted frame (default threshold 50.0).
-3. **Auto-end + Export** — when the captured frame count reaches the target (default 30), the wizard stops capture, runs `cv::calibrateCamera`, and enables the **Export...** button. The export dialog defaults to `~/Documents/EBplus/calibration/intrinsic.yml` (identical to the undistort preprocessor's default path) and writes `image_width`, `image_height`, `camera_matrix`, `distortion_coefficients`, `rms`.
+While the wizard is open, **Auto Bias** is enabled automatically with the rate band forced to 19–20 Mev/s, so the capture window sees a dense-but-bounded event stream no matter how strong the LCD backlight-PWM noise floor is. Closing the wizard disables Auto Bias again; the pre-wizard bias values and rate band are restored.
 
-Controls: target screen selector, inner-corner cols/rows (default 9×6), target frames (default 30), duplicate MSE threshold (default 50.0), progress bar, live preview of the last accepted frame.
+Workflow:
+
+1. **Aim** — the live aim-view shows the camera feed with a **coverage overlay** (every accepted view's corners as dots, their convex hull, and a "Coverage: N%" label); point the camera at the on-screen board and keep it still. Guidance only — nothing gates the capture.
+2. **Capture (Space)** — the wizard takes the last capture-window (default 100000 µs, tunable 200–200000 µs) of CD events, accumulates per-pixel ON/OFF event counts, thresholds them adaptively (0.30 × the 99th percentile of the per-pixel distribution, clamped 12–64) into a binary blink frame, and runs `cv::findChessboardCorners` (`CALIB_CB_FILTER_QUADS` only — no cornerSubPix on binary frames) with a radial straightness gate and a corner-bridge fallback. A successful detection is committed directly through the coverage (≥ 4% of the frame area) and duplicate-pose gates — there is no review dialog; a failure is reported on the status line.
+3. **Run Calibration + Export** — when the target frame count (default 20) is reached, run the two-pass Zhang calibration (pass 1 fixes aspect ratio + K3 and drops views whose per-view RMS exceeds mean + 2·std, pass 2 refits the kept views with K3 free) and export to YAML. The default path is `~/Documents/EBplus/calibration/intrinsic.yml` (identical to the undistort preprocessor's default path) and writes `image_width`, `image_height`, `camera_matrix`, `distortion_coefficients`, `rms`, plus per-view RMS and kept/removed frame counts.
+
+Controls: capture window, square size (mm), target frames, progress bar, live preview of the last accepted frame, and a **Delete this capture** button (removes the last accepted frame from the calibration).
 
 ### Sharpness
 

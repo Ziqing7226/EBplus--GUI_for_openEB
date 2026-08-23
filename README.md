@@ -9,7 +9,7 @@ Real-time visualization · camera control · recording & playback · calibration
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.7.0-blue)
+![Version](https://img.shields.io/badge/version-2.7.1-blue)
 
 ![Main Window](pic/1.9.0.png)
 
@@ -58,7 +58,7 @@ That's it. The launcher handles Wayland compatibility, HAL plugin paths, and Ope
 - Live statistics: event rate, ON/OFF ratio, FPS, timestamp
 
 ### Camera Control
-- **Biases** — all HAL biases with slider + spinbox, save/load `.bias` files
+- **Biases** — all HAL biases with slider + spinbox, save/load `.bias` files, Auto Bias rate-band control
 - **ROI** — multi-rectangle ROI / RONI, drag-to-select on the display
 - **ESP** — Anti-Flicker, Trail Filter, Event Rate Control
 - **Trigger** — Trigger In (per-channel) + Trigger Out
@@ -75,9 +75,9 @@ All panels degrade gracefully when the device lacks the corresponding HAL facili
 - Export events to AVI video (configurable FPS, accumulation, quality, color mode)
 
 ### Preprocessing Filter Chain
-8 stackable stages applied in a thread-safe pipeline: Polarity Filter, Polarity Invert, Flip X, Flip Y, Rotate, Transpose, Rescale, ROI Filter. Toggled from the sidebar.
+4 stackable stages applied in a thread-safe pipeline: Polarity Filter, Polarity Invert, Flip X, Flip Y. Toggled from the sidebar.
 
-### Algorithms (35 total)
+### Algorithms (24 total)
 EB plus ships **20 self-developed algorithms** plus **4 OpenEB filter stages**, all registered in a single `AlgoBridge` registry.
 
 | Category | Examples |
