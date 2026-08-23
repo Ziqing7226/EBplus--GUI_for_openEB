@@ -4,12 +4,12 @@
 
 A polished, open-source Qt 6 desktop app for event cameras — built on [openEB](https://github.com/prophesee-ai/openeb) v5.2.0.
 
-Real-time visualization · camera control · recording & playback · calibration · 35 algorithms · customizable themes
+Real-time visualization · camera control · recording & playback · calibration · 24 algorithms · customizable themes
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.1.0-blue)
+![Version](https://img.shields.io/badge/version-2.7.0-blue)
 
 ![Main Window](pic/1.9.0.png)
 
@@ -78,20 +78,20 @@ All panels degrade gracefully when the device lacks the corresponding HAL facili
 8 stackable stages applied in a thread-safe pipeline: Polarity Filter, Polarity Invert, Flip X, Flip Y, Rotate, Transpose, Rescale, ROI Filter. Toggled from the sidebar.
 
 ### Algorithms (35 total)
-EB plus ships **28 self-developed algorithms** plus **7 OpenEB-wrapped capabilities**, all registered in a single `AlgoBridge` registry.
+EB plus ships **20 self-developed algorithms** plus **4 OpenEB filter stages**, all registered in a single `AlgoBridge` registry.
 
 | Category | Examples |
 |----------|----------|
 | **Filtering** | Hot Pixel Filter, Background Mask |
 | **Motion** | Sparse Optical Flow (4 modes), Direction Selective, EIS / Optical Gyro |
 | **Detection** | Blob Detector, Corner Detector (Harris/FAST/AGAST), Line Segment (ELiSeD) |
-| **Tracking** | Object Tracker (RCT/Median/Kalman/MultiHypothesis), Hough Circle, Hough Line |
+| **Tracking** | Object Tracker (RCT, jAER-aligned), Hough Circle, Hough Line |
 | **Reconstruction** | Event-to-Video — **E2VID** (default, DL), BardowVariational, InteractingMaps |
-| **Analytics** | Frequency Detector, Auto Bias |
-| **Visualization** | Time Surface, XYT 3D Point Cloud, Ultra Slow Motion, Orientation Cluster |
-| **Calibration** | Intrinsic Calibration (chessboard / circle grid / aruco) |
+| **Analytics** | Frequency Detector, Frequency Map, Auto Bias |
+| **Visualization** | Time Surface, XYT 3D Point Cloud, Orientation Cluster |
+| **Calibration** | Intrinsic Calibration (blinking chessboard) |
 
-Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a **global ROI** (default: center 128×128) and a shared **"ROI → noise filter → 1/4 downsample"** preprocessing stage to bound computational cost. All algorithm parameters are adjusted exclusively in the **sidebar** (`AlgorithmsPanel`); algorithm display windows show only the title and output, preventing parameter drift between two independent control panels.
+Algorithms are **mutually exclusive** — enabling one disables the previous. Compute-heavy algorithms auto-enable a **centered 256×144 unified ROI** (saved and restored on disable), and all algorithms share a **"ROI → noise filter → 1/4 downsample"** preprocessing stage to bound computational cost. All algorithm parameters are adjusted exclusively in the **sidebar** (`AlgorithmsPanel`); algorithm display windows show only the title and output, preventing parameter drift between two independent control panels.
 
 #### Noise Filter (shared preprocessing)
 8 modes exposed in the sidebar based on the selected filter: BAF, STCF, Refractory, DWF, AgePolarity, Harmonic, Repetitious, SpatialBP.

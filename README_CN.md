@@ -4,12 +4,12 @@
 
 基于 [openEB](https://github.com/prophesee-ai/openeb) v5.2.0 的开源 Qt 6 事件相机桌面应用。
 
-实时可视化 · 相机控制 · 录制回放 · 标定 · 35 个算法 · 可定制主题
+实时可视化 · 相机控制 · 录制回放 · 标定 · 24 个算法 · 可定制主题
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.1.0-blue)
+![Version](https://img.shields.io/badge/version-2.7.0-blue)
 
 ![主界面](pic/1.9.0.png)
 
@@ -87,13 +87,13 @@ EB plus 内置 **28 个自研算法** + **7 项 openEB 封装能力**，全部�
 | **滤波** | Hot Pixel Filter、Background Mask |
 | **运动** | Sparse Optical Flow（4 模式）、Direction Selective、EIS / Optical Gyro |
 | **检测** | Blob Detector、Corner Detector（Harris/FAST/AGAST）、Line Segment（ELiSeD）|
-| **跟踪** | Object Tracker（RCT/Median/Kalman/MultiHypothesis）、Hough Circle、Hough Line |
+| **跟踪** | Object Tracker（RCT，对齐 jAER）、Hough Circle、Hough Line |
 | **重建** | Event-to-Video —— **E2VID**（默认，DL）、BardowVariational、InteractingMaps |
-| **分析** | Frequency Detector、Auto Bias |
-| **可视化** | Time Surface、XYT 3D 点云、Ultra Slow Motion、Orientation Cluster |
-| **标定** | Intrinsic Calibration（棋盘格 / 圆阵列 / aruco）|
+| **分析** | Frequency Detector、Frequency Map、Auto Bias |
+| **可视化** | Time Surface、XYT 3D 点云、Orientation Cluster |
+| **标定** | Intrinsic Calibration（闪烁棋盘格）|
 
-算法**互斥**——启用一个会禁用上一个。每个自研算法支持**全局 ROI**（默认中心 128×128）和共享的 **"ROI → 噪声滤波 → 1/4 下采样"** 预处理阶段以控制计算量。所有算法参数仅在**侧栏**（`AlgorithmsPanel`）调节；算法显示窗口只展示标题与输出，避免两处独立参数面板不同步。
+算法**互斥**——启用一个会禁用上一个。计算密集算法会自动启用**居中的 256×144 统一 ROI**（禁用时恢复原状），所有算法共享 **"ROI → 噪声滤波 → 1/4 下采样"** 预处理阶段以控制计算量。所有算法参数仅在**侧栏**（`AlgorithmsPanel`）调节；算法显示窗口只展示标题与输出，避免两处独立参数面板不同步。
 
 #### 噪声滤波（共享预处理）
 8 种模式按所选滤波器在侧栏暴露：BAF、STCF、Refractory、DWF、AgePolarity、Harmonic、Repetitious、SpatialBP。
