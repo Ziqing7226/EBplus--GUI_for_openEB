@@ -323,8 +323,12 @@ private:
         // jAER gainVelocity feed-forward (OpticalGyro.transformEvent):
         // time * velocityPPt * gainVelocity — the velocity term cancels the
         // low-pass lag on fast motion. gainVelocity = strength_.
-        const float vtx = static_cast<float>(average_cluster_age_) * vel_pp_x_ * strength_;
-        const float vty = static_cast<float>(average_cluster_age_) * vel_pp_y_ * strength_;
+        // UNIT FIX (2026-08-23): jAER's velocityPPt is px/us and time is us
+        // (px/us * us = px). Our vel_pp_ is px/s, so the feed-forward was
+        // ~1e6x too large — events were thrown off-frame and clamped to the
+        // border, wiping out the main display. Convert px/s -> px/us.
+        const float vtx = static_cast<float>(average_cluster_age_) * vel_pp_x_ * 1e-6f * strength_;
+        const float vty = static_cast<float>(average_cluster_age_) * vel_pp_y_ * 1e-6f * strength_;
         const float xmax = static_cast<float>(width_ - 1);
         const float ymax = static_cast<float>(height_ - 1);
         for (Event& e : packet) {
