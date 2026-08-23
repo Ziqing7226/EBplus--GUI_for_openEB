@@ -466,8 +466,10 @@ TEST(ObjectTrackerTest, Construction) {
     EXPECT_EQ(t.width(), 64);
     EXPECT_EQ(t.height(), 48);
     // jAER semantics: cluster size is a fraction of the sensor's max
-    // dimension (default 0.15 → radius 0.15*64 = 9.6 px).
-    EXPECT_FLOAT_EQ(t.radius(), 9.6F);
+    // dimension. The default 0.036 is jAER's 0.15 scaled from the ~304px
+    // DVS240 it was tuned for to the 1280px sensor (0.15*304/1280≈0.036);
+    // radius = 0.036*64 ≈ 2.3 px.
+    EXPECT_FLOAT_EQ(t.radius(), 64.0F * 0.036F);
 }
 
 TEST(ObjectTrackerTest, Params) {

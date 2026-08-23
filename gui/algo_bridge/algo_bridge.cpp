@@ -777,7 +777,7 @@ void AlgoBridge::register_self_cv() {
     // §4.3.11 Object Tracker (4 modes, jAER RectangularClusterTracker)
     add({"object_tracker", "Object Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pfloat("cluster_size_fraction", "Cluster size (fraction of sensor)", "0.15", "0.01", "0.5"),
+         {pfloat("cluster_size_fraction", "Cluster size (fraction of sensor)", "0.036", "0.005", "0.5"),
           pint("cluster_time_us", "Cluster time (us)", "5000", "1000", "50000"),
           pint("min_cluster_events", "Min cluster events", "50", "10", "500"),
           pfloat("max_lost_age_s", "Max lost age (s)", "1.0", "0.1", "5.0"),

@@ -226,7 +226,6 @@ private:
             }
             push_recent(e);
             update_rct(e, prev_t);
-            update_bbox(e);
             update_velocity(e);
             maybe_push_trajectory(e);
         }
@@ -265,7 +264,16 @@ private:
         float y() const override { return y_; }
         float vx() const override { return vx_; }
         float vy() const override { return vy_; }
-        cv::Rect bbox() const override { return bbox_; }
+        cv::Rect bbox() const override {
+            // jAER RCT draws the cluster as a rectangle of radiusX*2 x
+            // radiusY*2 centred on the cluster location (aspectRatio=1 ->
+            // square). The event-accumulated bbox_ ballooned to the whole
+            // frame under a large radius and dense scenes; the fixed
+            // radius box is the jAER visual.
+            const int s = static_cast<int>(radius_cap_);
+            return cv::Rect(static_cast<int>(x_) - s,
+                            static_cast<int>(y_) - s, 2 * s, 2 * s);
+        }
         const std::vector<ClusterPathPoint>& trajectory() const override {
             return trajectory_;
         }
@@ -332,11 +340,6 @@ private:
             // Per-event IIR location mixing (jAER locationMixingFactor).
             x_ = (1.0F - m) * x_ + m * static_cast<float>(e.x);
             y_ = (1.0F - m) * y_ + m * static_cast<float>(e.y);
-        }
-
-        void update_bbox(const Event& e) {
-            const cv::Rect r(static_cast<int>(e.x), static_cast<int>(e.y), 1, 1);
-            bbox_ = bbox_ | r;
         }
 
         void update_velocity(const Event& e) {
@@ -449,7 +452,11 @@ private:
     int height_;
     // jAER semantics: cluster size = FRACTION of the sensor's max dimension
     // (clusterSize initDefault 0.15); the per-axis radius is fraction*maxdim.
-    double cluster_size_fraction_{0.15};
+    // jAER clusterSize default 0.15 was tuned for ~304px DVS240 chips
+    // (radius ≈ 46 px). On a 1280 px sensor 0.15 gives a 192 px radius that
+    // absorbs the whole scene into one cluster (verified on screw.raw).
+    // Scaled proportionally: 0.15 * 304/1280 ≈ 0.036 -> ~46 px on 1280 px.
+    double cluster_size_fraction_{0.036};
     float radius_{10.0F};
     int cluster_time_us_{5000};
     int min_cluster_events_{50};
