@@ -88,8 +88,19 @@ public:
         ori_decide_helper.fill(std::numeric_limits<Metavision::timestamp>::max());
 
         for (int ori = 0; ori < kNumOrientations; ++ori) {
+            // jAER computeRFOffsets: offset = s*d + w*pd, where d is the
+            // orientation base offset and pd = baseOffsets[(ori+2)%4] the
+            // PERPENDICULAR offset. The 2D grid samples the orientation
+            // direction AND both perpendicular sides — the perpendicular
+            // samples are what actually disambiguate the orientation (the
+            // edge is continuous along d, discontinuous across it). The
+            // former 1D-only traversal (s*d only) discarded the
+            // perpendicular information and biased every label toward the
+            // nearest-neighbour direction.
             const int bdx = kBaseDx[ori];
             const int bdy = kBaseDy[ori];
+            const int pdx = kBaseDx[(ori + 2) % kNumOrientations];
+            const int pdy = kBaseDy[(ori + 2) % kNumOrientations];
             std::array<Metavision::timestamp, kRfSize> dts{};
             std::array<bool, kRfSize> valid{};
             dts.fill(0);
@@ -97,20 +108,22 @@ public:
             int slot = 0;
             for (int s = -kRfLength; s <= kRfLength; ++s) {
                 if (s == 0) continue;
-                const int nx = e.x + s * bdx;
-                const int ny = e.y + s * bdy;
-                if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) {
+                for (int w = -kRfWidth; w <= kRfWidth; ++w) {
+                    const int nx = e.x + s * bdx + w * pdx;
+                    const int ny = e.y + s * bdy + w * pdy;
+                    if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) {
+                        ++slot;
+                        continue;  // jAER: out-of-bounds neighbour skipped
+                    }
+                    const Metavision::timestamp lt = surface_[idx_of(nx, ny, pol)];
+                    if (lt == 0) {
+                        ++slot;
+                        continue;  // never seen: skipped
+                    }
+                    dts[slot] = e.t - lt;
+                    valid[slot] = true;
                     ++slot;
-                    continue;  // jAER: out-of-bounds neighbour skipped
                 }
-                const Metavision::timestamp lt = surface_[idx_of(nx, ny, pol)];
-                if (lt == 0) {
-                    ++slot;
-                    continue;  // never seen: skipped
-                }
-                dts[slot] = e.t - lt;
-                valid[slot] = true;
-                ++slot;
             }
 
             if (use_average_dt_) {
@@ -264,8 +277,11 @@ private:
              + static_cast<std::size_t>(y) * width_ + x;
     }
 
-    /// RF size = 2 * kRfLength (offsets at s = -3,-2,-1,1,2,3).
-    static constexpr int kRfSize = 2 * kRfLength;
+    /// jAER RF size = 2 * length * (2*width + 1) — the RF spans BOTH the
+    /// orientation direction (s) and the perpendicular direction (w). We use
+    /// a square RF (width == length == kRfLength).
+    static constexpr int kRfWidth = kRfLength;
+    static constexpr int kRfSize = 2 * kRfLength * (2 * kRfWidth + 1);
 
     /// @brief Per-orientation along-direction unit offsets (jAER baseOffsets).
     /// ori 0 = horizontal (1,0), 1 = 45 deg (1,1), 2 = vertical (0,1),
