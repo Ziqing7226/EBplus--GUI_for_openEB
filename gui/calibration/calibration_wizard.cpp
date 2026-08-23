@@ -73,6 +73,16 @@ constexpr int kCaptureWindowMaxUs = 200000;
 constexpr int kCaptureWindowStepUs = 1;
 constexpr int kDefaultCaptureWindowUs = 100000;
 
+// Auto Bias rate band (Mev/s) forced while the wizard is open: the camera-
+// level controller keeps the TOTAL event rate inside this tight band by
+// adjusting bias_diff_on/off on-sensor. High enough that a 100000 µs capture
+// window still collects a dense blink frame, low enough that the USB link
+// (which saturates around ~104 Mev/s under the LCD backlight-PWM noise floor)
+// is never the bottleneck. 19.0/20.0 render cleanly in the Biases panel's
+// 1-decimal spinboxes.
+constexpr float kCalibrationRateMinMev = 19.0F;
+constexpr float kCalibrationRateMaxMev = 20.0F;
+
 // Register cross-thread metatypes used by the worker signals/slots.
 Q_DECL_UNUSED static const int kRegCvMat = qRegisterMetaType<cv::Mat>("cv::Mat");
 Q_DECL_UNUSED static const int kRegSizeT = qRegisterMetaType<std::size_t>("std::size_t");
@@ -242,9 +252,9 @@ CalibrationWizard::CalibrationWizard(QWidget* parent) : QDialog(parent) {
 
 CalibrationWizard::~CalibrationWizard() {
     if (camera_timer_) camera_timer_->stop();
-    // Safety net: hideEvent normally restores the biases, but if the app
+    // Safety net: hideEvent normally restores the override, but if the app
     // exits with the wizard still open no hideEvent fires.
-    restore_diff_bias_override();
+    restore_auto_bias_override();
     if (camera_) camera_->set_cd_broadcast(false);
     teardown_worker();
 }
@@ -332,7 +342,7 @@ void CalibrationWizard::changeEvent(QEvent* event) {
 
 void CalibrationWizard::hideEvent(QHideEvent* event) {
     if (camera_timer_) camera_timer_->stop();
-    restore_diff_bias_override();
+    restore_auto_bias_override();
     if (camera_) camera_->set_cd_broadcast(false);
     QDialog::hideEvent(event);
 }
@@ -349,69 +359,54 @@ void CalibrationWizard::showEvent(QShowEvent* event) {
     // connected, on_camera_tick reports that state on the next tick.
     if (camera_timer_) camera_timer_->start();
     if (camera_ && camera_->is_connected()) {
-        apply_diff_bias_override();
+        apply_auto_bias_override();
         tap_.clear();
         camera_->set_cd_broadcast(true);
     }
 }
 
-void CalibrationWizard::apply_diff_bias_override() {
-    // Blinking-LCD noise-floor suppression (field-verified 2026-08-16): the
-    // LCD backlight PWM fires both polarities on every on-screen pixel at
-    // ~104 Mev/s, saturating the USB link (HAL USB Submit Errors) and
-    // starving every downstream consumer. Raising diff_on/diff_off to their
-    // hardware MAXIMUM filters the low-contrast PWM events on-sensor; the
-    // chessboard blink is high-contrast and survives. The pre-override
-    // values are snapshotted and restored on hide/close.
-    if (!camera_ || !camera_->is_connected() || !saved_diff_biases_.empty()) {
+void CalibrationWizard::apply_auto_bias_override() {
+    // Auto Bias for the wizard session (2026-08-23, replaces the diff-bias
+    // max-out override): while the wizard is open the camera-level Auto Bias
+    // controller keeps the total event rate inside [19, 20] Mev/s by adjusting
+    // bias_diff_on/off on-sensor. The blink-capture window then sees a
+    // dense-but-bounded stream no matter how strong the LCD backlight-PWM
+    // noise floor is (the old fixed "both biases to max" was a blunt hammer
+    // and left the rate wherever the sensor settled). The controller's
+    // BiasApplier snapshots the register values on enable and restores them
+    // on disable, so the pre-wizard biases always come back; we additionally
+    // snapshot/restore the controller's rate band.
+    if (!camera_ || !camera_->is_connected() || camera_->is_file_source() ||
+        auto_bias_override_active_) {
         return;
     }
-    auto* biases = camera_->biases_facility();
-    if (!biases) return;
-    try {
-        const auto all = biases->get_all_biases();
-        std::map<std::string, int> snapshot;
-        for (const auto& [name, value] : all) {
-            const bool is_diff = name.find("diff_on") != std::string::npos ||
-                                 name.find("diff_off") != std::string::npos;
-            if (!is_diff) continue;
-            Metavision::LL_Bias_Info info;
-            if (!biases->get_bias_info(name, info)) continue;
-            const auto range = info.get_bias_range();
-            if (range.second <= range.first) continue;  // unknown range — skip
-            snapshot[name] = value;
-            biases->set(name, range.second);
-        }
-        saved_diff_biases_ = std::move(snapshot);
-    } catch (const std::exception& e) {
-        set_status(tr("Warning: failed to raise diff biases (%1) — the LCD "
-                      "noise floor may slow the stream.")
-                       .arg(QString::fromUtf8(e.what())));
-        saved_diff_biases_.clear();
+    float lo = 0.F, hi = 0.F;
+    camera_->auto_bias_rate_bounds(lo, hi);
+    if (!camera_->set_auto_bias_rate_bounds(kCalibrationRateMinMev,
+                                            kCalibrationRateMaxMev)) {
         return;
     }
-    if (!saved_diff_biases_.empty()) {
-        emit biases_changed_externally();
+    if (!camera_->set_auto_bias_enabled(true)) {
+        // Sensor without diff biases or other refusal — keep the band as
+        // it was.
+        camera_->set_auto_bias_rate_bounds(lo, hi);
+        return;
     }
+    saved_auto_bias_lo_ = lo;
+    saved_auto_bias_hi_ = hi;
+    auto_bias_override_active_ = true;
+    emit biases_changed_externally();
 }
 
-void CalibrationWizard::restore_diff_bias_override() {
-    if (saved_diff_biases_.empty()) return;
-    // Take the snapshot out first: if the camera is gone or a write fails,
-    // the override is still considered finished (retrying against a
-    // disconnecting device would just throw again).
-    const auto snapshot = std::move(saved_diff_biases_);
-    saved_diff_biases_.clear();
+void CalibrationWizard::restore_auto_bias_override() {
+    if (!auto_bias_override_active_) return;
+    auto_bias_override_active_ = false;
     if (camera_ && camera_->is_connected()) {
-        if (auto* biases = camera_->biases_facility()) {
-            try {
-                for (const auto& [name, value] : snapshot) {
-                    biases->set(name, value);
-                }
-            } catch (const std::exception&) {
-                // Best effort — the camera may be mid-disconnect.
-            }
-        }
+        // Disabling restores the register snapshot taken at enable (the
+        // pre-wizard bias values) via BiasApplier::restore().
+        camera_->set_auto_bias_enabled(false);
+        camera_->set_auto_bias_rate_bounds(saved_auto_bias_lo_,
+                                           saved_auto_bias_hi_);
     }
     emit biases_changed_externally();
 }

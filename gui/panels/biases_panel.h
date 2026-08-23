@@ -57,8 +57,13 @@ public slots:
 
     /// @brief Re-reads every bias from the hardware and updates the rows
     /// (signal-blocked — no apply loop). Called after out-of-band changes,
-    /// e.g. the calibration wizard's diff_on/diff_off override.
+    /// e.g. the calibration wizard's Auto Bias override.
     void refresh_row_values();
+
+    /// @brief Enables/disables + state sync for the current source. Public so
+    /// out-of-band Auto Bias changes (the calibration wizard's override) can
+    /// re-sync the checkbox + rate spinboxes with the controller.
+    void sync_auto_bias_ui();
 
 private:
     struct BiasRow {
@@ -78,8 +83,6 @@ private:
     /// dual-loop bias control. Coexists with every algorithm (it is not an
     /// algorithm instance). Live cameras only.
     void build_auto_bias_section(QVBoxLayout* outer);
-    /// Enables/disables + state sync for the current source.
-    void sync_auto_bias_ui();
     /// Pushes the spinbox pair to the controller, keeping it a valid
     /// lo < hi band (the just-edited field wins, the other follows).
     void apply_auto_bias_bounds();

@@ -1989,11 +1989,14 @@ void MainWindow::on_intrinsic_wizard() {
         connect(calibration_wizard_, &QObject::destroyed, this, [this]() {
             calibration_wizard_ = nullptr;
         });
-        // The wizard overrides diff_on/diff_off while open (LCD noise-floor
-        // suppression) and restores them on close — keep the Biases panel in
-        // sync with the hardware after each out-of-band change.
+        // The wizard runs the Auto Bias controller (19–20 Mev/s band) while
+        // open and switches it off on close — keep the Biases panel in sync
+        // with the controller state (bias rows AND the Auto Bias checkbox /
+        // rate spinboxes) after each out-of-band change.
         connect(calibration_wizard_, &CalibrationWizard::biases_changed_externally,
                 settings_->biases_panel(), &BiasesPanel::refresh_row_values);
+        connect(calibration_wizard_, &CalibrationWizard::biases_changed_externally,
+                settings_->biases_panel(), &BiasesPanel::sync_auto_bias_ui);
     }
     calibration_wizard_->set_camera(&camera_);
     calibration_wizard_->set_display(display_);

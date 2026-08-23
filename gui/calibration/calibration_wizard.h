@@ -37,8 +37,6 @@
 #include <QString>
 #include <QVector>
 #include <QWidget>
-#include <map>
-#include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -142,9 +140,10 @@ signals:
     /// @brief Cross-thread: write the calibration YAML on the worker.
     void export_requested(const QString& path);
 
-    /// @brief Emitted after the wizard overrides or restores the diff_on /
-    /// diff_off biases out-of-band, so the Biases panel can re-read the
-    /// hardware values (BiasesPanel::refresh_row_values).
+    /// @brief Emitted after the wizard enables/disables the Auto Bias
+    /// override out-of-band, so the Biases panel can re-read the hardware
+    /// values AND re-sync the Auto Bias controls (enable checkbox + rate
+    /// band) with the controller.
     void biases_changed_externally();
 
 private slots:
@@ -186,14 +185,15 @@ private:
     void update_coverage_overlay();
     void teardown_worker();
     QString default_export_path() const;
-    /// @brief Snapshots the diff_on/diff_off biases and sets both to their
-    /// hardware maximum (blinking-LCD PWM noise-floor suppression — see the
-    /// .cpp). No-op when the camera/bias facility is unavailable or an
-    /// override is already active.
-    void apply_diff_bias_override();
-    /// @brief Restores the snapshot taken by apply_diff_bias_override().
+    /// @brief Enables the camera-level Auto Bias override for the duration
+    /// of the wizard session: rate band forced to
+    /// [kCalibrationRateMinMev, kCalibrationRateMaxMev] and the controller
+    /// switched on (see the .cpp). No-op when the camera is unavailable, the
+    /// source is a file, or an override is already active.
+    void apply_auto_bias_override();
+    /// @brief Disables Auto Bias and restores the pre-wizard rate band.
     /// No-op when no override is active.
-    void restore_diff_bias_override();
+    void restore_auto_bias_override();
 
     // Configuration. The grid is fixed at 9×6 inner corners (no cols/rows
     // spinbox): the asymmetric board gives the checkerboard a unique
@@ -245,11 +245,13 @@ private:
     CameraController* camera_{nullptr};
     QPointer<EventDisplayWidget> display_;
 
-    /// Bias snapshot taken by apply_diff_bias_override() (bias name → value
-    /// before the override). Non-empty while an override is active; restored
-    /// on hide/close. Keys are the hardware's own bias names (matched by
-    /// substring, e.g. "bias_diff_on").
-    std::map<std::string, int> saved_diff_biases_;
+    /// Auto Bias override state (see apply/restore_auto_bias_override).
+    /// auto_bias_override_active_ is true only between a successful apply and
+    /// the matching restore; the saved band is the controller's rate bounds
+    /// before the wizard forced them to the calibration band.
+    bool auto_bias_override_active_{false};
+    float saved_auto_bias_lo_{0.F};
+    float saved_auto_bias_hi_{0.F};
 };
 
 } // namespace gui
