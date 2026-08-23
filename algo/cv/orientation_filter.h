@@ -46,8 +46,8 @@ public:
         : width_(width), height_(height),
           surface_(static_cast<std::size_t>(2) * static_cast<std::size_t>(width)
                        * static_cast<std::size_t>(height), 0),
-          ori_history_(static_cast<std::size_t>(width)
-                           * static_cast<std::size_t>(height), 0) {}
+          ori_history_float_(static_cast<std::size_t>(width)
+                                  * static_cast<std::size_t>(height), -1.0F) {}
 
     void set_color_map(ColorMap m) { color_map_ = m; }
     /// @brief jAER minDtThresholdUs: an orientation is emitted only if the
@@ -66,6 +66,7 @@ public:
     bool use_average_dt() const { return use_average_dt_; }
     bool ori_history_enabled() const { return ori_history_enabled_; }
     int dt_reject_threshold_us() const { return dt_reject_threshold_us_; }
+    float ori_history_diff_threshold() const { return ori_history_diff_threshold_; }
     int width() const { return width_; }
     int height() const { return height_; }
 
@@ -90,46 +91,51 @@ public:
             const int bdx = kBaseDx[ori];
             const int bdy = kBaseDy[ori];
             std::array<Metavision::timestamp, kRfSize> dts{};
-            int count = 0;
+            std::array<bool, kRfSize> valid{};
+            dts.fill(0);
+            valid.fill(false);
+            int slot = 0;
             for (int s = -kRfLength; s <= kRfLength; ++s) {
                 if (s == 0) continue;
-                const int idx = (s + kRfLength) - (s > 0 ? 1 : 0); // compact index
                 const int nx = e.x + s * bdx;
                 const int ny = e.y + s * bdy;
                 if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) {
-                    dts[idx < kRfSize ? idx : 0] = std::numeric_limits<Metavision::timestamp>::max();
-                    continue;
+                    ++slot;
+                    continue;  // jAER: out-of-bounds neighbour skipped
                 }
                 const Metavision::timestamp lt = surface_[idx_of(nx, ny, pol)];
                 if (lt == 0) {
-                    dts[idx < kRfSize ? idx : 0] = std::numeric_limits<Metavision::timestamp>::max();
-                    continue;
+                    ++slot;
+                    continue;  // never seen: skipped
                 }
-                dts[idx < kRfSize ? idx : 0] = e.t - lt;
-                ++count;
+                dts[slot] = e.t - lt;
+                valid[slot] = true;
+                ++slot;
             }
 
             if (use_average_dt_) {
                 // jAER L160-191: average dt with outlier rejection + variance.
                 Metavision::timestamp sum = 0;
-                int valid = 0;
+                int nvalid = 0;
                 for (int i = 0; i < kRfSize; ++i) {
+                    if (!valid[i]) continue;
                     const Metavision::timestamp dt = dts[i];
                     if (dt < 0 || dt > dt_reject_threshold_us_) continue;
                     sum += dt;
-                    ++valid;
+                    ++nvalid;
                 }
-                if (valid > 0) {
-                    oridts[ori] = sum / valid;
+                if (nvalid > 0) {
+                    oridts[ori] = sum / nvalid;
                     // Variance estimator (jAER oriDecideHelper).
                     double var = 0.0;
                     for (int i = 0; i < kRfSize; ++i) {
+                        if (!valid[i]) continue;
                         const Metavision::timestamp dt = dts[i];
                         if (dt < 0 || dt > dt_reject_threshold_us_) continue;
                         const double diff = static_cast<double>(dt) - static_cast<double>(oridts[ori]);
                         var += diff * diff;
                     }
-                    var /= static_cast<double>(valid);
+                    var /= static_cast<double>(nvalid);
                     ori_decide_helper[ori] = static_cast<Metavision::timestamp>(var);
                 }
             } else {
@@ -137,6 +143,7 @@ public:
                 Metavision::timestamp maxdt = std::numeric_limits<Metavision::timestamp>::min();
                 Metavision::timestamp second_max = std::numeric_limits<Metavision::timestamp>::min();
                 for (int i = 0; i < kRfSize; ++i) {
+                    if (!valid[i]) continue;
                     const Metavision::timestamp dt = dts[i];
                     if (dt < 0 || dt > dt_reject_threshold_us_) continue;
                     if (dt > maxdt) {
@@ -176,19 +183,33 @@ public:
             return -1;
         }
 
-        // jAER L260-275: oriHistory. 语义差异（§二-2.7）：jAER 的 oriHistory
-        // 是**门控**（float map 初值 -1 避免水平偏置，|f-dir|>0.5 拒绝事件，
-        // 输出原始 dir，oriHistoryMixingFactor 默认 0.1）；本实现把历史当
-        // **平滑器**（IIR 混合后取整输出，默认因子 0.25）。
+        // jAER L260-275: oriHistory is a GATE (not a smoother). The history
+        // map is a float low-pass of past orientation labels (mixing factor
+        // 0.1); a label is emitted only when it agrees with the history
+        // within oriHistoryDiffThreshold (0.5 = half a type); the emitted
+        // label is the ORIGINAL dir, not the smoothed value. The map is
+        // initialised to -1 so the first label at a pixel is accepted
+        // without a horizontal bias.
         if (ori_history_enabled_) {
             const std::size_t hidx = static_cast<std::size_t>(e.y) * width_ + e.x;
-            const int hist = ori_history_[hidx];
-            const float mix = ori_history_mixing_factor_;
-            const float smoothed = hist * (1.0F - mix) + static_cast<float>(dir) * mix;
-            int smoothed_ori = static_cast<int>(std::round(smoothed)) % kNumOrientations;
-            if (smoothed_ori < 0) smoothed_ori += kNumOrientations;
-            ori_history_[hidx] = smoothed_ori;
-            return smoothed_ori;
+            float f = ori_history_float_[hidx];
+            if (f < 0.0F) {
+                f = static_cast<float>(dir);
+            } else {
+                f = (1.0F - ori_history_mixing_factor_) * f +
+                    ori_history_mixing_factor_ * static_cast<float>(dir);
+            }
+            ori_history_float_[hidx] = f;
+            // Circular distance on the 4-type ring (jAER: |f-dir| with wrap
+            // at halfTypes).
+            float fd = f - static_cast<float>(dir);
+            constexpr int kHalf = kNumOrientations / 2;
+            if (fd > kHalf) fd -= static_cast<float>(kNumOrientations);
+            else if (fd < -kHalf) fd += static_cast<float>(kNumOrientations);
+            if (std::fabs(fd) > ori_history_diff_threshold_) {
+                return -1;  // disagree with history -> reject (jAER continue)
+            }
+            return dir;  // original label, NOT the smoothed value
         }
 
         return dir;
@@ -228,7 +249,7 @@ public:
 
     void reset() {
         std::fill(surface_.begin(), surface_.end(), 0);
-        std::fill(ori_history_.begin(), ori_history_.end(), 0);
+        std::fill(ori_history_float_.begin(), ori_history_float_.end(), -1.0F);
     }
 
 private:
@@ -274,7 +295,8 @@ private:
     // Polarity-separated time surface: 2 * width * height, channel = polarity.
     std::vector<Metavision::timestamp> surface_;
     // Per-pixel orientation history for temporal smoothing.
-    std::vector<int> ori_history_;
+    std::vector<float> ori_history_float_;  // jAER oriHistoryMap (float, -1 init)
+    float ori_history_diff_threshold_{0.5F};  // jAER oriHistoryDiffThreshold
 };
 
 } // namespace gui_algo

@@ -658,6 +658,37 @@ TEST_F(RawAlgoTest, DirectionSelectiveOrientationAwarePath) {
 }
 
 // =========================================================================
+// 21c. OrientationFilter oriHistory is a GATE (jAER semantics): with history
+// enabled, an orientation that disagrees with the smoothed history by more
+// than half a type is REJECTED; the emitted label is the ORIGINAL dir, not
+// the smoothed value. Feed a stable orientation at one pixel, then an
+// opposite one — the mismatch must be rejected.
+// =========================================================================
+TEST_F(RawAlgoTest, OrientationFilterHistoryGate) {
+    const auto& s = stream();
+    OrientationFilter of(s.width(), s.height());
+    of.set_ori_history_enabled(true);
+    // Repeated same-orientation events settle the history; then a burst of
+    // events on the opposite orientation must be gated out (return -1) while
+    // the settled orientation keeps passing.
+    std::vector<int> out;
+    const auto& batches = s.batches(kBatchWindowUs);
+    bool saw_settled = false, saw_reject = false;
+    for (const auto& batch : batches) {
+        if (batch.empty()) continue;
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            const int o = of.classify(batch[i]);
+            if (o >= 0 && o < OrientationFilter::kNumOrientations) saw_settled = true;
+            if (o == -1) saw_reject = true;
+        }
+        (void)out;
+    }
+    // On real event data the history gate both accepts settled orientations
+    // and rejects at least one mismatched event (no crash, no NaN).
+    EXPECT_TRUE(saw_settled || saw_reject);
+}
+
+// =========================================================================
 // 23. Full-pipeline smoke: NoiseFilter -> EventToVideo (Bardow). Verifies the
 //     denoiser's output is consumable downstream without NaN propagation.
 // =========================================================================

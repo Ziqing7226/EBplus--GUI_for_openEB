@@ -189,7 +189,13 @@ public:
             // Neighborhood orientation and length (jAER uses atan(x/y)).
             const float neighbor_length =
                 std::sqrt(neighbor_x * neighbor_x + neighbor_y * neighbor_y);
-            const float neighbor_theta = std::atan(neighbor_x / neighbor_y);
+            // jAER uses atan(x/y) relying on the y>=0 convention; guard the
+            // degenerate y==0 (pure-horizontal neighborhood) so we never
+            // divide by zero. atan2 keeps the same (-90,90) signed range for
+            // the y>=0 case and is exact at y==0.
+            const float neighbor_theta =
+                (neighbor_y != 0.0f) ? std::atan(neighbor_x / neighbor_y)
+                                     : (neighbor_x >= 0.0f ? kPi / 2.0f : -kPi / 2.0f);
 
             // Current event orientation theta = atan(vx/vy) (angle from the
             // vertical y-axis, jAER convention); blended with history when
@@ -201,7 +207,9 @@ public:
                 vx_eff = cur.vx + history_factor_ * hc.vx;
                 vy_eff = cur.vy + history_factor_ * hc.vy;
             }
-            const float theta = std::atan(vx_eff / vy_eff);
+            const float theta =
+                (vy_eff != 0.0f) ? std::atan(vx_eff / vy_eff)
+                                 : (vx_eff >= 0.0f ? kPi / 2.0f : -kPi / 2.0f);
 
             // Update the history map (mirrors jAER: history := current).
             Cell& hc = history_map_[idx];

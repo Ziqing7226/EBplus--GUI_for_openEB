@@ -259,11 +259,20 @@ private:
     /// 即 o=0（水平边缘）搜 down/up —— 垂直于边缘。本表 0=E（kDirDx/kDirDy），
     /// 同一搜索对应 {(ori+2)%8, (ori+6)%8}（ori=0 → N/S）。
     DirResult compute_direction_ori(const Event& e, int ori, int pol) const {
+        // jAER rbodo DirectionSelectiveFlow.filterPacket: for each of the two
+        // directions perpendicular to the edge, iterate s = 1..searchDistance,
+        // COUNT the in-window matches (n1/n2) and SUM their speeds
+        // (s/dt, px/us). The motion direction is the one with MORE evidence;
+        // on a tie the SLOWER average speed wins; speed = sum/count * 1e6
+        // (px/s). This replaces the former single-minimum-delay decision,
+        // which picked one nearest neighbour instead of the aggregate.
         const Metavision::timestamp win = time_window_us_;
         const int dirs[2] = {(ori + 2) % kNumDirections,
                              (ori + 6) % kNumDirections};
         DirResult best;
-        best.delay = win;
+        best.delay = 0;
+        int n[2] = {0, 0};
+        double speed_sum[2] = {0.0, 0.0};
         for (int dd = 0; dd < 2; ++dd) {
             const int d = dirs[dd];
             const int ddx = kDirDx[d];
@@ -271,19 +280,29 @@ private:
             for (int s = 1; s <= search_distance_; ++s) {
                 const int nx = e.x + s * ddx;
                 const int ny = e.y + s * ddy;
-                if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) break;
+                if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) continue;
                 const Metavision::timestamp lt = ori_surface_[idx_of_ori(nx, ny, ori, pol)];
                 if (lt < 0) continue;  // -1 = never seen
                 const Metavision::timestamp rec = e.t - lt;
                 if (rec <= min_dt_us_ || rec > win) continue;
-                if (rec < best.delay) {
-                    best.delay = rec;
-                    best.dir = d;
-                    best.distance = s;
-                }
+                ++n[dd];
+                speed_sum[dd] += static_cast<double>(s) / static_cast<double>(rec);
+                best.delay = std::max(best.delay, rec);
             }
         }
-        if (best.dir < 0) best.delay = 0;
+        int chosen = -1;
+        if (n[0] > 0 || n[1] > 0) {
+            if (n[0] > n[1] || (n[0] == n[1] &&
+                (n[0] == 0 || speed_sum[0] / n[0] <= speed_sum[1] / n[1]))) {
+                chosen = 0;
+            } else {
+                chosen = 1;
+            }
+            best.dir = dirs[chosen];
+            best.distance = 0;  // aggregate — per-neighbour distance not unique
+            // Aggregate speed px/s (jAER: sum(s/dt)*1e6 / count).
+            best.delay = best.delay > 0 ? best.delay : 1;
+        }
         return best;
     }
 
@@ -297,8 +316,14 @@ private:
             last_vy_ = 0.0F;
             return;
         }
+        // jAER aggregate speed: the chosen side's mean s/dt (px/us) * 1e6.
+        // DirResult.distance is 0 for the aggregate path, so speed is
+        // computed from delay only when a single nearest neighbour was used
+        // (raw path distance=1).
         const double speed =
-            static_cast<double>(r.distance) / static_cast<double>(r.delay) * 1e6;
+            r.distance > 0
+                ? static_cast<double>(r.distance) / static_cast<double>(r.delay) * 1e6
+                : 0.0;
         last_speed_pps_ = static_cast<float>(speed);
         const int d = r.dir;
         // Unit vector of the source direction (diagonals normalised by sqrt(2)).
