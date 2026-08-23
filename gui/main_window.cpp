@@ -1750,7 +1750,25 @@ void MainWindow::install_algo_callback() {
 
 void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
                                         Metavision::timestamp ts) {
-    if (!events || events->empty()) return;
+    // An EMPTY window still feeds the algorithms an empty span. Without
+    // this, an overlay-producing algorithm (line_segment) kept its LAST
+    // result forever: the window had no events to push, so last_ was never
+    // cleared and the drawn segments never vanished (user-reported: lines
+    // never disappear). The empty push makes line_segment's process() see
+    // an empty packet and emit nothing.
+    if (!events) return;
+    if (events->empty()) {
+        // Same non-null pointer for begin/end: a valid empty span (two null
+        // pointers would make end-begin undefined behaviour).
+        static const Metavision::EventCD kEmptyEvent{};
+        auto insts = algo_bridge_.list_live();
+        for (auto& inst : insts) {
+            if (inst->is_enabled()) {
+                inst->push_events(&kEmptyEvent, &kEmptyEvent);
+            }
+        }
+        return;
+    }
 
     // ======================================================================
     // TIMESTAMP SCALING FOR ALGORITHM EVENT FEEDING (FILE PLAYBACK ONLY)

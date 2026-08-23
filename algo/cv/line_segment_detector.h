@@ -59,7 +59,7 @@ struct LineSegment {
 class LineSegmentDetector {
 public:
     static constexpr int kDefaultMaxAgeUs = 40000;   // jAER maxAge
-    static constexpr int kDefaultBufferSize = 8000;  // jAER bufferSize
+    static constexpr int kDefaultBufferSize = 2500;  // paper: "typically 2500 to 8000"
 
     LineSegmentDetector(int width, int height,
                         int min_line_length_px = 20,
@@ -70,6 +70,7 @@ public:
           on_ts_(static_cast<std::size_t>(width) * height, -1),
           off_ts_(static_cast<std::size_t>(width) * height, -1) {
         pixelmap_.resize(static_cast<std::size_t>(width) * height);
+        buf_count_.assign(static_cast<std::size_t>(width) * height, 0);
     }
 
     /// @brief Processes an event packet; returns line segments (jAER
@@ -83,10 +84,14 @@ public:
             add_event(e);
         }
         check_support();
+        const Metavision::timestamp now = packet[packet.size() - 1].t;
         for (auto* ls : supports_) {
             if (ls == nullptr || !ls->is_line_segment()) continue;
-            LineSegment out;
+            if (now - ls->latest_update() > static_cast<Metavision::timestamp>(max_age_us_)) {
+                continue;  // stale support: edge moved away, drop the segment
+            }
             ls->update_endpoints();
+            LineSegment out;
             out.start = ls->endpoint1();
             out.end = ls->endpoint2();
             out.angle = ls->orientation_deg();
@@ -116,6 +121,7 @@ public:
         supports_.clear();
         for (auto& p : pixelmap_) p = LevelLinePixel();
         index_buffer_.clear();
+        std::fill(buf_count_.begin(), buf_count_.end(), 0);
         next_support_id_ = 0;
     }
 
@@ -160,9 +166,10 @@ private:
             latest_update_ = 0;
         }
 
-        void add(const LevelLinePixel& p, int /*idx*/) {
+        void add(const LevelLinePixel& p, int idx) {
             if (creation_time_ == 0) creation_time_ = p.ts;
             if (p.ts > latest_update_) latest_update_ = p.ts;
+            pixel_ids_.push_back(idx);
             ++m00_;
             m10_ += p.x;
             m01_ += p.y;
@@ -173,6 +180,7 @@ private:
             sum_angle_unit_x_ += std::cos(p.angle * kPi / 180.0F);
             sum_angle_unit_y_ += std::sin(p.angle * kPi / 180.0F);
             ll_magnitude_sum_ += p.magnitude;
+            update_properties();  // jAER LineSupport.add ends with updateLineProperties()
         }
 
         void remove(const LevelLinePixel& p) {
@@ -188,7 +196,15 @@ private:
             update_properties();
         }
 
-        void merge(LineSupport& other) {
+        /// jAER LineSupport.merge appends the second segment's pixels and
+        /// repoints each pixel's support to this segment. Merging only the
+        /// moments (the former behaviour) left this.m00 counting pixels that
+        /// were destroyed with the other segment — mass never reached zero,
+        /// supports accumulated unboundedly on dense scenes (verified on
+        /// screw.raw: 5.6k -> 17.6k supports across 4 windows). This variant
+        /// repoints the pixels via the caller-supplied pixel map.
+        void merge(LineSupport& other, int this_support_idx,
+                   std::vector<LevelLinePixel>& pixelmap) {
             m00_ += other.m00_;
             m10_ += other.m10_;
             m01_ += other.m01_;
@@ -199,6 +215,15 @@ private:
             sum_angle_unit_y_ += other.sum_angle_unit_y_;
             ll_magnitude_sum_ += other.ll_magnitude_sum_;
             if (other.latest_update_ > latest_update_) latest_update_ = other.latest_update_;
+            // Repoint the other segment's pixels to THIS support and absorb
+            // them into this pixel list (jAER add() per pixel).
+            for (const int id : other.pixel_ids()) {
+                if (pixelmap[static_cast<std::size_t>(id)].support == other_support_idx_) {
+                    pixelmap[static_cast<std::size_t>(id)].support = this_support_idx;
+                    pixel_ids_.push_back(id);
+                }
+            }
+            other_support_idx_ = -1;
             update_properties();
         }
 
@@ -249,6 +274,9 @@ private:
         float length() const { return length_; }
         float mass() const { return m00_; }
         Metavision::timestamp creation_time() const { return creation_time_; }
+        Metavision::timestamp latest_update() const { return latest_update_; }
+        void set_self_support_idx(int i) { other_support_idx_ = i; }
+        const std::vector<int>& pixel_ids() const { return pixel_ids_; }
         cv::Point2f endpoint1() const { return ep1_; }
         cv::Point2f endpoint2() const { return ep2_; }
 
@@ -256,6 +284,8 @@ private:
 
     private:
         int id_;
+        int other_support_idx_{-1};  // this support's index in supports_ (merge repoint)
+        std::vector<int> pixel_ids_;  // member pixel indices (jAER HashSet)
         Metavision::timestamp creation_time_{0};
         Metavision::timestamp latest_update_{0};
         float m00_{0}, m10_{0}, m01_{0}, m11_{0}, m20_{0}, m02_{0};
@@ -280,10 +310,13 @@ private:
         if (index_buffer_.size() >= kDefaultBufferSize) {
             const int old_idx = index_buffer_.front();
             index_buffer_.pop_front();
-            remove_event(old_idx);
+            if (--buf_count_[static_cast<std::size_t>(old_idx)] <= 0) {
+                remove_event(old_idx);
+            }
         }
         const int idx = static_cast<int>(e.y) * width_ + e.x;
         index_buffer_.push_back(idx);
+        ++buf_count_[static_cast<std::size_t>(idx)];
         LevelLinePixel& llp = pixelmap_[static_cast<std::size_t>(idx)];
         llp.buffered = true;
         llp.x = e.x;
@@ -426,7 +459,15 @@ private:
         }
         if (candidates.empty()) return;
         if (best_support < 0) {
-            if (static_cast<int>(candidates.size()) >= 1) {  // jAER minNeighbors default 1
+            // Paper ALGORITHM 1: the CURRENT pixel is also a candidate and
+            // findOldestSupport finds the pixel's OWN support if it has one —
+            // a pixel already assigned to a support NEVER triggers a new
+            // support (the former code created a new support and moved the
+            // pixel into it whenever its neighbourhood had none, fragmenting
+            // and accumulating supports on every moving edge).
+            if (pixel.support >= 0) {
+                best_support = pixel.support;
+            } else if (static_cast<int>(candidates.size()) >= 1) {
                 best_support = new_support();
             } else {
                 return;
@@ -439,10 +480,12 @@ private:
                 distance_segment_to_segment(best, other) <= kMaxDistancePx;
             if (aligned_ok && density_ok(best, other, new_den)) {
                 if (best.creation_time() < other.creation_time()) {
-                    best.merge(other);
+                    other.set_self_support_idx(pixel.support);
+                    best.merge(other, best_support, pixelmap_);
                     destroy_support(pixel.support);
                 } else {
-                    other.merge(best);
+                    best.set_self_support_idx(best_support);
+                    other.merge(best, pixel.support, pixelmap_);
                     destroy_support(best_support);
                     best_support = pixel.support;
                 }
@@ -466,10 +509,12 @@ private:
                     distance_segment_to_segment(best, other) <= kMaxDistancePx;
                 if (aligned_ok && density_ok(best, other, new_den)) {
                     if (best.creation_time() < other.creation_time()) {
-                        best.merge(other);
+                        other.set_self_support_idx(c.support);
+                        best.merge(other, best_support, pixelmap_);
                         destroy_support(c.support);
                     } else {
-                        other.merge(best);
+                        best.set_self_support_idx(best_support);
+                        other.merge(best, c.support, pixelmap_);
                         destroy_support(best_support);
                         best_support = c.support;
                     }
@@ -514,12 +559,18 @@ private:
 
     void destroy_support(int support_idx) {
         if (support_idx < 0 || support_idx >= static_cast<int>(supports_.size())) return;
-        delete supports_[static_cast<std::size_t>(support_idx)];
-        supports_[static_cast<std::size_t>(support_idx)] = nullptr;
-        // Detach any pixels still pointing at it.
-        for (auto& p : pixelmap_) {
-            if (p.support == support_idx) p.support = -1;
+        LineSupport* ls = supports_[static_cast<std::size_t>(support_idx)];
+        if (ls == nullptr) return;
+        // Detach the support's OWN pixels (jAER HashSet iteration) — the
+        // former whole-map scan was O(W*H) per destroy and, with supports
+        // churning every packet, dominated the runtime on dense scenes.
+        for (const int id : ls->pixel_ids()) {
+            if (pixelmap_[static_cast<std::size_t>(id)].support == support_idx) {
+                pixelmap_[static_cast<std::size_t>(id)].support = -1;
+            }
         }
+        delete ls;
+        supports_[static_cast<std::size_t>(support_idx)] = nullptr;
     }
 
     /// jAER LineSupport density helpers (simplified; mass-normalized).
@@ -575,9 +626,9 @@ private:
         LineSupport* ls = supports_[static_cast<std::size_t>(support_idx)];
         if (ls == nullptr) return;
         std::vector<int> pixels;
-        for (int i = 0; i < static_cast<int>(pixelmap_.size()); ++i) {
-            if (pixelmap_[static_cast<std::size_t>(i)].support == support_idx) {
-                pixels.push_back(i);
+        for (const int id : ls->pixel_ids()) {
+            if (pixelmap_[static_cast<std::size_t>(id)].support == support_idx) {
+                pixels.push_back(id);
             }
         }
         for (const int idx : pixels) remove_pixel_from_support(idx);
@@ -592,6 +643,12 @@ private:
     std::vector<Metavision::timestamp> on_ts_;
     std::vector<Metavision::timestamp> off_ts_;
     std::deque<int> index_buffer_;                 // jAER ring buffer of indices
+    // Per-pixel count of events currently in the ring buffer (the paper's
+    // AS "number of buffered events with the pixel coordinate"). A pixel is
+    // only purged from its support region when this count reaches zero —
+    // while it still has buffered events its level-line angle and support
+    // membership persist (paper III-B).
+    std::vector<int> buf_count_;
     std::vector<LevelLinePixel> pixelmap_;         // per-pixel LevelLinePixel
     std::vector<LineSupport*> supports_;           // live LineSupport regions
     int next_support_id_{0};
