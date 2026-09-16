@@ -1330,7 +1330,7 @@ void MainWindow::update_palettes(int index) {
 void MainWindow::on_open_file() {
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open event file"), QString(),
-        tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
+        tr("Event files (*.raw *.hdf5 *.h5 *.dat *.aedat4 *.alpdata);;All files (*)"));
     if (path.isEmpty()) {
         return;
     }

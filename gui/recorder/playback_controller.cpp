@@ -267,7 +267,9 @@ Metavision::timestamp PlaybackController::query_duration() const {
     }
     auto* cam = controller_->camera_handle();
     if (!cam) {
-        return 0;
+        // External file source (AEDAT4/ALPDATA): duration comes from the
+        // reader's metadata instead of the SDK's offline streaming control.
+        return controller_->external_duration_hint();
     }
     try {
         auto& osc = cam->offline_streaming_control();

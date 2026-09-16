@@ -20,6 +20,10 @@
 #include <opencv2/imgproc.hpp>
 
 #include "app/duration_query.h"
+#include "app/external_file_source.h"
+
+#include <mutex>
+#include <utility>
 
 namespace gui {
 
@@ -61,6 +65,10 @@ void ExporterController::cancel() {
 }
 
 void ExporterController::run_hdf5(const ExportParams& p) {
+    if (is_external_file_extension(p.source_path.toStdString())) {
+        run_hdf5_external(p);
+        return;
+    }
     std::shared_ptr<Metavision::Camera> cam;
     try {
         Metavision::FileConfigHints hints;
@@ -157,6 +165,10 @@ void ExporterController::run_hdf5(const ExportParams& p) {
 }
 
 void ExporterController::run_avi(const ExportParams& p) {
+    if (is_external_file_extension(p.source_path.toStdString())) {
+        run_avi_external(p);
+        return;
+    }
     std::shared_ptr<Metavision::Camera> cam;
     try {
         Metavision::FileConfigHints hints;
@@ -406,6 +418,233 @@ void ExporterController::run_avi(const ExportParams& p) {
             err_msg = callback_error;
         }
         QMetaObject::invokeMethod(this, [this, msg = std::move(err_msg)]() {
+            emit failed(msg.empty() ? tr("Export cancelled.")
+                                    : QString::fromUtf8(msg.c_str()));
+        }, Qt::QueuedConnection);
+        return;
+    }
+    QMetaObject::invokeMethod(this, [this, out = p.output_path]() {
+        emit progress(1.0);
+        emit completed(out);
+    }, Qt::QueuedConnection);
+}
+
+void ExporterController::run_hdf5_external(const ExportParams& p) {
+    auto source = try_open_external_file(p.source_path.toStdString());
+    try {
+        source->open();
+    } catch (const std::exception& e) {
+        QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
+            emit failed(msg);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    Metavision::HDF5EventFileWriter writer(p.output_path.toStdString());
+    std::string cb_error;
+    std::mutex cb_mtx;
+    std::atomic<bool> cb_error_flag{false};
+    auto fail_cb = [&](const std::string& msg) {
+        std::lock_guard<std::mutex> lk(cb_mtx);
+        if (!cb_error_flag.load(std::memory_order_acquire)) {
+            cb_error = msg;
+            cb_error_flag.store(true, std::memory_order_release);
+        }
+        source->request_stop();
+    };
+    const Metavision::timestamp dur =
+        p.duration_us > 0 ? p.duration_us : source->meta().duration_us;
+    source->run(
+        [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            if (cancel_.load(std::memory_order_acquire)) {
+                source->request_stop();
+                return;
+            }
+            try {
+                writer.add_events(b, e);
+                if (dur > 0) {
+                    const double r = std::min(
+                        1.0, static_cast<double>((e - 1)->t) / static_cast<double>(dur));
+                    QMetaObject::invokeMethod(this, [this, r]() { emit progress(r); },
+                                              Qt::QueuedConnection);
+                }
+            } catch (const std::exception& ex) {
+                fail_cb(ex.what());
+            } catch (...) {
+                fail_cb("Unknown error in HDF5 writer");
+            }
+        },
+        [&](const std::string& err) {
+            if (!err.empty()) fail_cb(err);
+        });
+    // writer.close() may throw if the ECF compression plugin is missing.
+    try {
+        writer.close();
+    } catch (const std::exception& ex) {
+        fail_cb(ex.what());
+    } catch (...) {
+        fail_cb("Unknown error closing HDF5 file");
+    }
+
+    if (cb_error_flag.load(std::memory_order_acquire)) {
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> lk(cb_mtx);
+            msg = cb_error;
+        }
+        QFile::remove(p.output_path);
+        QMetaObject::invokeMethod(this, [this, msg = std::move(msg)]() {
+            emit failed(msg.empty() ? tr("Export cancelled.")
+                                    : QString::fromUtf8(msg.c_str()));
+        }, Qt::QueuedConnection);
+        return;
+    }
+    QMetaObject::invokeMethod(this, [this, out = p.output_path]() {
+        emit progress(1.0);
+        emit completed(out);
+    }, Qt::QueuedConnection);
+}
+
+void ExporterController::run_avi_external(const ExportParams& p) {
+    auto source = try_open_external_file(p.source_path.toStdString());
+    try {
+        source->open();
+    } catch (const std::exception& e) {
+        QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
+            emit failed(msg);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    const ExternalFileMeta& meta = source->meta();
+    if (meta.width <= 0 || meta.height <= 0) {
+        QMetaObject::invokeMethod(this, [this, w = meta.width, h = meta.height]() {
+            emit failed(tr("Source file has invalid geometry (%1x%2). Cannot export.")
+                            .arg(w).arg(h));
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    cv::VideoWriter recorder;
+    int fourcc = (p.quality >= 50) ? cv::VideoWriter::fourcc('H', '2', '6', '4')
+                                   : cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+    if (!recorder.open(p.output_path.toStdString(), fourcc,
+                       static_cast<double>(p.fps), cv::Size(meta.width, meta.height),
+                       /*isColor=*/p.color) && p.quality >= 50) {
+        qWarning("AVI export: H264 encoder unavailable, falling back to MJPG");
+        fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+        recorder.open(p.output_path.toStdString(), fourcc,
+                      static_cast<double>(p.fps), cv::Size(meta.width, meta.height),
+                      p.color);
+    }
+    if (!recorder.isOpened()) {
+        QMetaObject::invokeMethod(this, [this, fourcc]() {
+            emit failed(tr("Failed to open AVI writer (codec %1 unavailable or path not writable).")
+                            .arg(fourcc == cv::VideoWriter::fourcc('M','J','P','G')
+                                     ? QStringLiteral("MJPG") : QStringLiteral("H264")));
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    // Same synchronous PeriodicFrameGenerationAlgorithm setup as the SDK
+    // path — process_events() runs frame production AND encoding on this
+    // (reader) thread, so reading is throttled by the encoder automatically.
+    Metavision::PeriodicFrameGenerationAlgorithm gen(
+        meta.width, meta.height,
+        static_cast<std::uint32_t>(std::max<Metavision::timestamp>(p.accumulation_us, 1)),
+        /*fps=*/0.,
+        p.color ? Metavision::ColorPalette::Dark : Metavision::ColorPalette::Gray);
+    const Metavision::timestamp frame_period_us =
+        std::max<Metavision::timestamp>(p.accumulation_us, 1);
+
+    std::string cb_error;
+    std::mutex cb_mtx;
+    auto set_cb_error = [&](const std::string& msg) {
+        std::lock_guard<std::mutex> lk(cb_mtx);
+        if (cb_error.empty()) cb_error = msg;
+        cancel_.store(true, std::memory_order_release);
+        source->request_stop();
+    };
+    std::atomic<Metavision::timestamp> last_frame_ts{0};
+    const auto dur = p.duration_us > 0 ? p.duration_us : source->meta().duration_us;
+
+    Metavision::timestamp next_frame_ts = -1;
+    cv::Mat black_frame;
+    gen.set_output_callback(
+        [&recorder, &cb_error, &cb_mtx, &set_cb_error, this, color = p.color,
+         &last_frame_ts, frame_period_us, &next_frame_ts,
+         &black_frame](Metavision::timestamp ts, cv::Mat& frame) {
+            try {
+                last_frame_ts.store(ts, std::memory_order_relaxed);
+                if (cancel_.load(std::memory_order_acquire)) return;
+                auto write_frame = [&](const cv::Mat& f) {
+                    cv::Mat out;
+                    if (color) {
+                        if (f.channels() == 1) {
+                            cv::cvtColor(f, out, cv::COLOR_GRAY2BGR);
+                        } else {
+                            out = f;
+                        }
+                    } else {
+                        if (f.channels() == 3) {
+                            cv::cvtColor(f, out, cv::COLOR_BGR2GRAY);
+                        } else {
+                            out = f;
+                        }
+                    }
+                    recorder.write(out);
+                };
+                if (black_frame.empty() && !frame.empty()) {
+                    black_frame = cv::Mat::zeros(frame.rows, frame.cols,
+                                                 frame.type());
+                }
+                // Fill quiet-gap periods with black frames so the output
+                // time axis stays complete (same as the SDK path).
+                if (next_frame_ts < 0) next_frame_ts = ts;
+                while (next_frame_ts < ts && !black_frame.empty()) {
+                    write_frame(black_frame);
+                    next_frame_ts += frame_period_us;
+                }
+                next_frame_ts = ts + frame_period_us;
+                if (frame.empty()) return;
+                write_frame(frame);
+            } catch (const std::exception& e) {
+                set_cb_error(e.what());
+            } catch (...) {
+                set_cb_error("Unknown error in frame writer");
+            }
+        });
+
+    source->run(
+        [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            if (cancel_.load(std::memory_order_acquire)) {
+                source->request_stop();
+                return;
+            }
+            try {
+                gen.process_events(b, e);
+            } catch (const std::exception& e2) {
+                set_cb_error(e2.what());
+            } catch (...) {
+                set_cb_error("Unknown error in event callback");
+            }
+        },
+        [&](const std::string& err) {
+            if (!err.empty()) set_cb_error(err);
+        });
+    // Flush the trailing partial accumulation window (same as the SDK path).
+    if (!cancel_.load(std::memory_order_acquire)) {
+        try { gen.force_generate(); } catch (...) {}
+    }
+    recorder.release();
+
+    if (cancel_.load(std::memory_order_acquire)) {
+        QFile::remove(p.output_path);
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> lk(cb_mtx);
+            msg = cb_error;
+        }
+        QMetaObject::invokeMethod(this, [this, msg = std::move(msg)]() {
             emit failed(msg.empty() ? tr("Export cancelled.")
                                     : QString::fromUtf8(msg.c_str()));
         }, Qt::QueuedConnection);

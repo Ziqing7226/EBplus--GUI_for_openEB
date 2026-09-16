@@ -9,7 +9,7 @@ Real-time visualization · camera control · recording & playback · calibration
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.7.1-blue)
+![Version](https://img.shields.io/badge/version-2.8.0-blue)
 
 ![Main Window](pic/1.9.0.png)
 
@@ -23,7 +23,7 @@ Real-time visualization · camera control · recording & playback · calibration
 
 - **See** the event stream in real time (OpenGL, 60+ FPS)
 - **Control** the camera — biases, ROI, anti-flicker, triggers
-- **Record & replay** RAW event files with speed control and seek
+- **Record & replay** event files (RAW, plus event streams from AEDAT4 and ALPDATA recordings) with speed control and seek
 - **Run algorithms** — noise filtering, optical flow, object tracking, event-to-video, and more
 - **Calibrate** the camera with a chessboard wizard
 - **Export** to HDF5 / CSV / AVI

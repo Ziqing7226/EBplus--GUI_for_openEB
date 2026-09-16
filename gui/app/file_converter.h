@@ -75,6 +75,12 @@ private:
     void run_convert(const QString& src, const QString& dst, Format fmt);
     void run_cut(const QString& src, const QString& dst,
                  Metavision::timestamp start_us, Metavision::timestamp end_us);
+    /// External-format variants (AEDAT4 / ALPDATA): the reader's synchronous
+    /// run() replaces the SDK camera + polling loop; everything downstream
+    /// (writers, cancel semantics, progress) is shared behavior.
+    void run_convert_external(const QString& src, const QString& dst, Format fmt);
+    void run_cut_external(const QString& src, const QString& dst,
+                          Metavision::timestamp start_us, Metavision::timestamp end_us);
 
     std::function<Metavision::timestamp(const QString&)> duration_provider_;
     std::atomic<bool> running_{false};

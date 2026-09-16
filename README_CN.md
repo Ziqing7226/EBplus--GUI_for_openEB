@@ -9,7 +9,7 @@
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.7.1-blue)
+![Version](https://img.shields.io/badge/version-2.8.0-blue)
 
 ![主界面](pic/1.9.0.png)
 
@@ -23,7 +23,7 @@
 
 - **实时显示** 事件流（OpenGL，60+ FPS）
 - **控制相机** —— biases、ROI、抗闪烁、触发
-- **录制与回放** RAW 事件文件，支持速度控制与跳转
+- **录制与回放** 事件文件（RAW，以及 AEDAT4、ALPDATA 录制中的事件流），支持速度控制与跳转
 - **运行算法** —— 噪声过滤、光流、目标跟踪、事件转视频等
 - **标定相机** —— 棋盘格向导
 - **导出** 为 HDF5 / CSV / AVI

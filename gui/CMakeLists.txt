@@ -4,12 +4,16 @@
 # so the unit tests in tests/ can link the same code without recompiling it.
 set(GUI_LIB_SOURCES
     main_window.cpp
+    app/aedat4_file_source.cpp
+    app/alpdata_file_source.cpp
     app/camera_controller.cpp
+    app/external_file_source.cpp
     app/file_converter.cpp
     app/file_frame_generator.cpp
     app/frame_mode_renderer.cpp
     app/frame_pipeline.cpp
     app/icon_provider.cpp
+    app/lz4_frame_decoder.cpp
     app/statistics_controller.cpp
     app/stream_conditioner.cpp
     app/theme_controller.cpp

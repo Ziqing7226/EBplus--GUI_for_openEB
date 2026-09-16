@@ -56,6 +56,10 @@ signals:
 private:
     void run_hdf5(const ExportParams& p);
     void run_avi(const ExportParams& p);
+    /// External-format variants (AEDAT4 / ALPDATA): the reader's synchronous
+    /// run() replaces the SDK camera + polling loop.
+    void run_hdf5_external(const ExportParams& p);
+    void run_avi_external(const ExportParams& p);
 
     std::atomic<bool> running_{false};
     std::atomic<bool> cancel_{false};

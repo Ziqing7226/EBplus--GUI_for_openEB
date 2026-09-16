@@ -169,7 +169,7 @@ void FileOpDialog::set_source(const QString& path) {
 void FileOpDialog::on_browse_source() {
     const QString src = QFileDialog::getOpenFileName(
         this, tr("Source file"), edt_source_->text(),
-        tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
+        tr("Event files (*.raw *.hdf5 *.h5 *.dat *.aedat4 *.alpdata);;All files (*)"));
     if (!src.isEmpty()) set_source(src);
 }
 

@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <metavision/hal/facilities/i_antiflicker_module.h>
@@ -31,6 +32,7 @@
 #include "frame_pipeline.h"
 #include "stream_conditioner.h"
 #include "statistics_controller.h"
+#include "external_file_source.h"
 #include "algo_bridge/filter_chain.h"
 #include "algo/analytics/auto_bias_controller.h"
 #include "app/bias_applier.h"
@@ -92,11 +94,20 @@ public:
     bool start();
     bool stop();
     bool is_running() const;
-    bool is_connected() const { return static_cast<bool>(camera_); }
+    bool is_connected() const { return static_cast<bool>(camera_) || external_source_ != nullptr; }
     bool is_file_source() const { return is_file_; }
 
     /// @brief Returns the underlying Metavision::Camera (nullptr if none).
+    /// External file sources (AEDAT4/ALPDATA) have no SDK camera.
     Metavision::Camera* camera_handle() { return camera_.get(); }
+
+    /// @brief Duration reported by an external file source (0 when the
+    /// current source is an SDK camera or unknown until fully streamed).
+    /// PlaybackController uses it instead of the SDK's OSC query.
+    Metavision::timestamp external_duration_hint() const {
+        return external_source_ ? external_source_->meta().duration_us
+                                : Metavision::timestamp{0};
+    }
 
     const SensorInfo& sensor_info() const { return sensor_info_; }
     FramePipeline* frame_pipeline() { return &frame_pipeline_; }
@@ -240,11 +251,27 @@ private:
     /// frame_pipeline_.start_file() for file sources (FileFrameGenerator)
     /// or frame_pipeline_.start() for live sources (CDFrameGenerator).
     void setup_camera(Metavision::Camera&& cam, bool is_file);
+    /// @brief Opens a non-SDK file format (AEDAT4 / ALPDATA): parses the
+    /// header, populates sensor_info_ from the reader's metadata and starts
+    /// the shared FileFrameGenerator — identical downstream behavior, only
+    /// the event source differs (reader thread instead of the SDK).
+    bool connect_external_file(std::unique_ptr<ExternalFileSource> source);
+    /// @brief Completion of the external reader thread (queued to the GUI
+    /// thread): enables the FileFrameGenerator's EOF handling, like the SDK
+    /// camera's EOF status/error callback. Empty @p error = clean EOF.
+    void on_external_source_done(const QString& error);
     /// @brief Tears down camera + callbacks + frame pipeline.
     void teardown();
     void fetch_sensor_info();
 
     std::unique_ptr<Metavision::Camera> camera_;
+    /// External (non-SDK) file source and its reader thread. Mutually
+    /// exclusive with camera_: only one is ever set.
+    std::unique_ptr<ExternalFileSource> external_source_;
+    std::thread external_thread_;
+    std::atomic<bool> external_running_{false};
+    /// One-shot guard: start() must never re-read an already-buffered file.
+    bool external_started_{false};
     std::optional<Metavision::CallbackId> cd_cb_id_;
     std::optional<Metavision::CallbackId> err_cb_id_;
     std::optional<Metavision::CallbackId> status_cb_id_;

@@ -19,6 +19,10 @@
 #include <metavision/sdk/stream/raw_evt2_event_file_writer.h>
 
 #include "app/duration_query.h"
+#include "app/external_file_source.h"
+
+#include <mutex>
+#include <utility>
 
 namespace gui {
 
@@ -80,6 +84,30 @@ void FileConverter::cut(const QString& src, const QString& dst,
 FileInfo FileConverter::info(const QString& src) const {
     FileInfo fi;
     fi.path = src;
+    if (is_external_file_extension(src.toStdString())) {
+        // AEDAT4 / ALPDATA: metadata comes from our own reader (the SDK
+        // cannot open these formats). event_count stays -1 (unknown without
+        // a full decode) except for AEDAT4, whose data table carries the
+        // exact total.
+        try {
+            auto source = try_open_external_file(src.toStdString());
+            source->open();
+            const ExternalFileMeta& m = source->meta();
+            fi.width = m.width;
+            fi.height = m.height;
+            fi.duration_us = m.duration_us;
+            fi.integrator = m.integrator;
+            fi.serial = m.serial;
+            fi.plugin = m.plugin_name;
+            fi.encoding = m.encoding_format;
+            if (src.endsWith(QStringLiteral(".aedat4"), Qt::CaseInsensitive)) {
+                fi.event_count = m.worst_case_events;
+            }
+        } catch (const std::exception& e) {
+            qWarning("FileConverter::info: %s", e.what());
+        }
+        return fi;
+    }
     try {
         Metavision::FileConfigHints hints;
         hints.real_time_playback(false);
@@ -107,6 +135,10 @@ FileInfo FileConverter::info(const QString& src) const {
 }
 
 void FileConverter::run_convert(const QString& src, const QString& dst, Format fmt) {
+    if (is_external_file_extension(src.toStdString())) {
+        run_convert_external(src, dst, fmt);
+        return;
+    }
     std::shared_ptr<Metavision::Camera> cam;
     try {
         Metavision::FileConfigHints hints;
@@ -242,6 +274,10 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
 
 void FileConverter::run_cut(const QString& src, const QString& dst,
                             Metavision::timestamp start_us, Metavision::timestamp end_us) {
+    if (is_external_file_extension(src.toStdString())) {
+        run_cut_external(src, dst, start_us, end_us);
+        return;
+    }
     Metavision::Camera cam;
     try {
         Metavision::FileConfigHints hints;
@@ -360,6 +396,223 @@ void FileConverter::run_cut(const QString& src, const QString& dst,
 
     if (cancel_) {
         // Partial RAW cut — delete it (audit §六-E4).
+        QFile::remove(dst);
+        QMetaObject::invokeMethod(this, [this]() {
+            emit failed(tr("Cut cancelled."));
+        }, Qt::QueuedConnection);
+        return;
+    }
+    QMetaObject::invokeMethod(this, [this, dst]() {
+        emit progress(1.0);
+        emit completed(dst);
+    }, Qt::QueuedConnection);
+}
+
+void FileConverter::run_convert_external(const QString& src, const QString& dst,
+                                         Format fmt) {
+    auto source = try_open_external_file(src.toStdString());
+    try {
+        source->open();
+    } catch (const std::exception& e) {
+        QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
+            emit failed(msg);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    std::unique_ptr<Metavision::HDF5EventFileWriter> hdf5;
+    std::unique_ptr<QFile> csvf;
+    std::unique_ptr<QTextStream> csvs;
+    if (fmt == Format::HDF5) {
+        hdf5 = std::make_unique<Metavision::HDF5EventFileWriter>(dst.toStdString());
+    } else {
+        csvf = std::make_unique<QFile>(dst);
+        if (!csvf->open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMetaObject::invokeMethod(this, [this]() {
+                emit failed(tr("Cannot open CSV output file."));
+            }, Qt::QueuedConnection);
+            return;
+        }
+        csvs = std::make_unique<QTextStream>(csvf.get());
+        *csvs << "t,x,y,p\n";
+    }
+
+    // The reader's run() is synchronous on this worker thread: the sink
+    // writes, reports progress and turns cancel into a cooperative stop.
+    std::string cb_error;
+    std::mutex cb_mtx;
+    std::atomic<bool> cb_error_flag{false};
+    const Metavision::timestamp dur = source->meta().duration_us;
+    auto fail_cb = [&](const std::string& msg) {
+        std::lock_guard<std::mutex> lk(cb_mtx);
+        if (!cb_error_flag.load(std::memory_order_acquire)) {
+            cb_error = msg;
+            cb_error_flag.store(true, std::memory_order_release);
+        }
+        source->request_stop();
+    };
+    source->run(
+        [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            if (cancel_) {
+                source->request_stop();
+                return;
+            }
+            try {
+                if (fmt == Format::HDF5) {
+                    hdf5->add_events(b, e);
+                } else {
+                    for (auto it = b; it != e; ++it) {
+                        *csvs << it->t << ',' << it->x << ',' << it->y << ','
+                              << it->p << '\n';
+                    }
+                }
+                if (dur > 0) {
+                    double r = static_cast<double>((e - 1)->t) /
+                               static_cast<double>(dur);
+                    if (r < 0) r = 0; else if (r > 1.0) r = 1.0;
+                    emit progress(r);
+                }
+            } catch (const std::exception& ex) {
+                fail_cb(ex.what());
+            } catch (...) {
+                fail_cb("Unknown error in conversion callback");
+            }
+        },
+        [&](const std::string& err) {
+            if (!err.empty()) fail_cb(err);
+        });
+
+    // hdf5->close() may throw if the ECF compression plugin is missing.
+    if (hdf5) {
+        try {
+            hdf5->close();
+        } catch (const std::exception& ex) {
+            fail_cb(ex.what());
+        } catch (...) {
+            fail_cb("Unknown error closing HDF5 file");
+        }
+    }
+    if (csvs) csvs->flush();
+    if (csvf) csvf->close();
+
+    if (cb_error_flag.load(std::memory_order_acquire)) {
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> lk(cb_mtx);
+            msg = cb_error;
+        }
+        QMetaObject::invokeMethod(this, [this, msg = std::move(msg)]() {
+            emit failed(msg.empty() ? tr("Conversion failed: error in streaming callback.")
+                                    : QString::fromUtf8(msg.c_str()));
+        }, Qt::QueuedConnection);
+        return;
+    }
+    if (cancel_) {
+        // Partial output — delete it (audit §六-E4).
+        QFile::remove(dst);
+        QMetaObject::invokeMethod(this, [this]() {
+            emit failed(tr("Conversion cancelled."));
+        }, Qt::QueuedConnection);
+        return;
+    }
+    QMetaObject::invokeMethod(this, [this, dst]() {
+        emit progress(1.0);
+        emit completed(dst);
+    }, Qt::QueuedConnection);
+}
+
+void FileConverter::run_cut_external(const QString& src, const QString& dst,
+                                     Metavision::timestamp start_us,
+                                     Metavision::timestamp end_us) {
+    auto source = try_open_external_file(src.toStdString());
+    try {
+        source->open();
+    } catch (const std::exception& e) {
+        QMetaObject::invokeMethod(this, [this, msg = QString::fromUtf8(e.what())]() {
+            emit failed(msg);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    const ExternalFileMeta& meta = source->meta();
+
+    Metavision::RAWEvt2EventFileWriter writer(meta.width, meta.height,
+                                              dst.toStdString());
+    std::string cb_error;
+    std::mutex cb_mtx;
+    std::atomic<bool> cb_error_flag{false};
+    const Metavision::timestamp span_us =
+        (end_us > start_us) ? (end_us - start_us) : 0;
+    // Distinguishes the natural early stop (window fully written) from a
+    // user cancel — both stop the reader, only the latter deletes the output.
+    std::atomic<bool> reached_end{false};
+    auto fail_cb = [&](const std::string& msg) {
+        std::lock_guard<std::mutex> lk(cb_mtx);
+        if (!cb_error_flag.load(std::memory_order_acquire)) {
+            cb_error = msg;
+            cb_error_flag.store(true, std::memory_order_release);
+        }
+        source->request_stop();
+    };
+    source->run(
+        [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            if (cancel_) {
+                source->request_stop();
+                return;
+            }
+            try {
+                // Lower bound always applied (batch boundaries do not
+                // necessarily align with start_us); upper bound stops early.
+                auto it_begin = b;
+                if (start_us > 0) {
+                    while (it_begin != e && it_begin->t < start_us) ++it_begin;
+                    if (it_begin == e) return;
+                }
+                if (end_us > 0 && it_begin != e && (e - 1)->t > end_us) {
+                    auto it = it_begin;
+                    while (it != e && it->t <= end_us) ++it;
+                    writer.add_events(it_begin, it);
+                    reached_end.store(true, std::memory_order_release);
+                    source->request_stop(); // last wanted event reached
+                } else {
+                    writer.add_events(it_begin, e);
+                }
+                if (span_us > 0) {
+                    double r = static_cast<double>((e - 1)->t - start_us) /
+                               static_cast<double>(span_us);
+                    if (r < 0) r = 0; else if (r > 1.0) r = 1.0;
+                    emit progress(r);
+                }
+            } catch (const std::exception& ex) {
+                fail_cb(ex.what());
+            } catch (...) {
+                fail_cb("Unknown error in cut callback");
+            }
+        },
+        [&](const std::string& err) {
+            if (!err.empty()) fail_cb(err);
+        });
+    try {
+        writer.close();
+    } catch (const std::exception& ex) {
+        fail_cb(ex.what());
+    } catch (...) {
+        fail_cb("Unknown error closing RAW file");
+    }
+
+    if (cb_error_flag.load(std::memory_order_acquire)) {
+        std::string msg;
+        {
+            std::lock_guard<std::mutex> lk(cb_mtx);
+            msg = cb_error;
+        }
+        QMetaObject::invokeMethod(this, [this, msg = std::move(msg)]() {
+            emit failed(msg.empty() ? tr("Cut failed: error in streaming callback.")
+                                    : QString::fromUtf8(msg.c_str()));
+        }, Qt::QueuedConnection);
+        return;
+    }
+    if (cancel_ && !reached_end.load(std::memory_order_acquire)) {
+        // User cancel leaves a partial cut — delete it (audit §六-E4).
         QFile::remove(dst);
         QMetaObject::invokeMethod(this, [this]() {
             emit failed(tr("Cut cancelled."));

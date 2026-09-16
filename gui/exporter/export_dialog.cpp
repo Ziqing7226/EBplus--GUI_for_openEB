@@ -153,7 +153,7 @@ void ExportDialog::set_source(const QString& path) {
 void ExportDialog::on_browse_source() {
     const QString p = QFileDialog::getOpenFileName(
         this, tr("Select source"), QString(),
-        tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
+        tr("Event files (*.raw *.hdf5 *.h5 *.dat *.aedat4 *.alpdata);;All files (*)"));
     if (!p.isEmpty()) edt_source_->setText(p);
 }
 

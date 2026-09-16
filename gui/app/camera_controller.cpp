@@ -103,6 +103,11 @@ bool CameraController::connect_serial(const std::string& serial) {
 }
 
 bool CameraController::connect_file(const std::string& path) {
+    // Non-SDK formats (AEDAT4 / ALPDATA) never reach Metavision::Camera —
+    // the external reader streams EventCD batches into the same pipeline.
+    if (is_external_file_extension(path)) {
+        return connect_external_file(try_open_external_file(path));
+    }
     teardown();
     // OOM guard (audit §六-C2a): estimate the event count from the file
     // size BEFORE opening (RAW Evt3 ≈ 8 bytes/event) and warn if the
@@ -142,7 +147,117 @@ void CameraController::disconnect() {
     emit disconnected();
 }
 
+bool CameraController::connect_external_file(std::unique_ptr<ExternalFileSource> source) {
+    teardown();
+    try {
+        source->open();
+    } catch (const std::exception& e) {
+        emit disconnected();
+        emit error(QString::fromUtf8(e.what()));
+        return false;
+    }
+    is_file_ = true;
+    external_source_ = std::move(source);
+    external_started_ = false;
+    const ExternalFileMeta& meta = external_source_->meta();
+
+    sensor_info_ = SensorInfo{};
+    sensor_info_.width = meta.width;
+    sensor_info_.height = meta.height;
+    sensor_info_.serial = meta.serial;
+    sensor_info_.integrator = meta.integrator;
+    sensor_info_.plugin_name = meta.plugin_name;
+    sensor_info_.encoding_format = meta.encoding_format;
+    sensor_info_.is_file = true;
+
+    statistics_.reset();
+    filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
+    // The file source conditions per-frame in FileFrameGenerator; keep the
+    // live conditioner symmetric with setup_camera (init + chain + reset).
+    conditioner_.init(sensor_info_.width, sensor_info_.height);
+    conditioner_.set_filter_chain(&filter_chain_);
+    conditioner_.reset_temporal();
+
+    const std::uint16_t fps = frame_pipeline_.fps();
+    const Metavision::timestamp acc = frame_pipeline_.accumulation_time_us();
+    frame_pipeline_.set_file_filter_chain(&filter_chain_);
+    if (!frame_pipeline_.start_file(sensor_info_.width, sensor_info_.height, fps, acc)) {
+        teardown();
+        emit disconnected();
+        emit error(tr("Failed to start file frame pipeline."));
+        return false;
+    }
+    if (meta.accumulation_hint_us > 0) {
+        // ALPDATA frames carry all their pixels on one timestamp — make each
+        // displayed frame cover exactly one recorded frame (emit
+        // accumulation_time_changed keeps the UI multiplier in sync).
+        frame_pipeline_.set_accumulation_time_us(meta.accumulation_hint_us);
+    }
+    if (meta.worst_case_events > kWarnEventCount) {
+        emit runtime_warning(
+            tr("Very large file (up to %1M events): playback may use a lot "
+               "of memory.")
+                .arg(meta.worst_case_events / 1'000'000));
+    }
+    emit connected(sensor_info_);
+    return true;
+}
+
+void CameraController::on_external_source_done(const QString& error) {
+    if (!external_source_) return; // source replaced/removed meanwhile
+    external_running_.store(false, std::memory_order_relaxed);
+    // The whole file is now buffered: allow the FileFrameGenerator's EOF
+    // handling (stop / loop wrap) to engage — same as the SDK camera's EOF
+    // status/error path.
+    frame_pipeline_.set_file_loading_complete(true);
+    if (!error.isEmpty()) {
+        emit runtime_warning(error);
+    }
+    emit stopped();
+}
+
 bool CameraController::start() {
+    if (external_source_) {
+        if (external_running_.load(std::memory_order_relaxed) || external_started_) {
+            return true; // already streaming (or fully buffered)
+        }
+        external_started_ = true;
+        external_running_.store(true, std::memory_order_relaxed);
+        ExternalFileSource* src = external_source_.get();
+        external_thread_ = std::thread([this, src]() {
+            // Reader thread — the same role as the SDK's streaming thread:
+            // raw batches into statistics + pipeline, no conditioning
+            // (FileFrameGenerator conditions per rendered window).
+            auto sink = [this](const Metavision::EventCD* b,
+                               const Metavision::EventCD* e) {
+                statistics_.add_events(b, e);
+                frame_pipeline_.add_events(b, e);
+            };
+            try {
+                src->run(sink, [this](const std::string& err) {
+                    QMetaObject::invokeMethod(
+                        this, [this, err]() {
+                            on_external_source_done(QString::fromUtf8(err.c_str()));
+                        },
+                        Qt::QueuedConnection);
+                });
+            } catch (const std::exception& e) {
+                QMetaObject::invokeMethod(
+                    this, [this, msg = std::string(e.what())]() {
+                        on_external_source_done(QString::fromUtf8(msg.c_str()));
+                    },
+                    Qt::QueuedConnection);
+            } catch (...) {
+                QMetaObject::invokeMethod(
+                    this, [this]() {
+                        on_external_source_done(tr("Unknown reader error"));
+                    },
+                    Qt::QueuedConnection);
+            }
+        });
+        emit started();
+        return true;
+    }
     if (!camera_) {
         return false;
     }
@@ -160,6 +275,13 @@ bool CameraController::start() {
 }
 
 bool CameraController::stop() {
+    if (external_source_) {
+        // Cooperative cancel: the reader thread finishes soon after and its
+        // completion callback emits stopped() on the GUI thread. The buffer
+        // prefix stays playable, exactly like a stopped SDK file camera.
+        external_source_->request_stop();
+        return true;
+    }
     if (!camera_) {
         return false;
     }
@@ -180,6 +302,9 @@ bool CameraController::stop() {
 }
 
 bool CameraController::is_running() const {
+    if (external_source_) {
+        return external_running_.load(std::memory_order_relaxed);
+    }
     return camera_ && camera_->is_running();
 }
 
@@ -647,6 +772,20 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
 }
 
 void CameraController::teardown() {
+    // 0. Stop the external reader FIRST: it feeds statistics_ and
+    //    frame_pipeline_ from its own thread, so it must be joined before
+    //    the pipeline is stopped below.
+    if (external_source_) {
+        external_source_->request_stop();
+    }
+    if (external_thread_.joinable()) {
+        external_thread_.join();
+    }
+    external_thread_ = {};
+    external_source_.reset();
+    external_started_ = false;
+    external_running_.store(false, std::memory_order_relaxed);
+
     // 1. Remove the SDK callbacks FIRST so the SDK thread stops calling into
     //    FramePipeline / FilterChain / StatisticsController. Without this,
     //    stopping the pipeline (which resets generator_) races with the CD

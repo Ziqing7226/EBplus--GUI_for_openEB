@@ -131,3 +131,19 @@ target_compile_options(test_stream_conditioner PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_stream_conditioner
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# --- test_external_file_sources: AEDAT4 / ALPDATA playback readers + the
+# built-in LZ4 frame decoder. Real-recording smoke tests activate via the
+# EBPLUS_TEST_AEDAT4 / EBPLUS_TEST_ALPDATA environment variables. ---
+add_executable(test_external_file_sources
+    test_external_file_sources.cpp
+)
+target_link_libraries(test_external_file_sources PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_external_file_sources PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_external_file_sources
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
