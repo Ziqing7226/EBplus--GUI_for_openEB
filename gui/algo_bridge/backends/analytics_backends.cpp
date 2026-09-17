@@ -42,6 +42,7 @@ class EventToVideoBackend final : public AlgoBackend {
     // E2VID params.
     std::string model_path_;
     int e2vid_num_bins_{5};
+    int e2vid_device_{0};  ///< 0=Auto, 1=CPU, 2=GPU (§4.4.2-GPU)
     bool e2vid_auto_hdr_{false};
     float unsharp_amount_{0.3F};
     float unsharp_sigma_{1.0F};
@@ -83,6 +84,9 @@ public:
         // the heuristic fallback; a non-empty path triggers load_model which
         // may fail silently and also fall back (BUG-G9: comment corrected —
         // the model IS loaded here in rebuild(), not deferred).
+        // Device policy goes BEFORE the model load so the fresh instance
+        // selects its runtime on the first load (no double reload).
+        algo_->set_e2v_device(e2vid_device_);
         if (!model_path_.empty()) algo_->set_model_path(model_path_);
         algo_->set_e2vid_num_bins(e2vid_num_bins_);
         // Re-sync from the algo: when a model is loaded, set_num_bins ignores
@@ -168,6 +172,11 @@ public:
                 // ROI rebuilds keep the model's channel count.
                 e2vid_num_bins_ = algo_->e2vid_num_bins();
             }
+        } else if (k == "device") {
+            e2vid_device_ = to_i(v);
+            // set_device reloads the model from the cached path when the
+            // policy changes, so the runtime selection takes effect.
+            if (algo_) algo_->set_e2v_device(e2vid_device_);
         } else if (k == "num_bins") {
             e2vid_num_bins_ = to_i(v);
             if (algo_) {
@@ -252,6 +261,7 @@ public:
                        ? from_b(algo_->e2vid_model_loaded()) : std::string{};
         }
         if (k == "num_bins") return from_i(e2vid_num_bins_);
+        if (k == "device") return from_i(e2vid_device_);
         if (k == "auto_hdr") return from_b(e2vid_auto_hdr_);
         if (k == "unsharp_amount") return from_d(unsharp_amount_);
         if (k == "unsharp_sigma") return from_d(unsharp_sigma_);
@@ -306,9 +316,14 @@ public:
         // §五-H1: a failed ONNX load silently falls back to the heuristic
         // path — the status line must show which reconstruction is running
         // so users don't mistake heuristic output for "E2VID quality".
+        // dev= shows the active neural runtime (gpu = OpenVINO GPU plugin,
+        // cpu = ONNX Runtime) — the Auto policy can silently pick either.
         if (algo_->mode() == gui_algo::EventToVideo::Mode::E2VID) {
-            r.status += algo_->e2vid_model_loaded() ? " model=loaded"
-                                                    : " model=heuristic";
+            if (algo_->e2vid_model_loaded()) {
+                r.status += " model=loaded dev=" + algo_->e2v_active_runtime();
+            } else {
+                r.status += " model=heuristic";
+            }
         }
         return r;
     }

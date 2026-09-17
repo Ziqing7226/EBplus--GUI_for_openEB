@@ -986,6 +986,12 @@ void AlgoBridge::register_self_analytics() {
           pfloat("fov_deg", "Camera FOV (deg)", "60", "10", "170", "1"),
           // --- E2VID (mode 2) ---
           pstring("model_path", "Model path (ONNX)", "models/e2vid_lightweight.onnx", "2"),
+          // Inference device: Auto runs the neural path on the Intel iGPU via
+          // OpenVINO when the build has it and a GPU is present (measured
+          // ~11× faster than CPU); CPU/GPU pin the respective runtime, with
+          // silent CPU degradation when the GPU path is unavailable.
+          penum("device", "Inference device", "0",
+                {"0=Auto (iGPU if available)", "1=CPU", "2=GPU"}, "2"),
           pint("num_bins", "Num bins", "5", "1", "20", "2"),
           pbool("auto_hdr", "Auto HDR", "false", "2"),
           // 1/4 downsample is now a shared preprocessing stage
