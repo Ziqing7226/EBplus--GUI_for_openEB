@@ -134,6 +134,22 @@ target_link_libraries(test_raw_e2v PRIVATE
 )
 add_test(NAME raw_e2v COMMAND test_raw_e2v ${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw)
 
+# Diagnostic: loads a REAL converted ONNX model (§4.4.2-GPU) and exercises
+# the OpenVINO GPU / ONNX Runtime CPU runtime selection, recurrent-state
+# inference, reset, and the dims-change recompile path. Skips (code 77) when
+# models/e2vid_lightweight.onnx is not installed (models/ is user-installed,
+# git-ignored — same policy as third_party/onnxruntime).
+add_executable(test_e2vid_inference
+    test_e2vid_inference.cpp
+)
+target_link_libraries(test_e2vid_inference PRIVATE
+    gui_algo
+    ${OpenCV_LIBS}
+)
+add_test(NAME e2vid_inference
+    COMMAND test_e2vid_inference ${CMAKE_SOURCE_DIR}/models/e2vid_lightweight.onnx)
+set_tests_properties(e2vid_inference PROPERTIES SKIP_RETURN_CODE 77)
+
 # Standalone diagnostic: open a .raw file with real_time_playback(true/false)
 # and report event delivery + duration. Used to verify SDK behavior matches
 # the GUI's default mode.

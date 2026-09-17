@@ -66,6 +66,9 @@ models/*.bin
 # to third_party/onnxruntime/ following README.md § E2VID Setup. Only the
 # directory contents are ignored; the directory itself is kept via .gitkeep.
 third_party/onnxruntime/
+# OpenVINO runtime archive (E2VID Intel GPU inference, §4.4.2-GPU). Users
+# download and extract it to third_party/openvino/ — see wiki/compile.md G4.
+third_party/openvino/
 
 # ---- Local project memory (personal, not shared) ----
 # AGENTS.md holds local memory migrated from Trae/Kimi; it is loaded by

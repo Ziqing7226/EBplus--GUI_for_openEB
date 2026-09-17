@@ -11,7 +11,11 @@
 //   - Output: 1 x 1 x H x W grayscale image in [0, 1]
 //
 // Backends:
-//   - ONNX Runtime (preferred): load exported .onnx model, run inference.
+//   - OpenVINO GPU (preferred when available, §4.4.2-GPU): same .onnx model,
+//     compiled for the Intel GPU plugin with static effective dims. Selected
+//     by the device policy (Auto/GPU); any load or runtime failure degrades
+//     to the ONNX Runtime CPU path.
+//   - ONNX Runtime CPU: load exported .onnx model, run inference.
 //     Conditionally compiled when ONNX Runtime is found via CMake.
 //   - Heuristic fallback (always available): when no model is loaded,
 //     reconstructs by summing voxel bins and applying sigmoid-like mapping.
@@ -40,6 +44,18 @@
 // Conditional ONNX Runtime support.
 #if defined(GUI_ALGO_HAS_ONNXRUNTIME)
 #include <onnxruntime_cxx_api.h>
+#endif
+
+// Conditional OpenVINO support (Intel iGPU/dGPU inference, §4.4.2-GPU).
+// Consumes the SAME exported .onnx models as the ONNX Runtime path — no
+// model-format divergence. When the build has OpenVINO and an Intel GPU is
+// present, Auto/GPU device policies route inference through the GPU plugin
+// (measured ~11× faster than ONNX Runtime CPU for E2VID at 128×72 on a
+// Meteor Lake iGPU); any failure falls back to ONNX Runtime CPU.
+#if defined(GUI_ALGO_HAS_OPENVINO)
+#include <cstring>
+#include <map>
+#include <openvino/openvino.hpp>
 #endif
 
 namespace gui_algo {
@@ -124,8 +140,40 @@ public:
     /// rather than a free user parameter — see run_reconstruction.py:55 and
     /// model/model.py:14. Letting the user freely change num_bins after a model
     /// is loaded would mismatch the model's input channels and break inference.
-#if defined(GUI_ALGO_HAS_ONNXRUNTIME)
+    /// @brief Loads an ONNX model from file, selecting the runtime by device
+    /// policy (§4.4.2-GPU): Auto/GPU prefer OpenVINO GPU when the build has
+    /// OpenVINO and an Intel GPU is enumerated; otherwise — and on any
+    /// OpenVINO load failure — ONNX Runtime CPU is used. num_bins is
+    /// synchronised to the model's first-input channel dimension either way
+    /// (rpg_e2vid: num_bins is a property of the model, see model.py:14).
+    /// @return true if the model was loaded successfully.
     bool load_model(const std::string& model_path) {
+        model_path_ = model_path;
+#if defined(GUI_ALGO_HAS_OPENVINO)
+        ov_release();  // drop any previous runtime state (also resets the latch)
+        if (device_ != Device::CPU && ov_gpu_available() && ov_try_load(model_path)) {
+            model_loaded_ = true;
+            active_runtime_ = "gpu";
+            return true;
+        }
+        ov_release();
+#endif
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME)
+        if (load_model_ort(model_path)) {
+            model_loaded_ = true;
+            active_runtime_ = "cpu";
+            return true;
+        }
+#endif
+        model_loaded_ = false;
+        active_runtime_.clear();
+        return false;
+    }
+
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME)
+    /// ONNX Runtime CPU load path (also the live fallback for the OpenVINO
+    /// GPU runtime). Returns false on any Ort::Exception.
+    bool load_model_ort(const std::string& model_path) {
         try {
             env_ = std::make_unique<Ort::Env>(
                 ORT_LOGGING_LEVEL_WARNING, "e2vid");
@@ -143,8 +191,6 @@ public:
                 GraphOptimizationLevel::ORT_ENABLE_ALL);
             session_ = std::make_unique<Ort::Session>(
                 *env_, model_path.c_str(), session_opts);
-            model_path_ = model_path;
-            model_loaded_ = true;
             sync_num_bins_from_model();
             // Cache MemoryInfo (constant for the session lifetime).
             mem_info_ = std::make_unique<Ort::MemoryInfo>(
@@ -175,20 +221,32 @@ public:
             }
             return true;
         } catch (const Ort::Exception&) {
-            model_loaded_ = false;
             return false;
         }
-    }
-#else
-    bool load_model(const std::string& model_path) {
-        model_path_ = model_path;
-        model_loaded_ = false;  // ONNX Runtime not available
-        return false;
     }
 #endif
 
     /// @brief Returns true if a model is loaded and ready for inference.
     bool is_model_loaded() const { return model_loaded_; }
+
+    /// @brief Inference device policy (§4.4.2-GPU). Auto prefers the OpenVINO
+    /// GPU runtime when available and falls back to ONNX Runtime CPU; CPU and
+    /// GPU pin the respective runtime (GPU still degrades to CPU when the
+    /// OpenVINO GPU plugin cannot run). Default Auto.
+    enum class Device { Auto = 0, CPU = 1, GPU = 2 };
+
+    /// @brief Applies a new device policy. Reloads the model from the cached
+    /// path so the runtime selection takes effect (load-time decision).
+    void set_device(Device d) {
+        if (device_ == d) return;
+        device_ = d;
+        if (!model_path_.empty()) load_model(model_path_);
+    }
+    Device device() const { return device_; }
+
+    /// @brief Runtime actually in use for the loaded model: "gpu"
+    /// (OpenVINO GPU plugin), "cpu" (ONNX Runtime), or "" (no model).
+    const std::string& active_runtime() const { return active_runtime_; }
 
     /// @brief Runs inference on a batch of events.
     /// @param events Event array.
@@ -230,19 +288,17 @@ public:
             voxel_grid_.normalize();
         }
 
+#if defined(GUI_ALGO_HAS_OPENVINO)
+        if (model_loaded_ && ov_active_) {
+            cv::Mat result = infer_ov();  // effective crop size
+            postprocess_result(result);
+            return result;
+        }
+#endif
 #if defined(GUI_ALGO_HAS_ONNXRUNTIME)
         if (model_loaded_ && session_) {
             cv::Mat result = infer_onnx();  // effective crop size
-            // Upsample to full crop dimensions so crop_to_sensor works
-            // uniformly regardless of downsample_.
-            if (downsample_ &&
-                (result.rows != full_crop_.crop_height ||
-                 result.cols != full_crop_.crop_width)) {
-                cv::resize(result, result,
-                           cv::Size(full_crop_.crop_width,
-                                    full_crop_.crop_height),
-                           0, 0, cv::INTER_NEAREST);
-            }
+            postprocess_result(result);
             return result;
         }
 #endif
@@ -320,6 +376,11 @@ public:
         state_buffers_.clear();
         input_buffer_.clear();
 #endif
+#if defined(GUI_ALGO_HAS_OPENVINO)
+        // Next infer re-binds the zero-state tensors (storage and compiled
+        // shapes stay valid; only the recurrence sequence restarts).
+        ov_have_prev_ = false;
+#endif
     }
 
     int width() const { return width_; }
@@ -332,6 +393,63 @@ private:
         if (b > 20) return 20;
         return b;
     }
+
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME) || defined(GUI_ALGO_HAS_OPENVINO)
+    /// @brief Copies the voxel grid into input_buffer_ as a reflection-padded
+    /// (BORDER_REFLECT_101) NCHW buffer shared by the ONNX Runtime and
+    /// OpenVINO inference paths. Reuses the storage across frames (resize
+    /// only on a bins/crop change). Returns the buffer's data pointer.
+    float* fill_padded_input() {
+        const int ch = crop_.crop_height;
+        const int cw = crop_.crop_width;
+
+        const std::size_t input_size =
+            static_cast<std::size_t>(num_bins_) * ch * cw;
+        if (cached_crop_w_ != cw || cached_crop_h_ != ch ||
+            cached_num_bins_ != num_bins_ ||
+            input_buffer_.size() != input_size) {
+            input_buffer_.assign(input_size, 0.0f);
+            cached_crop_w_ = cw;
+            cached_crop_h_ = ch;
+            cached_num_bins_ = num_bins_;
+        } else {
+            std::fill(input_buffer_.begin(), input_buffer_.end(), 0.0f);
+        }
+
+        // Copy voxel grid into padded tensor (reflection padding).
+        // voxel_grid_ is at effective dimensions (possibly downsampled).
+        const int ew = eff_width();
+        const int eh = eff_height();
+        const float* grid = voxel_grid_.data();
+        const int stride_hw = ew * eh;
+        for (int b = 0; b < num_bins_; ++b) {
+            cv::Mat bin(eh, ew, CV_32FC1,
+                        const_cast<float*>(grid + b * stride_hw));
+            cv::copyMakeBorder(bin, padded_buffer_,
+                               crop_.pad_top, crop_.pad_bottom,
+                               crop_.pad_left, crop_.pad_right,
+                               cv::BORDER_REFLECT_101);
+            std::copy(padded_buffer_.begin<float>(), padded_buffer_.end<float>(),
+                      input_buffer_.begin() +
+                          static_cast<std::size_t>(b) * ch * cw);
+        }
+        return input_buffer_.data();
+    }
+
+    /// @brief Upsamples a padded inference result to the full crop
+    /// dimensions after 1/4 downsampling, so crop_to_sensor() works
+    /// uniformly regardless of downsample_.
+    void postprocess_result(cv::Mat& result) {
+        if (downsample_ &&
+            (result.rows != full_crop_.crop_height ||
+             result.cols != full_crop_.crop_width)) {
+            cv::resize(result, result,
+                       cv::Size(full_crop_.crop_width,
+                                full_crop_.crop_height),
+                       0, 0, cv::INTER_NEAREST);
+        }
+    }
+#endif
 
 #if defined(GUI_ALGO_HAS_ONNXRUNTIME)
     /// @brief Reads num_bins and num_encoders from the loaded ONNX model.
@@ -384,38 +502,15 @@ private:
         const int cw = crop_.crop_width;
 
         try {
-            // --- Reuse input buffer across frames (resize only on dim change) ---
-            const std::size_t input_size =
-                static_cast<std::size_t>(num_bins_) * ch * cw;
-            if (cached_crop_w_ != cw || cached_crop_h_ != ch ||
-                cached_num_bins_ != num_bins_ ||
-                input_buffer_.size() != input_size) {
-                input_buffer_.assign(input_size, 0.0f);
-                cached_crop_w_ = cw;
-                cached_crop_h_ = ch;
-                cached_num_bins_ = num_bins_;
-                // State buffers must also be rebuilt when dims change.
+            // Recurrent states must be re-zeroed at the new shapes when the
+            // effective dims change (downsample/num_bins toggles).
+            const bool dims_changed =
+                cached_crop_w_ != cw || cached_crop_h_ != ch ||
+                cached_num_bins_ != num_bins_;
+            fill_padded_input();
+            if (dims_changed) {
                 state_buffers_.clear();
-            } else {
-                std::fill(input_buffer_.begin(), input_buffer_.end(), 0.0f);
-            }
-
-            // Copy voxel grid into padded tensor (reflection padding).
-            // voxel_grid_ is at effective dimensions (possibly downsampled).
-            const int ew = eff_width();
-            const int eh = eff_height();
-            const float* grid = voxel_grid_.data();
-            const int stride_hw = ew * eh;
-            for (int b = 0; b < num_bins_; ++b) {
-                cv::Mat bin(eh, ew, CV_32FC1,
-                            const_cast<float*>(grid + b * stride_hw));
-                cv::copyMakeBorder(bin, padded_buffer_,
-                                   crop_.pad_top, crop_.pad_bottom,
-                                   crop_.pad_left, crop_.pad_right,
-                                   cv::BORDER_REFLECT_101);
-                std::copy(padded_buffer_.begin<float>(), padded_buffer_.end<float>(),
-                          input_buffer_.begin() +
-                              static_cast<std::size_t>(b) * ch * cw);
+                prev_states_.clear();
             }
 
             std::array<std::int64_t, 4> input_shape = {1, num_bins_, ch, cw};
@@ -524,6 +619,230 @@ private:
     }
 #endif
 
+#if defined(GUI_ALGO_HAS_OPENVINO)
+    /// Process-wide OpenVINO runtime core (lazy, thread-safe init). Device
+    /// enumeration happens once; plugin discovery is relative to the
+    /// libopenvino.so location (third_party/openvino/runtime/lib/intel64 or
+    /// a system install).
+    static ov::Core& ov_core() {
+        static ov::Core core;
+        return core;
+    }
+
+    /// True when the build has OpenVINO and an Intel GPU device is
+    /// enumerated (cached after the first check).
+    static bool ov_gpu_available() {
+        static const bool available = [] {
+            try {
+                for (const auto& d : ov_core().get_available_devices()) {
+                    if (d.rfind("GPU", 0) == 0) return true;
+                }
+            } catch (...) {
+            }
+            return false;
+        }();
+        return available;
+    }
+
+    /// Drops all OpenVINO state (request, compiled model, tensors). Safe to
+    /// call repeatedly; never throws.
+    void ov_release() {
+        ov_request_ = ov::InferRequest{};
+        ov_compiled_ = ov::CompiledModel{};
+        ov_model_.reset();
+        ov_input_tensor_ = ov::Tensor{};
+        ov_zero_states_.clear();
+        ov_prev_states_.clear();
+        ov_have_prev_ = false;
+        ov_active_ = false;
+        ov_compiled_bins_ = 0;
+        ov_compiled_h_ = 0;
+        ov_compiled_w_ = 0;
+    }
+
+    /// Reads num_bins / num_encoders from the OpenVINO model (same contract
+    /// as the ONNX Runtime sync) and rebuilds the effective buffers.
+    void ov_sync_model_meta() {
+        try {
+            const ov::PartialShape ps = ov_model_->inputs()[0].get_partial_shape();
+            if (ps.rank().is_static() && ps.rank().get_length() >= 2 &&
+                ps[1].is_static()) {
+                model_num_bins_ = static_cast<int>(ps[1].get_length());
+                num_bins_ = model_num_bins_;
+            }
+            const std::size_t n_inputs = ov_model_->inputs().size();
+            if (n_inputs > 1) {
+                int inferred = static_cast<int>((n_inputs - 1) / 2);
+                if (inferred > 0 && inferred != num_encoders_) {
+                    num_encoders_ = inferred;
+                }
+            }
+            rebuild_effective_buffers();
+        } catch (const std::exception&) {
+            // Keep existing meta (best-effort, mirrors the ORT sync).
+        }
+    }
+
+    /// Declared channel count of recurrent-state input @p i (falls back to
+    /// the level formula when the model leaves it dynamic).
+    std::size_t ov_state_channels(std::size_t i) const {
+        const ov::PartialShape ps = ov_model_->inputs()[i].get_partial_shape();
+        if (ps.rank().is_static() && ps.rank().get_length() >= 2 &&
+            ps[1].is_static()) {
+            return static_cast<std::size_t>(ps[1].get_length());
+        }
+        const int level = static_cast<int>((i - 1) / 2);
+        return static_cast<std::size_t>(
+            32 << (level + 1));  // base 32 × 2^(level+1)
+    }
+
+    /// Loads the model for the OpenVINO GPU runtime: reads the SAME .onnx as
+    /// the ORT path, reshapes it to the current static effective dims
+    /// (compiled once per dims change — GPU scheduling needs static shapes;
+    /// the ~0.3 s recompile on a downsample/ROI change is acceptable), then
+    /// compiles for the GPU plugin and pre-allocates the state tensors.
+    bool ov_try_load(const std::string& model_path) {
+        try {
+            ov_model_ = ov_core().read_model(model_path);
+            ov_sync_model_meta();
+
+            const int ch = crop_.crop_height;
+            const int cw = crop_.crop_width;
+            const std::size_t n_inputs = ov_model_->inputs().size();
+
+            std::map<std::size_t, ov::PartialShape> shapes;
+            shapes[0] = ov::PartialShape{
+                1, static_cast<std::int64_t>(num_bins_),
+                static_cast<std::int64_t>(ch), static_cast<std::int64_t>(cw)};
+            for (std::size_t i = 1; i < n_inputs; ++i) {
+                const int level = static_cast<int>((i - 1) / 2);
+                const int divisor = 1 << (level + 1);
+                shapes[i] = ov::PartialShape{
+                    1, static_cast<std::int64_t>(ov_state_channels(i)),
+                    static_cast<std::int64_t>(ch / divisor),
+                    static_cast<std::int64_t>(cw / divisor)};
+            }
+            ov_model_->reshape(shapes);
+            ov_compiled_ = ov_core().compile_model(ov_model_, "GPU");
+            ov_request_ = ov_compiled_.create_infer_request();
+
+            // Input tensor wraps the shared padded-voxel storage (filled per
+            // frame by fill_padded_input(); sizes are frozen at compile time).
+            input_buffer_.assign(static_cast<std::size_t>(num_bins_) * ch * cw,
+                                 0.0f);
+            cached_crop_w_ = cw;
+            cached_crop_h_ = ch;
+            cached_num_bins_ = num_bins_;
+            const ov::Shape in_shape{
+                1, static_cast<std::size_t>(num_bins_),
+                static_cast<std::size_t>(ch), static_cast<std::size_t>(cw)};
+            ov_input_tensor_ =
+                ov::Tensor(ov::element::f32, in_shape, input_buffer_.data());
+
+            // Zero-filled recurrent-state tensors (rebound whenever no
+            // previous state exists — first call or after reset()).
+            ov_zero_states_.clear();
+            for (std::size_t i = 1; i < n_inputs; ++i) {
+                ov::Tensor t(ov::element::f32, shapes[i].get_max_shape());
+                std::memset(t.data(), 0, t.get_byte_size());
+                ov_zero_states_.push_back(std::move(t));
+            }
+            ov_prev_states_.clear();
+            ov_have_prev_ = false;
+
+            ov_compiled_bins_ = num_bins_;
+            ov_compiled_h_ = ch;
+            ov_compiled_w_ = cw;
+            ov_active_ = true;
+            return true;
+        } catch (const std::exception&) {
+            return false;  // caller falls back to the CPU runtime
+        }
+    }
+
+    /// Recompiles the GPU model when the effective dims drifted after the
+    /// last compile (set_downsample / set_num_bins while loaded).
+    void ov_ensure_current() {
+        if (ov_compiled_bins_ == num_bins_ &&
+            ov_compiled_h_ == crop_.crop_height &&
+            ov_compiled_w_ == crop_.crop_width) {
+            return;
+        }
+        ov_release();
+        if (!ov_try_load(model_path_)) {
+            // GPU runtime unavailable after the change — degrade to CPU.
+            ov_active_ = false;
+            active_runtime_ = "cpu";
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME)
+            if (!load_model_ort(model_path_)) model_loaded_ = false;
+#else
+            model_loaded_ = false;
+#endif
+        }
+    }
+
+    /// @brief OpenVINO GPU inference path (same positional recurrent-state
+    /// contract as infer_onnx). On a runtime failure the engine degrades
+    /// once to the ONNX Runtime CPU path (or heuristic when unavailable).
+    cv::Mat infer_ov() {
+        try {
+            ov_ensure_current();
+            fill_padded_input();
+
+            if (!ov_have_prev_) {
+                for (std::size_t i = 0; i < ov_zero_states_.size(); ++i) {
+                    ov_request_.set_input_tensor(i + 1, ov_zero_states_[i]);
+                }
+            } else {
+                for (std::size_t i = 0; i < ov_prev_states_.size(); ++i) {
+                    ov_request_.set_input_tensor(i + 1, ov_prev_states_[i]);
+                }
+            }
+            ov_request_.set_input_tensor(0, ov_input_tensor_);
+            ov_request_.infer();
+
+            // Persist recurrent states (position-mapped outputs 1..n-1).
+            const std::size_t n_out = ov_compiled_.outputs().size();
+            if (ov_prev_states_.size() != n_out - 1) {
+                ov_prev_states_.clear();
+                for (std::size_t k = 1; k < n_out; ++k) {
+                    const ov::Output<const ov::Node>& port =
+                        ov_compiled_.output(k);
+                    ov_prev_states_.emplace_back(port.get_element_type(),
+                                                 port.get_shape());
+                }
+            }
+            for (std::size_t k = 1; k < n_out; ++k) {
+                ov_request_.get_output_tensor(k).copy_to(
+                    ov_prev_states_[k - 1]);
+            }
+            ov_have_prev_ = true;
+
+            // Output: 1 x 1 x crop_h x crop_w, values in [0,1].
+            ov::Tensor img = ov_request_.get_output_tensor(0);
+            const ov::Shape shp = img.get_shape();
+            cv::Mat out(static_cast<int>(shp[2]), static_cast<int>(shp[3]),
+                        CV_32FC1, img.data());
+            return out.clone();  // deep copy (the request owns the buffer)
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[e2vid] OpenVINO inference failed: %s — "
+                    "switching to the CPU runtime\n", e.what());
+            ov_release();
+            active_runtime_ = "cpu";
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME)
+            if (!load_model_ort(model_path_)) {
+                model_loaded_ = false;
+                return infer_heuristic();
+            }
+            return infer_onnx();
+#else
+            model_loaded_ = false;
+            return infer_heuristic();
+#endif
+        }
+    }
+#endif
+
     /// @brief Heuristic fallback: reconstructs from voxel grid without a model.
     /// Sums bins, applies sigmoid, returns CV_8UC1 at sensor dimensions.
     cv::Mat infer_heuristic() {
@@ -599,8 +918,15 @@ private:
 #if defined(GUI_ALGO_HAS_ONNXRUNTIME)
         state_buffers_.clear();
         prev_states_.clear();
+#endif
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME) || defined(GUI_ALGO_HAS_OPENVINO)
         input_buffer_.clear();
         cached_crop_w_ = 0;  // force resize on next infer
+#endif
+#if defined(GUI_ALGO_HAS_OPENVINO)
+        // Compiled GPU shapes are now stale; ov_ensure_current() recompiles
+        // on the next infer, which also restarts the recurrence with fresh
+        // zero states.
 #endif
     }
 
@@ -613,11 +939,6 @@ private:
     std::vector<Ort::Value> prev_states_;  ///< Recurrent states (UNetRecurrent).
     std::vector<std::vector<float>> state_buffers_;  ///< Backing storage for zero-init states.
 
-    // --- Hot-path caches (avoid per-frame allocations) ---
-    // input_buffer_ is reused across frames; resized only when crop/bin dims
-    // change. Previously every infer_onnx() call did a 320 KB malloc+memset.
-    std::vector<float> input_buffer_;
-    cv::Mat padded_buffer_;  ///< Reusable padded image buffer (avoids per-bin allocation)
     // Input/output name strings are fetched once at load_model() time.
     std::vector<Ort::AllocatedStringPtr> input_name_owners_;
     std::vector<Ort::AllocatedStringPtr> output_name_owners_;
@@ -625,10 +946,42 @@ private:
     std::vector<const char*> cached_output_names_;
     // MemoryInfo is constant for the lifetime of the session.
     std::unique_ptr<Ort::MemoryInfo> mem_info_;
+#endif
+
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME) || defined(GUI_ALGO_HAS_OPENVINO)
+    // --- Hot-path caches shared by the ORT and OpenVINO paths (avoid
+    // per-frame allocations). input_buffer_ is reused across frames; resized
+    // only when crop/bin dims change. Previously every infer call did a
+    // 320 KB malloc+memset.
+    std::vector<float> input_buffer_;
+    cv::Mat padded_buffer_;  ///< Reusable padded image buffer (avoids per-bin allocation)
     // Crop dims last used to size input_buffer_ (resize only on change).
     int cached_crop_w_{0};
     int cached_crop_h_{0};
     int cached_num_bins_{0};
+#endif
+
+    // Device policy + actually-selected runtime exist in ALL builds (the
+    // setter is public API; the value only steers runtime selection when
+    // OpenVINO support is compiled in).
+    Device device_{Device::Auto};
+    std::string active_runtime_;  ///< "gpu" | "cpu" | "" (no model loaded)
+
+#if defined(GUI_ALGO_HAS_OPENVINO)
+    // OpenVINO GPU runtime state (§4.4.2-GPU). The model is compiled with
+    // STATIC effective dims (GPU scheduling wants fixed shapes) and
+    // recompiled lazily when downsample/num_bins changes the dims.
+    std::shared_ptr<ov::Model> ov_model_;
+    ov::CompiledModel ov_compiled_;
+    ov::InferRequest ov_request_;
+    ov::Tensor ov_input_tensor_;             ///< wraps input_buffer_
+    std::vector<ov::Tensor> ov_zero_states_;  ///< state inputs after reset
+    std::vector<ov::Tensor> ov_prev_states_;  ///< persisted state outputs
+    bool ov_have_prev_{false};
+    bool ov_active_{false};  ///< true when the active runtime is OpenVINO GPU
+    int ov_compiled_bins_{0};
+    int ov_compiled_h_{0};
+    int ov_compiled_w_{0};
 #endif
 };
 

@@ -220,6 +220,18 @@ public:
     const std::string& model_path() const { return model_path_; }
     bool e2vid_model_loaded() const { return e2vid_.is_model_loaded(); }
 
+    // Inference device policy (0=Auto, 1=CPU, 2=GPU; §4.4.2-GPU). Auto runs
+    // the neural path on the OpenVINO GPU runtime when the build has it and
+    // an Intel GPU is present, degrading to ONNX Runtime CPU otherwise.
+    void set_e2v_device(int d) {
+        e2vid_.set_device(static_cast<E2VIDInference::Device>(d));
+    }
+    int e2v_device() const { return static_cast<int>(e2vid_.device()); }
+    /// "gpu" | "cpu" | "" — runtime actually in use (status line).
+    const std::string& e2v_active_runtime() const {
+        return e2vid_.active_runtime();
+    }
+
     void set_e2vid_num_bins(int b) { e2vid_.set_num_bins(b); }
     int e2vid_num_bins() const { return e2vid_.num_bins(); }
 
