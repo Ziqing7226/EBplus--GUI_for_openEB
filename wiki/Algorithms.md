@@ -128,7 +128,9 @@ cmake --build build -- -j$(nproc)
 
 E2VID defaults to 128×128 ROI + 30 fps + 1/4 downsample (64×64 inference → upsampled to 128×128). `num_bins` is auto-determined by the ONNX model's input channel count when a model is loaded.
 
-E2VID parameters exposed in the GUI: model path, `num_bins`, auto-HDR, unsharp amount/sigma, bilateral sigma.
+E2VID parameters exposed in the GUI: model path, inference device, `num_bins`, auto-HDR, unsharp amount/sigma, bilateral sigma.
+
+**Inference device (GPU acceleration, §4.4.2-GPU)**: the `device` parameter selects `Auto` (default) / `CPU` / `GPU`. With **OpenVINO** installed (see compile.md G4), Auto/GPU run the neural inference on the Intel iGPU via OpenVINO — the SAME `.onnx` model files are used, no re-conversion needed (measured ~11× faster than CPU: E2VID 5 ms vs 20 ms per frame at 64×64). Without OpenVINO — or on any GPU load/runtime failure — the engine silently falls back to ONNX Runtime CPU. The active runtime is shown in the algorithm status line (`model=loaded dev=gpu|cpu`).
 
 > **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps work without any extra setup.
 

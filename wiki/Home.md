@@ -23,7 +23,7 @@ EB plus gives you a complete desktop workflow for event-camera data: real-time v
 - **Cameras**: Prophesee / CenturyArks event cameras via openEB HAL
 - **Display**: OpenGL 3.3 core, 7 frame modes, 4 palettes, 60+ FPS
 - **Algorithms**: 59 total (filtering, motion, detection, tracking, reconstruction, analytics, visualization, calibration)
-- **E2VID**: Deep-learning event-to-video reconstruction via ONNX Runtime (default mode)
+- **E2VID**: Deep-learning event-to-video reconstruction via ONNX Runtime, with optional Intel iGPU acceleration via OpenVINO (default mode)
 - **Themes**: 5 colors × 3 modes (Follow System / Light / Dark)
 - **License**: MIT (original code) + Apache 2.0 (openEB SDK)
 

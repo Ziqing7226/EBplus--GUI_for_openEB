@@ -190,6 +190,24 @@ cmake --build build -- -j$(nproc)
 
 模型权重转换（PyTorch → ONNX）详见 [README.md](../README.md) §E2VID Neural Network Reconstruction。
 
+### G4b. OpenVINO 安装（E2VID Intel 核显加速，可选）
+
+安装后 E2VID 的推理设备 Auto/GPU 会通过 OpenVINO 在 Intel 核显上运行神经网络（实测比 CPU 快约 11 倍，同一份 .onnx 模型，无需重新转换）；未安装时自动回退 ONNX Runtime CPU，功能无损。依赖核显的用户态驱动（Ubuntu 26.04：`sudo apt install intel-opencl-icd`）。
+
+```bash
+cd /path/to/GUI-for-openEB
+mkdir -p third_party/openvino && cd third_party/openvino
+# 从 https://storage.openvinotoolkit.org/repositories/openvino/packages/ 选对应版本，
+# 下载 openvino_toolkit_ubuntuXX_<版本>_x86_64.tgz 并解压到当前目录（含 runtime/）
+tar xzf ../openvino_toolkit_ubuntu26_2026.4.0.*_x86_64.tgz --strip-components=1
+cd ../..
+
+# 安装后重新编译，CMake 会自动检测 third_party/openvino/runtime/
+cmake --build build -- -j$(nproc)
+```
+
+验证：`ctest -R e2vid_inference` 加载真实模型并打印实际使用的运行时（`dev=gpu|cpu`）。
+
 ### G5. 运行测试
 
 ```bash
