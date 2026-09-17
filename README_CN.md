@@ -19,7 +19,7 @@
 
 ## 这是什么？
 
-**EB plus** 是一个美观、开源、功能丰富的事件相机 GUI 工具，支持 Prophesee / CenturyArks 事件相机。事件相机不采集帧——它以微秒级时间分辨率逐像素报告亮度变化。EB plus 提供完整的事件数据桌面工作流：
+**EB plus** 是一个美观、开源、功能丰富的事件相机 GUI 工具，支持 Prophesee / CenturyArks / inivation DAVIS 事件相机。事件相机不采集帧——它以微秒级时间分辨率逐像素报告亮度变化。EB plus 提供完整的事件数据桌面工作流：
 
 - **实时显示** 事件流（OpenGL，60+ FPS）
 - **控制相机** —— biases、ROI、抗闪烁、触发
@@ -49,6 +49,17 @@ cmake --build build -- -j$(nproc)
 
 > **环境要求**：Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4。详见 [wiki/compile.md](wiki/compile.md)。
 
+### 连接 inivation DAVIS 相机（可选，初步支持）
+
+**初步支持**部分 inivation DAVIS 相机（DAVIS346/640，仅事件流 + 偏置；APS 帧、IMU、触发被丢弃）。许多 DAVIS 功能尚未支持——本 GUI 仍以 **Prophesee** 相机为主要适配与测试对象。一次性安装 USB 访问规则：
+
+```bash
+sudo cp gui/davis/66-inivation.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+拔插一次相机，然后在设备面板连接。此功能可选：缺少 libusb-1.0 开发文件时构建会自动排除。详见 [wiki/Getting-Started.md](wiki/Getting-Started.md)。
+
 ---
 
 ## 功能特性
@@ -68,7 +79,7 @@ cmake --build build -- -j$(nproc)
 所有面板在设备不支持对应 HAL facility 时优雅降级（如文件回放时四个硬件面板自动禁用）。
 
 ### 录制与回放
-- RAW 录制 —— 实时相机流录制，带实时缓冲刷新
+- RAW 录制 —— 实时相机流录制，带实时缓冲刷新（DAVIS：仅实时预览与偏置）
 - 文件回放 —— 速度控制、跳转、暂停/恢复、位置追踪
 - 文件裁剪 —— 从事件文件中提取时间段
 

@@ -34,6 +34,7 @@ public:
     ///        bias_diff_on/off (the caller should keep auto_bias inactive).
     bool attach(Metavision::I_LL_Biases* biases) {
         detach();
+        off_sign_ = 1;
         if (!biases) return false;
         try {
             std::string name_on, name_off;
@@ -72,10 +73,25 @@ public:
 
     bool attached() const { return biases_ != nullptr; }
 
+    /// @brief Sets the homing destination for the two diff biases.
+    ///        Prophesee diff biases are relative offsets with factory default
+    ///        0, so homing toward 0 is correct there (the default). DAVIS
+    ///        biases are absolute operating points with non-zero reference
+    ///        defaults — the caller supplies those after attach().
+    void set_home_targets(int on, int off) { home_on_ = on; home_off_ = off; }
+
+    /// @brief Sets the sign of the OFF-axis delta. On Prophesee, increasing
+    ///        bias_diff_off suppresses OFF events (+1, the default). On
+    ///        DAVIS346 the polarity is inverted — measured on hardware:
+    ///        higher diff_off yields MORE OFF events — so DAVIS passes -1
+    ///        and every OFF-axis delta is negated.
+    void set_off_delta_sign(int sign) { off_sign_ = (sign < 0) ? -1 : 1; }
+
     /// @brief Applies integer deltas: reads the CURRENT register values,
     ///        adds the deltas, clamps to the hardware range, writes back.
     Status apply(int delta_on, int delta_off) {
         if (!biases_) return Status::NoBias;
+        delta_off *= off_sign_;
         try {
             const int cur_on = biases_->get(name_on_);
             const int cur_off = biases_->get(name_off_);
@@ -91,22 +107,24 @@ public:
         }
     }
 
-    /// @brief Moves both diff biases toward 0 — the factory default. The
-    ///        per-bias step is HALF the remaining distance, clipped to
-    ///        [1, @p cap]: far from 0 it converges fast (binary-search
-    ///        decay), near 0 it slows to single units, and it can never
-    ///        overshoot past 0. A step that large may push the event rate
-    ///        out of band — the correction loops pull it back within one
-    ///        hold cycle, and homing is suspended while they do.
-    ///        Returns true when a register actually changed (already at 0
-    ///        → false, no write).
+    /// @brief Moves both diff biases toward their homing targets (0 by
+    ///        default — the Prophesee factory default; see
+    ///        set_home_targets()). The per-bias step is HALF the remaining
+    ///        distance, clipped to [1, @p cap]: far from the target it
+    ///        converges fast (binary-search decay), near it slows to single
+    ///        units, and it can never overshoot past the target. A step that
+    ///        large may push the event rate out of band — the correction
+    ///        loops pull it back within one hold cycle, and homing is
+    ///        suspended while they do.
+    ///        Returns true when a register actually changed (already at the
+    ///        target → false, no write).
     bool home(int cap) {
         if (!biases_) return false;
         try {
             const int cur_on = biases_->get(name_on_);
             const int cur_off = biases_->get(name_off_);
-            const int tgt_on = step_toward(cur_on, cap, lo_on_, hi_on_);
-            const int tgt_off = step_toward(cur_off, cap, lo_off_, hi_off_);
+            const int tgt_on = step_toward(cur_on, home_on_, cap, lo_on_, hi_on_);
+            const int tgt_off = step_toward(cur_off, home_off_, cap, lo_off_, hi_off_);
             if (tgt_on == cur_on && tgt_off == cur_off) return false;
             if (tgt_on != cur_on) biases_->set(name_on_, tgt_on);
             if (tgt_off != cur_off) biases_->set(name_off_, tgt_off);
@@ -136,22 +154,25 @@ public:
     }
 
 private:
-    /// Half the distance from @p v to 0, clipped to [1, cap], applied
-    /// toward 0 and clamped to the writable range [lo, hi] (0 may sit
-    /// outside the range — then we stop at the nearest limit).
-    static int step_toward(int v, int cap, int lo, int hi) {
-        const int dist = std::abs(v);
+    /// Half the distance from @p v to @p target, clipped to [1, cap],
+    /// applied toward @p target and clamped to the writable range [lo, hi]
+    /// (the target may sit outside the range — then we stop at the nearest
+    /// limit).
+    static int step_toward(int v, int target, int cap, int lo, int hi) {
+        const int dist = std::abs(target - v);
         const int step = std::clamp(dist / 2, 1, cap);
-        int target = v > 0 ? v - step : v + step;
-        if (v > 0 && target < 0) target = 0;
-        if (v < 0 && target > 0) target = 0;
-        return std::clamp(target, lo, hi);
+        int next = v > target ? v - step : v + step;
+        if (v < target && next > target) next = target;
+        if (v > target && next < target) next = target;
+        return std::clamp(next, lo, hi);
     }
 
     Metavision::I_LL_Biases* biases_{nullptr};
     std::string name_on_, name_off_;
     int lo_on_{0}, hi_on_{0}, lo_off_{0}, hi_off_{0};
     int saved_on_{0}, saved_off_{0};
+    int home_on_{0}, home_off_{0};
+    int off_sign_{1};
 };
 
 } // namespace gui

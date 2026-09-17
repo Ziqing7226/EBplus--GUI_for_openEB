@@ -33,6 +33,10 @@
 #include "stream_conditioner.h"
 #include "statistics_controller.h"
 #include "external_file_source.h"
+#if GUI_HAVE_DAVIS
+#include "davis/davis_ll_biases.h"
+#include "davis/davis_device.h"
+#endif
 #include "algo_bridge/filter_chain.h"
 #include "algo/analytics/auto_bias_controller.h"
 #include "app/bias_applier.h"
@@ -81,7 +85,8 @@ public:
 
     /// @brief Connects to the first available live camera. Returns false on failure.
     bool connect_first_available();
-    /// @brief Connects to a camera by serial number.
+    /// @brief Connects to a camera by serial number. Searches Metavision
+    /// sources first, then live DAVIS cameras (when the build has libusb).
     bool connect_serial(const std::string& serial);
     /// @brief Opens an event file (RAW / HDF5 / DAT) for playback. Always
     /// uses real_time_playback=false so all events are read as fast as
@@ -94,7 +99,12 @@ public:
     bool start();
     bool stop();
     bool is_running() const;
-    bool is_connected() const { return static_cast<bool>(camera_) || external_source_ != nullptr; }
+    bool is_connected() const {
+#if GUI_HAVE_DAVIS
+        if (davis_device_) return true;
+#endif
+        return static_cast<bool>(camera_) || external_source_ != nullptr;
+    }
     bool is_file_source() const { return is_file_; }
 
     /// @brief Returns the underlying Metavision::Camera (nullptr if none).
@@ -251,6 +261,16 @@ private:
     /// frame_pipeline_.start_file() for file sources (FileFrameGenerator)
     /// or frame_pipeline_.start() for live sources (CDFrameGenerator).
     void setup_camera(Metavision::Camera&& cam, bool is_file);
+    /// @brief Live-stream event handler shared by the SDK CD callback and the
+    /// DAVIS source: statistics → auto bias → conditioning → listener →
+    /// pipeline, plus the optional raw CD broadcast.
+    void on_live_events(const Metavision::EventCD* b, const Metavision::EventCD* e);
+#if GUI_HAVE_DAVIS
+    /// @brief Connects to a live inivation DAVIS camera (events + biases).
+    bool connect_davis(const davis::DeviceDescriptor& descriptor);
+    /// @brief DAVIS device unplugged mid-stream (from the libusb thread).
+    void on_davis_gone();
+#endif
     /// @brief Opens a non-SDK file format (AEDAT4 / ALPDATA): parses the
     /// header, populates sensor_info_ from the reader's metadata and starts
     /// the shared FileFrameGenerator — identical downstream behavior, only
@@ -265,6 +285,13 @@ private:
     void fetch_sensor_info();
 
     std::unique_ptr<Metavision::Camera> camera_;
+#if GUI_HAVE_DAVIS
+    /// Live DAVIS source + its bias facility. Mutually exclusive with
+    /// camera_ and with external_source_.
+    std::unique_ptr<davis::Device> davis_device_;
+    std::unique_ptr<davis::DavisLLBiases> davis_biases_;
+    bool streaming_started_{false};
+#endif
     /// External (non-SDK) file source and its reader thread. Mutually
     /// exclusive with camera_: only one is ever set.
     std::unique_ptr<ExternalFileSource> external_source_;

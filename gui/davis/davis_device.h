@@ -1,0 +1,142 @@
+// gui/davis/davis_device.h — live inivation DAVIS346/640 camera over libusb.
+//
+// Ported from dv-processing 2.0.4 io/camera/{usb_device,davis}.hpp
+// (Apache-2.0) with a reduced, events-only feature set: APS frames, IMU
+// samples and trigger markers are parsed and discarded, the stream is
+// rebased to start at t=0 after each device timestamp reset.
+//
+// Threading model mirrors the reference: a dedicated libusb event thread
+// services N queued bulk transfers (data endpoint 0x82) and the control
+// transfers used for configuration; the event sink is invoked from that
+// thread — the consumer (CameraController) treats it exactly like a
+// Metavision SDK CD callback.
+
+#ifndef GUI_DAVIS_DAVIS_DEVICE_H
+#define GUI_DAVIS_DAVIS_DEVICE_H
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <libusb.h>
+
+#include <metavision/sdk/base/events/event_cd.h>
+
+#include "davis_biases.h"
+#include "davis_parser.h"
+
+namespace gui::davis {
+
+struct DeviceDescriptor {
+    std::uint16_t vid{0};
+    std::uint16_t pid{0};
+    std::uint8_t bus{0};
+    std::uint8_t addr{0};
+    std::uint8_t firmware{0};
+    std::string serial;
+};
+
+/// Enumerates connected inivation DAVIS (FX2/FX3) cameras without opening them.
+std::vector<DeviceDescriptor> find_devices();
+
+class Device {
+public:
+    /// Sink invoked from the libusb thread with decoded, 0-based events.
+    using EventSink = std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)>;
+    /// Invoked (libusb thread) when the device disappears unexpectedly.
+    using GoneCallback = std::function<void()>;
+
+    /// Opens and fully configures the camera; the stream stays idle until
+    /// start(). Throws std::runtime_error on any failure (permissions,
+    /// missing device, unsupported firmware/logic version, …).
+    explicit Device(const DeviceDescriptor& descriptor);
+    ~Device();
+
+    Device(const Device&) = delete;
+    Device& operator=(const Device&) = delete;
+
+    void set_event_sink(EventSink sink);
+    void set_gone_callback(GoneCallback callback);
+
+    /// Starts event streaming (data transfers + run switches + timestamp
+    /// reset handshake; blocks up to ~1 s waiting for the reset marker).
+    void start();
+    /// Stops event streaming; the camera returns to the configured-idle state.
+    void stop();
+
+    [[nodiscard]] int width() const { return width_; }
+    [[nodiscard]] int height() const { return height_; }
+    [[nodiscard]] const std::string& serial() const { return serial_; }
+    [[nodiscard]] const std::string& model_name() const { return model_name_; }
+
+    /// Bias store (register state + device writes). Lives as long as the
+    /// device; safe to call from the GUI thread while streaming (SPI control
+    /// transfers run on the libusb thread).
+    BiasStore& biases() { return biases_; }
+
+    /// @brief Raw SPI read of a MODULE_BIAS (5) register — hardware readback
+    /// for verifying that parameter writes actually landed on the camera.
+    [[nodiscard]] std::uint16_t read_bias_register(std::uint16_t address) {
+        return static_cast<std::uint16_t>(spi_config_receive(5, address) & 0xFFFF);
+    }
+
+private:
+    // USB primitives (ported from usb_device.hpp).
+    void usb_control_out(std::uint8_t request, std::uint16_t value, std::uint16_t index,
+                         const std::uint8_t* data, std::size_t size);
+    void usb_control_in(std::uint8_t request, std::uint16_t value, std::uint16_t index,
+                        std::uint8_t* data, std::size_t size);
+    void spi_config_send(std::uint8_t module, std::uint16_t param, std::uint32_t value);
+    std::uint32_t spi_config_receive(std::uint8_t module, std::uint16_t param);
+    void spi_config_send_multiple(const std::vector<std::array<std::uint8_t, 6>>& configs);
+    void usb_cleanup_buffers();
+    void usb_thread_start();
+    void usb_thread_stop();
+    void usb_data_transfers_start();
+    void usb_data_transfers_stop();
+
+    // DAVIS configuration (ported from davis.hpp).
+    void configure_idle(); // full reference init sequence, RUN switches off
+    void send_timestamp_reset();
+    bool wait_for_timestamp_reset();
+
+    static void LIBUSB_CALL usb_data_transfer_cb(libusb_transfer* transfer);
+
+    // USB state.
+    libusb_context* context_{nullptr};
+    libusb_device_handle* handle_{nullptr};
+    std::string serial_;
+    std::uint8_t data_endpoint_{0x82};
+    std::thread usb_thread_;
+    std::atomic<bool> usb_thread_run_{false};
+    std::mutex usb_ops_lock_;
+    std::vector<libusb_transfer*> data_transfers_;
+    std::uint32_t data_transfers_active_{0};
+    std::mutex data_transfers_lock_;
+
+    void teardown_usb();
+
+    // DAVIS state.
+    std::uint16_t pid_{0};
+    std::uint8_t firmware_{0};
+    int width_{0};
+    int height_{0};
+    std::string model_name_{"DAVIS346"};
+    float logic_clock_{0};
+    float usb_clock_{0};
+    Parser parser_;
+    BiasStore biases_;
+    EventSink sink_;
+    GoneCallback gone_callback_;
+    std::atomic<bool> streaming_{false};
+};
+
+} // namespace gui::davis
+
+#endif // GUI_DAVIS_DAVIS_DEVICE_H

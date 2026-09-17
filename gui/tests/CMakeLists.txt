@@ -147,3 +147,18 @@ target_compile_options(test_external_file_sources PRIVATE ${GUI_TEST_COMPILE_OPT
 gtest_discover_tests(test_external_file_sources
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# --- test_davis_protocol: DAVIS wire decoder + bias table/encoding (the USB
+# transport itself requires hardware and is not covered here). ---
+add_executable(test_davis_protocol
+    test_davis_protocol.cpp
+)
+target_link_libraries(test_davis_protocol PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_davis_protocol PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_davis_protocol
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)

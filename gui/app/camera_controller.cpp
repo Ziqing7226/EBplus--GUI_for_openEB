@@ -62,6 +62,11 @@ std::vector<std::pair<QString, QString>> CameraController::list_online_sources()
     } catch (const Metavision::CameraException&) {
         // ignore — return empty list
     }
+#if GUI_HAVE_DAVIS
+    for (const auto& device : davis::find_devices()) {
+        out.emplace_back(QStringLiteral("DAVIS"), QString::fromStdString(device.serial));
+    }
+#endif
     return out;
 }
 
@@ -79,6 +84,13 @@ bool CameraController::connect_first_available() {
         setup_camera(std::move(cam), false);
         return true;
     } catch (const Metavision::CameraException& e) {
+#if GUI_HAVE_DAVIS
+        // No Metavision camera — fall back to live DAVIS devices.
+        const auto devices = davis::find_devices();
+        if (!devices.empty()) {
+            return connect_davis(devices.front());
+        }
+#endif
         // teardown() already destroyed the previous camera/pipeline but never
         // emits disconnected() — do so here so the UI cleans up its stale
         // connection state (status bar, panels, playback controls) before
@@ -96,6 +108,13 @@ bool CameraController::connect_serial(const std::string& serial) {
         setup_camera(std::move(cam), false);
         return true;
     } catch (const Metavision::CameraException& e) {
+#if GUI_HAVE_DAVIS
+        for (const auto& device : davis::find_devices()) {
+            if (device.serial == serial) {
+                return connect_davis(device);
+            }
+        }
+#endif
         emit disconnected();
         emit error(QString::fromUtf8(e.what()));
         return false;
@@ -141,6 +160,62 @@ bool CameraController::connect_file(const std::string& path) {
         return false;
     }
 }
+
+#if GUI_HAVE_DAVIS
+bool CameraController::connect_davis(const davis::DeviceDescriptor& descriptor) {
+    teardown();
+    try {
+        davis_device_ = std::make_unique<davis::Device>(descriptor);
+        davis_biases_ = std::make_unique<davis::DavisLLBiases>(*davis_device_);
+    } catch (const std::exception& e) {
+        davis_device_.reset();
+        davis_biases_.reset();
+        emit disconnected();
+        emit error(QString::fromUtf8(e.what()));
+        return false;
+    }
+
+    is_file_ = false;
+    sensor_info_ = SensorInfo{};
+    sensor_info_.width = davis_device_->width();
+    sensor_info_.height = davis_device_->height();
+    sensor_info_.serial = QString::fromStdString(davis_device_->serial());
+    sensor_info_.integrator = QStringLiteral("inivation");
+    sensor_info_.plugin_name = QStringLiteral("DAVIS");
+    sensor_info_.encoding_format = QString::fromStdString(davis_device_->model_name() + " EVS");
+
+    statistics_.reset();
+    filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
+    conditioner_.init(sensor_info_.width, sensor_info_.height);
+    conditioner_.set_filter_chain(&filter_chain_);
+    conditioner_.reset_temporal();
+
+    const std::uint16_t fps = frame_pipeline_.fps();
+    const Metavision::timestamp acc = frame_pipeline_.accumulation_time_us();
+    if (!frame_pipeline_.start(sensor_info_.width, sensor_info_.height, fps, acc)) {
+        teardown();
+        emit disconnected();
+        emit error(tr("Failed to start frame pipeline."));
+        return false;
+    }
+
+    // Device removal mid-stream: the callback fires on the libusb thread —
+    // only hop to the GUI thread here (no Device calls: locks are held).
+    davis_device_->set_gone_callback([this]() {
+        QMetaObject::invokeMethod(this, [this]() { on_davis_gone(); }, Qt::QueuedConnection);
+    });
+
+    emit connected(sensor_info_);
+    return true;
+}
+
+void CameraController::on_davis_gone() {
+    if (!davis_device_) return;
+    teardown();
+    emit disconnected();
+    emit error(tr("DAVIS camera disconnected."));
+}
+#endif
 
 void CameraController::disconnect() {
     teardown();
@@ -217,6 +292,26 @@ void CameraController::on_external_source_done(const QString& error) {
 }
 
 bool CameraController::start() {
+#if GUI_HAVE_DAVIS
+    if (davis_device_) {
+        if (streaming_started_) return true;
+        // Events flow through the same live path as the SDK CD callback:
+        // statistics → auto bias → conditioning → listener → pipeline.
+        davis_device_->set_event_sink(
+            [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+                on_live_events(b, e);
+            });
+        try {
+            davis_device_->start();
+        } catch (const std::exception& e) {
+            emit error(QString::fromUtf8(e.what()));
+            return false;
+        }
+        streaming_started_ = true;
+        emit started();
+        return true;
+    }
+#endif
     if (external_source_) {
         if (external_running_.load(std::memory_order_relaxed) || external_started_) {
             return true; // already streaming (or fully buffered)
@@ -275,6 +370,15 @@ bool CameraController::start() {
 }
 
 bool CameraController::stop() {
+#if GUI_HAVE_DAVIS
+    if (davis_device_) {
+        if (streaming_started_) {
+            davis_device_->stop();
+            streaming_started_ = false;
+        }
+        return true;
+    }
+#endif
     if (external_source_) {
         // Cooperative cancel: the reader thread finishes soon after and its
         // completion callback emits stopped() on the GUI thread. The buffer
@@ -302,6 +406,11 @@ bool CameraController::stop() {
 }
 
 bool CameraController::is_running() const {
+#if GUI_HAVE_DAVIS
+    if (davis_device_) {
+        return streaming_started_;
+    }
+#endif
     if (external_source_) {
         return external_running_.load(std::memory_order_relaxed);
     }
@@ -315,6 +424,9 @@ bool CameraController::is_running() const {
 // (vs Camera::get_facility<T>() which throws on unsupported features). This
 // lets the GUI degrade gracefully by disabling the corresponding panel.
 facility::Biases* CameraController::biases_facility() {
+#if GUI_HAVE_DAVIS
+    if (davis_biases_) return davis_biases_.get();
+#endif
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::Biases>();
 }
@@ -504,8 +616,28 @@ void CameraController::set_cd_broadcast(bool enabled) {
 bool CameraController::set_auto_bias_enabled(bool on) {
     if (on == auto_bias_enabled()) return on;
     if (on) {
+#if GUI_HAVE_DAVIS
+        if (is_file_ || (!camera_ && !davis_device_)) return false;
+#else
         if (is_file_ || !camera_) return false;
+#endif
         if (!bias_applier_.attach(biases_facility())) return false;
+#if GUI_HAVE_DAVIS
+        if (davis_device_) {
+            // DAVIS diff biases are absolute operating points with non-zero
+            // reference defaults — homing drifts toward those defaults, not
+            // toward 0 (which is the Prophesee convention).
+            int t_on = 0, t_off = 0;
+            if (davis::davis_reference_default("diff_on", t_on) &&
+                davis::davis_reference_default("diff_off", t_off)) {
+                bias_applier_.set_home_targets(t_on, t_off);
+            }
+            // DAVIS OFF-axis polarity is inverted vs Prophesee (measured on
+            // hardware: higher diff_off → MORE OFF events), so the OFF-axis
+            // delta sign flips; the ON axis matches Prophesee.
+            bias_applier_.set_off_delta_sign(-1);
+        }
+#endif
         {
             std::lock_guard<std::mutex> lk(auto_bias_mutex_);
             auto_bias_ctrl_.reset();
@@ -577,6 +709,65 @@ void CameraController::auto_bias_tick(const Metavision::EventCD* b,
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+void CameraController::on_live_events(const Metavision::EventCD* b, const Metavision::EventCD* e) {
+    try {
+        statistics_.add_events(b, e);
+        if (is_file_) {
+            // File mode: buffer RAW events — conditioning happens per-frame
+            // in FileFrameGenerator::render_frame() so toggles take effect
+            // immediately during playback.
+            frame_pipeline_.add_events(b, e);
+        } else {
+            // Auto bias measures the RAW sensor output (biases act before any
+            // software conditioning).
+            if (auto_bias_enabled_.load(std::memory_order_relaxed)) {
+                auto_bias_tick(b, e);
+            }
+            // Live mode: condition ONCE (unified ROI → polarity stages →
+            // noise filter → thin → undistort → flips). Display, processed
+            // recording and the algorithm listener all consume the SAME
+            // output span.
+            const auto [cb, cn] = conditioner_.apply(b, e);
+            const auto* ce = cb + cn;
+            // cn == 0 (a stage emptied the batch): skip the display push — an
+            // empty span may carry a null data() on first use. The listener
+            // still runs: it owns the raw-count profiler tick for empty
+            // batches.
+            ConditionedListener listener;
+            {
+                std::lock_guard<std::mutex> lk(conditioned_mutex_);
+                listener = conditioned_listener_;
+            }
+            // P6-A: the listener runs BEFORE the display push and may
+            // substitute the output span (stream-filter algorithm output —
+            // hot_pixel_filter / EIS stabilization).
+            const Metavision::EventCD* ob = cb;
+            const Metavision::EventCD* oe = ce;
+            if (listener) listener(b, e, cb, ce, ob, oe);
+            if (ob != nullptr && oe != nullptr && ob < oe) {
+                frame_pipeline_.add_events(ob, oe);
+            }
+        }
+        // Optional CD broadcast for calibration tools — always the RAW span.
+        // The buffer comes from the reusable pool (no allocation in steady
+        // state) and only flows when a consumer opted in via
+        // set_cd_broadcast(true); the emit crosses to the GUI thread through
+        // Qt's queued-connection machinery.
+        if (cd_broadcast_.load(std::memory_order_relaxed) && b != e) {
+            auto batch = broadcast_pool_.acquire();
+            batch->assign(b, e);
+            emit cd_events_ready(batch);
+        }
+    } catch (const std::exception& ex) {
+        QMetaObject::invokeMethod(this, [this, msg = std::string(ex.what())]() {
+            emit runtime_warning(QString::fromUtf8(msg.c_str()));
+        }, Qt::QueuedConnection);
+    } catch (...) {
+        // Swallow to keep the stream alive; the source thread must not
+        // propagate exceptions out of the callback.
+    }
+}
 
 void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     is_file_ = is_file;
@@ -669,65 +860,7 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     // thread.
     cd_cb_id_ = camera_->cd().add_callback(
         [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
-            try {
-                statistics_.add_events(b, e);
-                if (is_file_) {
-                    // File mode: buffer RAW events — conditioning happens
-                    // per-frame in FileFrameGenerator::render_frame() so
-                    // toggles take effect immediately during playback.
-                    frame_pipeline_.add_events(b, e);
-                } else {
-                    // Auto bias measures the RAW sensor output (biases act
-                    // before any software conditioning).
-                    if (auto_bias_enabled_.load(std::memory_order_relaxed)) {
-                        auto_bias_tick(b, e);
-                    }
-                    // Live mode: condition ONCE (unified ROI → polarity
-                    // stages → noise filter → thin → undistort → flips).
-                    // Display, processed recording and the algorithm
-                    // listener all consume the SAME output span.
-                    const auto [cb, cn] = conditioner_.apply(b, e);
-                    const auto* ce = cb + cn;
-                    // cn == 0 (a stage emptied the batch): skip the display
-                    // push — an empty span may carry a null data() on first
-                    // use, and the old pre-rework paths guarded exactly this
-                    // (`if (!filtered.empty())`). The listener still runs: it
-                    // owns the raw-count profiler tick for empty batches.
-                    ConditionedListener listener;
-                    {
-                        std::lock_guard<std::mutex> lk(conditioned_mutex_);
-                        listener = conditioned_listener_;
-                    }
-                    // P6-A: the listener runs BEFORE the display push and may
-                    // substitute the output span (stream-filter algorithm
-                    // output — hot_pixel_filter / EIS stabilization).
-                    const Metavision::EventCD* ob = cb;
-                    const Metavision::EventCD* oe = ce;
-                    if (listener) listener(b, e, cb, ce, ob, oe);
-                    if (ob != nullptr && oe != nullptr && ob < oe) {
-                        frame_pipeline_.add_events(ob, oe);
-                    }
-                }
-                // Optional CD broadcast for calibration tools — always the
-                // RAW span. The atomic check is cheap; the buffer comes from
-                // the reusable pool (no allocation in steady state) and only
-                // happens when a listener has explicitly opted in via
-                // set_cd_broadcast(true). The emit crosses to the GUI thread
-                // via Qt's queued-connection machinery (the shared_ptr is
-                // captured by value).
-                if (cd_broadcast_.load(std::memory_order_relaxed) && b != e) {
-                    auto batch = broadcast_pool_.acquire();
-                    batch->assign(b, e);
-                    emit cd_events_ready(batch);
-                }
-            } catch (const std::exception& ex) {
-                QMetaObject::invokeMethod(this, [this, msg = std::string(ex.what())]() {
-                    emit runtime_warning(QString::fromUtf8(msg.c_str()));
-                }, Qt::QueuedConnection);
-            } catch (...) {
-                // Swallow to keep the stream alive; the SDK thread must not
-                // propagate exceptions out of the callback.
-            }
+            on_live_events(b, e);
         });
 
     statistics_.reset();
@@ -772,6 +905,20 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
 }
 
 void CameraController::teardown() {
+#if GUI_HAVE_DAVIS
+    // 0a. Stop the DAVIS stream and release the device first: its libusb
+    //     thread feeds statistics_/frame_pipeline_ exactly like the SDK
+    //     streaming thread.
+    if (davis_device_) {
+        try {
+            davis_device_->stop();
+        } catch (...) {
+        }
+    }
+    davis_device_.reset();
+    davis_biases_.reset();
+    streaming_started_ = false;
+#endif
     // 0. Stop the external reader FIRST: it feeds statistics_ and
     //    frame_pipeline_ from its own thread, so it must be joined before
     //    the pipeline is stopped below.

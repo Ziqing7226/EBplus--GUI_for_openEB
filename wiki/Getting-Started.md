@@ -81,6 +81,79 @@ export QSG_RHI_BACKEND=opengl    # Qt 6 may default to Vulkan
 
 > **Wayland note**: Qt 6's Wayland plugin renders a black viewport for `QOpenGLWidget` children. The app and launcher force `QT_QPA_PLATFORM=xcb` (via XWayland) and `QSG_RHI_BACKEND=opengl` to ensure correct rendering.
 
+## Live inivation DAVIS Cameras (Optional, Preliminary)
+
+**Preliminary support**: EB plus can connect to inivation **DAVIS346/640** cameras directly over USB — **events + biases only**. APS frames, IMU samples and trigger markers are parsed and discarded (the GUI is an events-only tool); the RAW recording, ROI and Trigger panels are not available for DAVIS, and other DAVIS-family features may still have compatibility gaps. **EB plus remains primarily designed and tested for Prophesee cameras.**
+
+Build requirement: `libusb-1.0` development files (the CMake build auto-detects them; without them the DAVIS device layer is compiled out and everything else works as before).
+
+### One-Time USB Permission Setup
+
+Inivation devices (USB VID `152a`) are not accessible to unprivileged users by default. The rules file ships with the repository:
+
+```bash
+sudo cp gui/davis/66-inivation.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Then **unplug and replug the camera** (so the session permission tag applies), and connect it from the Devices panel (`Refresh` → `Connect First Available`, or by serial). DAVIS devices appear in the device list next to Prophesee ones.
+
+### Supported & Not Supported (DAVIS)
+
+| Feature | DAVIS346/640 |
+|---------|--------------|
+| Live event preview, all display modes | ✅ |
+| Biases panel (all DAVIS coarse/fine + VDAC biases), save/load `.bias` | ✅ |
+| Auto Bias controller (`diff_on`/`diff_off`) | ✅ |
+| Algorithms (all), unified software ROI, statistics | ✅ |
+| RAW recording | ❌ (no `I_EventsStream`) |
+| ROI / Trigger / ESP panels | ❌ (facilities unavailable) |
+| APS frames / IMU / trigger streams | discarded by design |
+
+Firmware requirements: FX3 firmware 6, FX2 firmware 4; FPGA logic version 18 with patch ≥ 1 (checked at connect — a clear error is shown otherwise).
+
+### DAVIS Bias Parameters
+
+All DAVIS346/640 biases are exposed in the Biases panel (and to Auto Bias) with these ranges:
+
+| Bias group | Panel range | Meaning |
+|------------|-------------|---------|
+| Coarse/fine biases (`diff`, `diff_on`, `diff_off`, `photoreceptor`, …) | 0 – 2047 | Linearized `coarse × 256 + fine` (coarse 0–7, fine 0–255) |
+| VDAC biases (`aps_overflow_level`, `adc_reference_*`, …) | 0 – 63 | Voltage in 1/64 VDD steps (current index stays at its default) |
+
+Every value is written to the camera's SPI bias registers on change; the structural properties of each bias (N/P type, normal/cascode, current level, enable) are fixed to the reference defaults and preserved across writes. Defaults follow the reference implementation's power-up table and are re-applied at every connect. A hardware round-trip test (`EBPLUS_DAVIS_HW=1 gui/tests/test_davis_protocol`) verifies every register write against an SPI readback.
+
+This full-set exposure matches the reference ecosystem: jAER's own DAVIS346 bias settings expose the same 21 coarse/fine biases (including `ReadoutBufBP`, `ADCcompBp`, `DACBufBp`, `ColSelLowBn`, `PadFollBn`) and DV/libcaer registers all of them as adjustable device options. Bias name cross-reference (jAER → EB plus):
+
+| jAER | EB plus | | jAER | EB plus |
+|------|---------|--|------|---------|
+| `DiffBn` | `diff` | | `PadFollBn` | `pad_follower` |
+| `OnBn` | `diff_on` | | `PixInvBn` | `pixel_inverter` |
+| `OffBn` | `diff_off` | | `PrBp` | `photoreceptor` |
+| `LocalBufBn` | `local_buffer` | | `PrSFBp` | `photocircuit_follower` |
+| `BiasBuffer` | `bias_buffer` | | `RefrBp` | `refractory` |
+| `AEPdBn` | `aer_pull_down` | | `ReadoutBufBP` | `readout_buffer` |
+| `AEPuXBp` | `aer_pull_up_x` | | `ApsROSFBn` | `aps_readout_follower` |
+| `AEPuYBp` | `aer_pull_up_y` | | `ADCcompBp` | `adc_comparator` |
+| `LcolTimeoutBn` | `lcol_timeout` | | `DACBufBp` | `dac_buffer` |
+| `IFThrBn` | `if_thr_bn` | | `ColSelLowBn` | `col_select_low` |
+| `IFRefrBn` | `if_refr_bn` | | | |
+
+The five VDAC biases (`aps_overflow_level`, `aps_cascode`, `adc_reference_high`, `adc_reference_low`, `adc_test_voltage`) are likewise exposed by both references. The two shifted-source biases (SSP/SSN) are initialized to the reference defaults at connect but are not panel-adjustable — matching both dv-processing (init-only) and jAER.
+
+Auto Bias on DAVIS homes toward the **reference default values** (e.g. `diff_on` → 1535, `diff_off` → 1025) rather than toward 0 — Prophesee diff biases are relative offsets whose default is 0, while DAVIS biases are absolute operating points.
+
+Note that the OFF-axis responds with inverted polarity on DAVIS (higher `diff_off` → more OFF events, measured on hardware), which EB plus compensates automatically. Also note the default rate band (1–50 Mev/s) was chosen for Prophesee sensors; DAVIS346 at reference biases runs around 0.1–0.3 Mev/s, so consider a band like 0.05–1 Mev/s for DAVIS.
+
+### Other inivation cameras
+
+**DVXplorer** family cameras use a different (newer) USB protocol generation and are **not supported yet** — they are hidden from the device list. DAVIS240-family sensors are likewise rejected at connect with a clear message. Extending support means porting the respective protocol/bias tables (reference available in `ref/dv-processing-master`).
+
+### Why "DAVIS346" reports 260 × 346 internally
+
+The DAVIS346's sensor die is mounted **rotated 90°** in the camera housing. The device size registers therefore report the sensor-native frame — 260 "columns" × 346 "rows" — together with the orientation bit `0x04` (invert axes). EB plus handles this transparently: event addresses are range-checked in the native frame and swapped for display, so the camera presents itself as **346 × 260** (the documented product resolution). If you probe the device registers directly, do not be surprised by the swapped values and the orientation bit — they are normal for this product.
+
 ## Verify Camera Detection
 
 ```bash
@@ -100,6 +173,8 @@ If this fails, the SDK cannot find your vendor's HAL plugins — check `MV_HAL_P
 | HDF5 file open fails | HDF5 plugin path not set | Set `HDF5_PLUGIN_PATH` to the HDF5 plugin directory |
 | Dark mode not following system | Qt < 6.5 | Use Theme → Mode → Dark |
 | E2VID falls back to heuristic mode | ONNX Runtime not installed | See [Algorithms § E2VID](Algorithms.md#e2vid-setup) |
+| DAVIS connect: "failed to open USB device" | Missing udev rule, or device in use by another program (e.g. DV) | Install `gui/davis/66-inivation.rules` (see above), replug, close other apps |
+| DAVIS connect: firmware/logic version error | Camera firmware too old for the classic protocol checks | Update with inivation's Flashy tool |
 
 ## Tests
 

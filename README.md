@@ -47,6 +47,17 @@ That's it. The launcher handles Wayland compatibility, HAL plugin paths, and Ope
 
 > **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [wiki/compile.md](wiki/compile.md) for details.
 
+### Live inivation DAVIS cameras (optional, preliminary)
+
+**Preliminary support** for a subset of inivation DAVIS cameras (DAVIS346/640, events + biases; APS frames, IMU and triggers are discarded). Many DAVIS-specific features are not yet supported — EB plus remains primarily designed and tested for **Prophesee** cameras. One-time setup — allow USB access for inivation devices:
+
+```bash
+sudo cp gui/davis/66-inivation.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Unplug and replug the camera, then connect from the Devices panel. This feature is optional: without libusb-1.0 development files the build simply excludes it. See [wiki/Getting-Started.md](wiki/Getting-Started.md) for details and current limitations.
+
 ---
 
 ## Features
@@ -66,7 +77,7 @@ That's it. The launcher handles Wayland compatibility, HAL plugin paths, and Ope
 All panels degrade gracefully when the device lacks the corresponding HAL facility (e.g. the four hardware panels auto-disable during file playback).
 
 ### Recording & Playback
-- RAW recording from live cameras
+- RAW recording from live cameras (DAVIS: live preview + biases only)
 - File playback with speed control, seek, pause/resume
 - File cutter — extract a time range from an event file
 

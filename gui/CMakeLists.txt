@@ -99,6 +99,27 @@ if(TARGET MetavisionSDK::hal)
     target_link_libraries(gui_core PUBLIC MetavisionSDK::hal)
 endif()
 
+# Live DAVIS (inivation) camera support — optional, based on libusb-1.0 only
+# (protocol ported from the dv-processing reference). Without libusb the
+# parser/bias sources still build (used by unit tests) but live connection
+# and the device layer are compiled out (GUI_HAVE_DAVIS=0).
+target_sources(gui_core PRIVATE
+    davis/davis_parser.cpp
+    davis/davis_biases.cpp
+)
+find_path(LIBUSB_INCLUDE_DIR NAMES libusb.h PATH_SUFFIXES libusb-1.0)
+find_library(LIBUSB_LIBRARY NAMES usb-1.0)
+if(LIBUSB_INCLUDE_DIR AND LIBUSB_LIBRARY)
+    target_compile_definitions(gui_core PUBLIC GUI_HAVE_DAVIS=1)
+    target_include_directories(gui_core PUBLIC ${LIBUSB_INCLUDE_DIR})
+    target_link_libraries(gui_core PUBLIC ${LIBUSB_LIBRARY})
+    target_sources(gui_core PRIVATE davis/davis_device.cpp)
+    message(STATUS "DAVIS live camera support: enabled")
+else()
+    target_compile_definitions(gui_core PUBLIC GUI_HAVE_DAVIS=0)
+    message(STATUS "DAVIS live camera support: disabled (libusb-1.0 development files not found)")
+endif()
+
 # Main executable — entry point only; all logic lives in gui_core.
 add_executable(gui_for_openeb main.cpp)
 
