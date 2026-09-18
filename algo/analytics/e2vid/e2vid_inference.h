@@ -395,6 +395,108 @@ private:
     }
 
 #if defined(GUI_ALGO_HAS_ONNXRUNTIME) || defined(GUI_ALGO_HAS_OPENVINO)
+    /// @brief Spatial downsampling of a recurrent-state input, read from the
+    /// model's symbolic dimension NAME (§4.4.2-GPU contract shared by all
+    /// export scripts): "H"/"W" = full resolution, "H2"/"H4"/"H8" = the
+    /// input's 1/2, 1/4, 1/8. This covers every architecture family without
+    /// heuristics — ConvLSTM h/c pairs (E2VID/E2VID+/HyperE2VID at H2/H4/H8),
+    /// full-resolution ConvGRU states (FireNet+ at H) and the previous-image
+    /// feedback input (HyperE2VID prev_recs at H). Unknown names fall back
+    /// to the legacy rpg_e2vid pair layout ((i-1)/2 → /2^(level+1)).
+    int state_divisor(std::size_t i) const {
+        const std::size_t idx = i - 1;
+        if (idx < state_divisors_.size() && state_divisors_[idx] > 0) {
+            return state_divisors_[idx];
+        }
+        const int level = static_cast<int>((i - 1) / 2);
+        return 1 << (level + 1);
+    }
+
+    /// Number of output channels of the loaded model (1 = grayscale image,
+    /// 2 = optical flow (u, v) — EVFlowNet).
+    int output_channels_{1};
+
+    /// Parsed per-state-input divisors (size = n_inputs - 1; 0 = unknown →
+    /// legacy fallback in state_divisor()).
+    std::vector<int> state_divisors_;
+
+    /// Maps a symbolic spatial dimension name to its divisor vs. the input
+    /// resolution; 0 when the name carries no level information.
+    static int divisor_from_dim_name(const std::string& name) {
+        if (name == "H" || name == "W") return 1;
+        if (name == "H2" || name == "W2") return 2;
+        if (name == "H4" || name == "W4") return 4;
+        if (name == "H8" || name == "W8") return 8;
+        return 0;
+    }
+
+    /// Derives state_divisors_ + num_encoders_ + output_channels_ from the
+    /// model I/O (shared logic; @p name_of/@p shape_of abstract the runtime
+    /// API). num_encoders = log2(max state divisor); stateless models keep
+    /// the constructor default (EVFlowNet: 4 encoders).
+    template <typename NameOf, typename ShapeOf>
+    void derive_model_layout(std::size_t n_inputs, int default_encoders,
+                             int out_channels, const NameOf& name_of,
+                             const ShapeOf& shape_of) {
+        state_divisors_.assign(n_inputs > 1 ? n_inputs - 1 : 0, 0);
+        for (std::size_t i = 1; i < n_inputs; ++i) {
+            int divisor = 0;
+            const auto shape = shape_of(i);
+            if (shape.size() >= 3) {
+                divisor = divisor_from_dim_name(name_of(i, 2));
+                if (divisor == 0) {
+                    divisor = divisor_from_dim_name(name_of(i, 3));
+                }
+            }
+            state_divisors_[i - 1] = divisor;
+        }
+        // Fallback when the runtime exposes no symbolic names (OpenVINO's
+        // ONNX front-end drops them even though they are in the file):
+        // infer the layout from the channel structure of the known model
+        // families. Anything unrecognized keeps divisor 0 → legacy pair
+        // formula in state_divisor().
+        const bool any_name = std::any_of(
+            state_divisors_.begin(), state_divisors_.end(),
+            [](int d) { return d > 0; });
+        if (!any_name && n_inputs > 1) {
+            std::vector<int> ch(n_inputs - 1, 0);
+            bool channels_known = true;
+            for (std::size_t i = 1; i < n_inputs; ++i) {
+                const auto shape = shape_of(i);
+                if (shape.size() >= 2 && shape[1] > 0) {
+                    ch[i - 1] = static_cast<int>(shape[1]);
+                } else {
+                    channels_known = false;
+                }
+            }
+            if (channels_known) {
+                if (n_inputs == 3 && ch[0] > 0 && ch[0] == ch[1]) {
+                    // FireNet family: full-resolution ConvGRU single states.
+                    state_divisors_ = {1, 1};
+                } else if (n_inputs == 8 && ch[6] == out_channels) {
+                    // HyperE2VID family: LSTM pairs + full-res feedback.
+                    state_divisors_ = {2, 2, 4, 4, 8, 8, 1};
+                } else if (n_inputs == 7 && ch[0] == ch[1] &&
+                           ch[2] == ch[3] && ch[4] == ch[5]) {
+                    // rpg_e2vid family: ConvLSTM h/c pairs.
+                    state_divisors_ = {2, 2, 4, 4, 8, 8};
+                }
+            }
+        }
+        int max_divisor = 1;
+        for (int d : state_divisors_) max_divisor = std::max(max_divisor, d);
+        if (n_inputs > 1) {
+            int enc = 0;
+            while ((1 << enc) < max_divisor) ++enc;
+            num_encoders_ = enc;
+        } else {
+            num_encoders_ = default_encoders;
+        }
+        output_channels_ = out_channels > 0 ? out_channels : 1;
+    }
+#endif
+
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME) || defined(GUI_ALGO_HAS_OPENVINO)
     /// @brief Copies the voxel grid into input_buffer_ as a reflection-padded
     /// (BORDER_REFLECT_101) NCHW buffer shared by the ONNX Runtime and
     /// OpenVINO inference paths. Reuses the storage across frames (resize
@@ -465,28 +567,54 @@ private:
     void sync_num_bins_from_model() {
         if (!session_) return;
         try {
-            Ort::AllocatorWithDefaultOptions allocator;
-            auto info = session_->GetInputTypeInfo(0);
-            auto shape = info.GetTensorTypeAndShapeInfo().GetShape();
+            auto input_shape = session_->GetInputTypeInfo(0)
+                                   .GetTensorTypeAndShapeInfo()
+                                   .GetShape();
             // shape = [N, C, H, W]; C is the num_bins channel dimension.
-            if (shape.size() >= 2 && shape[1] > 0) {
-                model_num_bins_ = static_cast<int>(shape[1]);
+            if (input_shape.size() >= 2 && input_shape[1] > 0) {
+                model_num_bins_ = static_cast<int>(input_shape[1]);
                 if (model_num_bins_ != num_bins_) {
                     num_bins_ = model_num_bins_;
                 }
             }
-            // Infer num_encoders from input count (E2VIDRecurrent only).
-            const std::size_t n_inputs = session_->GetInputCount();
-            if (n_inputs > 1) {
-                int inferred = static_cast<int>((n_inputs - 1) / 2);
-                if (inferred > 0 && inferred != num_encoders_) {
-                    num_encoders_ = inferred;
-                }
-            }
+            // State layout + encoder depth + output channels from the
+            // symbolic dimension names (§4.4.2-GPU contract).
+            const int ctor_encoders = num_encoders_;
+            derive_model_layout(
+                session_->GetInputCount(), ctor_encoders,
+                output_channels_from_ort(),
+                [this](std::size_t i, int dim) {
+                    auto info = session_->GetInputTypeInfo(i);
+                    auto tinfo = info.GetTensorTypeAndShapeInfo();
+                    const std::size_t nd = tinfo.GetDimensionsCount();
+                    std::vector<const char*> syms(nd, nullptr);
+                    if (nd > 0) {
+                        tinfo.GetSymbolicDimensions(syms.data(), nd);
+                    }
+                    return (static_cast<std::size_t>(dim) < nd && syms[dim])
+                               ? std::string(syms[dim]) : std::string();
+                },
+                [this](std::size_t i) {
+                    return session_->GetInputTypeInfo(i)
+                        .GetTensorTypeAndShapeInfo()
+                        .GetShape();
+                });
             // Rebuild all effective-size buffers (voxel grid, crop, states).
             rebuild_effective_buffers();
         } catch (const Ort::Exception&) {
             // Keep existing num_bins_ (best-effort).
+        }
+    }
+
+    /// Declared channel count of output 0 (0 when unavailable).
+    int output_channels_from_ort() const {
+        try {
+            auto shape = session_->GetOutputTypeInfo(0)
+                             .GetTensorTypeAndShapeInfo()
+                             .GetShape();
+            return shape.size() >= 2 ? static_cast<int>(shape[1]) : 0;
+        } catch (const Ort::Exception&) {
+            return 0;
         }
     }
 
@@ -538,8 +666,7 @@ private:
                     auto tensor_info = info.GetTensorTypeAndShapeInfo();
                     auto shape = tensor_info.GetShape();
                     if (shape.size() >= 4) {
-                        const int level = static_cast<int>((i - 1) / 2);
-                        const int divisor = (1 << (level + 1));
+                        const int divisor = state_divisor(i);
                         shape[0] = 1;
                         shape[2] = ch / divisor;
                         shape[3] = cw / divisor;
@@ -577,8 +704,7 @@ private:
                     auto tensor_info = info.GetTensorTypeAndShapeInfo();
                     auto shape = tensor_info.GetShape();
                     if (shape.size() >= 4) {
-                        const int level = static_cast<int>((i - 1) / 2);
-                        const int divisor = (1 << (level + 1));
+                        const int divisor = state_divisor(i);
                         shape[0] = 1;
                         shape[2] = ch / divisor;
                         shape[3] = cw / divisor;
@@ -602,12 +728,16 @@ private:
                 prev_states_.push_back(std::move(outputs[i]));
             }
 
-            // Extract output: 1 x 1 x crop_h x crop_w.
+            // Extract output: 1 x C x crop_h x crop_w (C = 1 grayscale
+            // image, or 2 = flow (u, v)).
             const float* output_data = outputs[0].GetTensorData<float>();
             auto out_shape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
+            const int out_type =
+                (out_shape.size() >= 2 && out_shape[1] == 2) ? CV_32FC2
+                                                             : CV_32FC1;
             const int out_h = static_cast<int>(out_shape[2]);
             const int out_w = static_cast<int>(out_shape[3]);
-            cv::Mat output(out_h, out_w, CV_32FC1,
+            cv::Mat output(out_h, out_w, out_type,
                            const_cast<float*>(output_data));
             return output.clone();  // deep copy (Ort owns the buffer)
         } catch (const Ort::Exception& e) {
@@ -660,8 +790,10 @@ private:
         ov_compiled_w_ = 0;
     }
 
-    /// Reads num_bins / num_encoders from the OpenVINO model (same contract
-    /// as the ONNX Runtime sync) and rebuilds the effective buffers.
+    /// Reads num_bins / state layout / output channels from the OpenVINO
+    /// model (same contract as the ONNX Runtime sync) and rebuilds the
+    /// effective buffers. Runs BEFORE reshape, while the symbolic dimension
+    /// names (H/W, H2/W2, ...) imported from ONNX are still intact.
     void ov_sync_model_meta() {
         try {
             const ov::PartialShape ps = ov_model_->inputs()[0].get_partial_shape();
@@ -670,30 +802,51 @@ private:
                 model_num_bins_ = static_cast<int>(ps[1].get_length());
                 num_bins_ = model_num_bins_;
             }
-            const std::size_t n_inputs = ov_model_->inputs().size();
-            if (n_inputs > 1) {
-                int inferred = static_cast<int>((n_inputs - 1) / 2);
-                if (inferred > 0 && inferred != num_encoders_) {
-                    num_encoders_ = inferred;
+            int out_channels = 0;
+            if (!ov_model_->outputs().empty()) {
+                const ov::PartialShape os =
+                    ov_model_->output(0).get_partial_shape();
+                if (os.rank().is_static() && os.rank().get_length() >= 2 &&
+                    os[1].is_static()) {
+                    out_channels = static_cast<int>(os[1].get_length());
                 }
             }
+            const int ctor_encoders = num_encoders_;
+            const auto& model = ov_model_;
+            derive_model_layout(
+                model->inputs().size(), ctor_encoders, out_channels,
+                [model](std::size_t i, int dim) {
+                    const ov::PartialShape ps =
+                        model->inputs()[i].get_partial_shape();
+                    if (ps.rank().is_static() &&
+                        ps.rank().get_length() >
+                            static_cast<ov::Dimension::value_type>(dim)) {
+                        const ov::Dimension d =
+                            ps[static_cast<std::size_t>(dim)];
+                        // Static dims render as numbers; dynamic (symbolic)
+                        // dims render as their ONNX name ("H", "H2", ...).
+                        return d.is_static() ? std::string() : d.to_string();
+                    }
+                    return std::string();
+                },
+                [model](std::size_t i) {
+                    return model->inputs()[i].get_partial_shape().get_max_shape();
+                });
             rebuild_effective_buffers();
         } catch (const std::exception&) {
             // Keep existing meta (best-effort, mirrors the ORT sync).
         }
     }
 
-    /// Declared channel count of recurrent-state input @p i (falls back to
-    /// the level formula when the model leaves it dynamic).
+    /// Declared channel count of recurrent-state input @p i. Dynamic channel
+    /// counts are unsupported (all our export scripts declare them static).
     std::size_t ov_state_channels(std::size_t i) const {
         const ov::PartialShape ps = ov_model_->inputs()[i].get_partial_shape();
         if (ps.rank().is_static() && ps.rank().get_length() >= 2 &&
             ps[1].is_static()) {
             return static_cast<std::size_t>(ps[1].get_length());
         }
-        const int level = static_cast<int>((i - 1) / 2);
-        return static_cast<std::size_t>(
-            32 << (level + 1));  // base 32 × 2^(level+1)
+        throw std::runtime_error("dynamic state channel count unsupported");
     }
 
     /// Loads the model for the OpenVINO GPU runtime: reads the SAME .onnx as
@@ -715,8 +868,7 @@ private:
                 1, static_cast<std::int64_t>(num_bins_),
                 static_cast<std::int64_t>(ch), static_cast<std::int64_t>(cw)};
             for (std::size_t i = 1; i < n_inputs; ++i) {
-                const int level = static_cast<int>((i - 1) / 2);
-                const int divisor = 1 << (level + 1);
+                const int divisor = state_divisor(i);
                 shapes[i] = ov::PartialShape{
                     1, static_cast<std::int64_t>(ov_state_channels(i)),
                     static_cast<std::int64_t>(ch / divisor),
@@ -755,7 +907,8 @@ private:
             ov_compiled_w_ = cw;
             ov_active_ = true;
             return true;
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[e2vid] OpenVINO load failed: %s\n", e.what());
             return false;  // caller falls back to the CPU runtime
         }
     }
@@ -818,11 +971,14 @@ private:
             }
             ov_have_prev_ = true;
 
-            // Output: 1 x 1 x crop_h x crop_w, values in [0,1].
+            // Output: 1 x C x crop_h x crop_w (C = 1 grayscale image,
+            // or 2 = flow (u, v)), values per the model's head.
             ov::Tensor img = ov_request_.get_output_tensor(0);
             const ov::Shape shp = img.get_shape();
+            const int out_type =
+                (shp.size() >= 2 && shp[1] == 2) ? CV_32FC2 : CV_32FC1;
             cv::Mat out(static_cast<int>(shp[2]), static_cast<int>(shp[3]),
-                        CV_32FC1, img.data());
+                        out_type, img.data());
             return out.clone();  // deep copy (the request owns the buffer)
         } catch (const std::exception& e) {
             fprintf(stderr, "[e2vid] OpenVINO inference failed: %s — "

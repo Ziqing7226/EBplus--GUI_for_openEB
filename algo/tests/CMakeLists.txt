@@ -147,7 +147,12 @@ target_link_libraries(test_e2vid_inference PRIVATE
     ${OpenCV_LIBS}
 )
 add_test(NAME e2vid_inference
-    COMMAND test_e2vid_inference ${CMAKE_SOURCE_DIR}/models/e2vid_lightweight.onnx)
+    COMMAND test_e2vid_inference
+        ${CMAKE_SOURCE_DIR}/models/e2vid_lightweight.onnx
+        ${CMAKE_SOURCE_DIR}/models/hypere2vid.onnx
+        ${CMAKE_SOURCE_DIR}/models/e2vid_plus.onnx
+        ${CMAKE_SOURCE_DIR}/models/firenet_plus.onnx
+        ${CMAKE_SOURCE_DIR}/models/evflownet.onnx)
 set_tests_properties(e2vid_inference PROPERTIES SKIP_RETURN_CODE 77)
 
 # Standalone diagnostic: open a .raw file with real_time_playback(true/false)
