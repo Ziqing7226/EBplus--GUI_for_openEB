@@ -50,6 +50,7 @@
 #include "app/icon_provider.h"
 #include "display/display_strategy.h"
 #include "widgets/activity_bar.h"
+#include "widgets/imu_window.h"
 #include "widgets/unified_roi_dialog.h"
 
 namespace gui {
@@ -745,6 +746,9 @@ void MainWindow::wire_signals() {
                 camera_.connect_serial(serial.toStdString());
             });
     connect(dp, &DevicesPanel::disconnect_requested, this, &MainWindow::on_disconnect);
+    // Phase 2: IMU stream toggle (Devices panel) — enables the inivation
+    // IMU stream and opens the live readout window.
+    connect(dp, &DevicesPanel::imu_stream_toggled, this, &MainWindow::on_imu_toggled);
     // Sensor self-test — opens a Standalone AlgoWindow with the refractory-
     // period heatmap. On close, a report dialog is shown (design §4.4.8).
     connect(dp, &DevicesPanel::self_test_requested, this, [this]() {
@@ -860,6 +864,8 @@ void MainWindow::wire_signals() {
         // have no trigger or ESP facilities).
         const auto caps = camera_.source_capabilities();
         settings_->apply_source_capabilities(caps.trigger, caps.esp);
+        settings_->devices_panel()->set_imu_available(caps.imu);
+        set_imu_ui_state(camera_.imu_enabled());
     });
     connect(&camera_, &CameraController::disconnected, this, [this]() {
         // Explicitly remove the CD callback before clearing the ID, so the
@@ -889,6 +895,11 @@ void MainWindow::wire_signals() {
         // facility panels are visible again (they populate as "not
         // supported", exactly as before).
         settings_->apply_source_capabilities(true, true);
+        // Phase 2: the IMU stream is session-scoped — a disconnect stops it
+        // (teardown() also resets the controller flag) and closes the
+        // readout window.
+        if (imu_window_) imu_window_->close();
+        settings_->devices_panel()->set_imu_available(false);
         roi_draw_pending_ = false;
         on_toggle_roi_drag(false);
         display_->clear();
@@ -2318,6 +2329,33 @@ void MainWindow::on_open_xyt_view() {
     xyt_display_->show();
     xyt_display_->raise();
     statusBar()->showMessage(tr("XYT 3D window opened"), 2000);
+}
+
+void MainWindow::on_imu_toggled(bool on) {
+    if (on) {
+        if (!camera_.set_imu_enabled(true)) {
+            set_imu_ui_state(false);
+            statusBar()->showMessage(tr("IMU stream not available for this source."), 3000);
+            return;
+        }
+        if (!imu_window_) {
+            imu_window_ = new ImuWindow(&camera_, this);
+            connect(imu_window_, &ImuWindow::window_closed, this, [this]() {
+                camera_.set_imu_enabled(false);
+                set_imu_ui_state(false);
+            });
+        }
+        imu_window_->show();
+        imu_window_->raise();
+        statusBar()->showMessage(tr("IMU stream enabled"), 2000);
+    } else {
+        camera_.set_imu_enabled(false);
+        if (imu_window_) imu_window_->close();
+    }
+}
+
+void MainWindow::set_imu_ui_state(bool on) {
+    if (auto* dp = settings_->devices_panel()) dp->set_imu_checked(on);
 }
 
 } // namespace gui

@@ -69,6 +69,7 @@ class PlaybackControls;
 class ExportDialog;
 class CalibrationWizard;
 class FocusDialog;
+class ImuWindow;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -115,6 +116,11 @@ private slots:
 
     // Phase 10 — multi-window / layout / standalone algorithm views.
     void on_open_xyt_view();
+    /// Phase 2: IMU stream toggle from the Devices panel (open/close the
+    /// live readout window and start/stop the stream).
+    void on_imu_toggled(bool on);
+    /// Devices-panel IMU toggle (programmatic state sync).
+    void set_imu_ui_state(bool on);
     void on_open_algo_window(const std::string& algo_name);
     void on_save_layout();
     void on_load_layout();
@@ -251,6 +257,8 @@ private:
     // (algo_windows_) for both parameter control and result display.
     QPointer<SpaceTimeDisplay> xyt_display_;
     std::shared_ptr<AlgoInstance> xyt_algo_;
+    // Phase 2: live IMU readout window (inivation sources only).
+    QPointer<ImuWindow> imu_window_;
 
     /// Generic AlgoWindow instances keyed by algo name (design §5.6.6).
     /// Every self-developed algorithm gets an AlgoWindow when enabled, so the

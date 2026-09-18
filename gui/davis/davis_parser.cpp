@@ -17,6 +17,7 @@ void Parser::reset() {
     t0_ = 0;
     current_ = 0;
     last_y_ = 0;
+    imu_.reset();
     batch_.clear();
 }
 
@@ -48,14 +49,19 @@ void Parser::parse(const std::uint8_t* data, std::size_t size, const EventSink& 
         const auto data_part = static_cast<std::uint16_t>(event & 0x0FFF);
 
         switch (code) {
-            case 0: // Special events (data codes: 1 = TS reset, 2..5/7..17 =
-                    // external input / IMU / APS markers — all consumed and
-                    // ignored in the events-only stream).
+            case 0: // Special events (data codes: 1 = TS reset, 2..4 =
+                    // external input, 5/7 = IMU start/end, 8..17 = APS /
+                    // generator markers — the non-IMU ones stay consumed
+                    // and ignored in the events-only stream).
                 if (data_part == 1) {
                     // Timestamp reset: the FPGA restarts its 15-bit counter.
                     wrap_add_ = 0;
                     t0_set_ = false;
                     current_ = 0;
+                } else if (data_part == 5) {
+                    imu_.start();  // IMU start (6 axes).
+                } else if (data_part == 7) {
+                    imu_.end(t0_set_ ? (current_ - t0_) : current_);
                 }
                 break;
 
@@ -87,6 +93,18 @@ void Parser::parse(const std::uint8_t* data, std::size_t size, const EventSink& 
                 break;
             }
 
+            case 5: { // Misc8 data: low 4 bits = code, low byte = data.
+                const auto misc8_code =
+                    static_cast<std::uint8_t>((data_part & 0x0F00) >> 8);
+                const auto misc8_data = static_cast<std::uint8_t>(data_part & 0x00FF);
+                if (misc8_code == 0) {
+                    imu_.data_byte(misc8_data);
+                } else if (misc8_code == 3) {
+                    imu_.scale_config(data_part);
+                }
+                break;
+            }
+
             case 7: { // Timestamp wrap: data = multiplier of 2^15 µs.
                 wrap_add_ += static_cast<std::int64_t>(0x8000) * data_part;
                 update_timestamp(wrap_add_);
@@ -94,8 +112,8 @@ void Parser::parse(const std::uint8_t* data, std::size_t size, const EventSink& 
             }
 
             default:
-                // 4 = APS pixel, 5 = IMU/misc8, 6 = misc10 — consumed and
-                // ignored (events-only stream).
+                // 4 = APS pixel, 6 = misc10 — consumed and ignored
+                // (events-only stream).
                 break;
         }
     }

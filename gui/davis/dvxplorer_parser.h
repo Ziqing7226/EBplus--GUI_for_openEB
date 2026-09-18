@@ -24,6 +24,9 @@
 
 #include <metavision/sdk/base/events/event_cd.h>
 
+#include "imu_decoder.h"
+#include "imu_types.h"
+
 namespace gui::davis {
 
 class DvxParser {
@@ -42,6 +45,10 @@ public:
     [[nodiscard]] bool time_initialized() const { return t0_set_; }
     void reset();
 
+    /// Completed IMU6 samples (accel/gyro/temp) — invoked from the USB
+    /// thread whenever the IMU stream is enabled on the device.
+    void set_imu_sink(const ImuSink& sink) { imu_.set_sink(sink); }
+
 private:
     void update_timestamp(std::int64_t ts);
 
@@ -55,6 +62,9 @@ private:
     std::int16_t last_x_{0};
     std::int16_t last_yg1_{0};
     std::int16_t last_yg2_{0};
+
+    // DVXplorer: X/Y tags carry Y first; BMI160 temperature formula.
+    ImuDecoder imu_{true, true};
 
     std::vector<Metavision::EventCD> batch_;
 };

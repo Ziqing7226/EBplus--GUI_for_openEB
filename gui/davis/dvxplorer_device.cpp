@@ -609,6 +609,19 @@ void DvxplorerDevice::chip_init() {
         static_cast<std::uint64_t>(std::llround(1000.0F * usb_clock_)));
 }
 
+void DvxplorerDevice::set_imu_sink(const ImuSink& sink) {
+    parse_.set_imu_sink(sink);
+}
+
+void DvxplorerDevice::set_imu_enabled(bool on) {
+    imu_enabled_ = on;
+    if (streaming_.load()) {
+        spi_config_send(MODULE_IMU, IMU_RUN_ACCELEROMETER, on);
+        spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, on);
+        spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, on);
+    }
+}
+
 void DvxplorerDevice::set_contrast_on(int value) {
     if (value < 0) value = 0;
     if (value > 17) value = 17;
@@ -713,8 +726,14 @@ void DvxplorerDevice::start() {
         spi_config_send(MODULE_MULTIPLEXER, MUX_TIMESTAMP_RUN, true);
         spi_config_send(MODULE_MULTIPLEXER, MUX_RUN, true);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        // Events only — the IMU and trigger streams stay disabled.
+        // Events only by default — trigger streams stay disabled; the IMU
+        // runs re-apply here when the user enabled the IMU panel.
         spi_config_send(MODULE_DVS, DVS_RUN, true);
+        if (imu_enabled_) {
+            spi_config_send(MODULE_IMU, IMU_RUN_ACCELEROMETER, true);
+            spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, true);
+            spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, true);
+        }
         spi_config_send(MODULE_DEVICE, REGISTER_CONTROL_MODE, DVS_CHIP_MODE_STREAM);
         send_timestamp_reset();
         if (!wait_for_timestamp_reset()) {
@@ -739,6 +758,11 @@ void DvxplorerDevice::stop() {
     if (!streaming_.exchange(false)) return;
     try {
         spi_config_send(MODULE_DVS, DVS_RUN, false);
+        if (imu_enabled_) {
+            spi_config_send(MODULE_IMU, IMU_RUN_ACCELEROMETER, false);
+            spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, false);
+            spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, false);
+        }
         spi_config_send(MODULE_MULTIPLEXER, MUX_RUN, false);
         spi_config_send(MODULE_MULTIPLEXER, MUX_TIMESTAMP_RUN, false);
         spi_config_send(MODULE_USB, USB_RUN, false);

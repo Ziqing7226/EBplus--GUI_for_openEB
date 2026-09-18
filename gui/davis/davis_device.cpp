@@ -538,6 +538,19 @@ void Device::usb_data_transfers_stop() {
 
 // --- DAVIS configuration -------------------------------------------------------
 
+void Device::set_imu_sink(const ImuSink& sink) {
+    parser_.set_imu_sink(sink);
+}
+
+void Device::set_imu_enabled(bool on) {
+    imu_enabled_ = on;
+    if (streaming_.load()) {
+        spi_config_send(MODULE_IMU, IMU_RUN_ACCELEROMETER, on);
+        spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, on);
+        spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, on);
+    }
+}
+
 void Device::configure_idle() {
     // Verify firmware/logic version (reference hard-fails on mismatch).
     {
@@ -589,8 +602,8 @@ void Device::configure_idle() {
     // user-orientation coordinates.
     parser_.reset();
     parser_ = Parser(columns, rows, invert_xy);
-
-    (void)spi_config_receive(MODULE_IMU, IMU_TYPE); // reported by the reference; unused here
+    parser_.set_imu_model(static_cast<ImuModel>(
+        spi_config_receive(MODULE_IMU, IMU_TYPE)));
 
     // Shut the device down into a known idle state before configuring.
     spi_config_send(MODULE_DVS, DVS_RUN, false);
@@ -716,8 +729,14 @@ void Device::start() {
         spi_config_send(MODULE_MULTIPLEXER, MUX_TIMESTAMP_RUN, true);
         spi_config_send(MODULE_MULTIPLEXER, MUX_RUN, true);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        // Events only — frames/IMU/trigger streams stay disabled.
+        // Events only by default — frames/trigger streams stay disabled;
+        // the IMU runs re-apply here when the user enabled the IMU panel.
         spi_config_send(MODULE_DVS, DVS_RUN, true);
+        if (imu_enabled_) {
+            spi_config_send(MODULE_IMU, IMU_RUN_ACCELEROMETER, true);
+            spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, true);
+            spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, true);
+        }
         send_timestamp_reset();
         if (!wait_for_timestamp_reset()) {
             throw std::runtime_error("DAVIS: no timestamp reset received — stream did not start.");
@@ -743,6 +762,11 @@ void Device::stop() {
     if (!streaming_.exchange(false)) return;
     try {
         spi_config_send(MODULE_DVS, DVS_RUN, false);
+        if (imu_enabled_) {
+            spi_config_send(MODULE_IMU, IMU_RUN_ACCELEROMETER, false);
+            spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, false);
+            spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, false);
+        }
         spi_config_send(MODULE_MULTIPLEXER, MUX_RUN, false);
         spi_config_send(MODULE_MULTIPLEXER, MUX_TIMESTAMP_RUN, false);
         spi_config_send(MODULE_USB, USB_RUN, false);

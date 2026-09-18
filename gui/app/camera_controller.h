@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QString>
 #include <atomic>
+#include <mutex>
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,6 +39,7 @@
 #include "davis/davis_device.h"
 #include "davis/dvxplorer_ll_biases.h"
 #include "davis/dvxplorer_device.h"
+#include "davis/imu_types.h"
 #endif
 #include "algo_bridge/filter_chain.h"
 #include "algo/analytics/auto_bias_controller.h"
@@ -148,8 +150,23 @@ public:
     struct SourceCapabilities {
         bool trigger{false};  ///< I_TriggerIn or I_TriggerOut present.
         bool esp{false};      ///< Anti-flicker, trail or ERC module present.
+        bool imu{false};      ///< inivation IMU6 stream (enable + read out).
     };
     SourceCapabilities source_capabilities();
+
+#if GUI_HAVE_DAVIS
+    /// @brief Enables/disables the inivation IMU stream. The three IMU RUN
+    /// registers are written immediately while streaming and re-applied by
+    /// the device on every start(); the flag persists across reconnects.
+    /// Returns false for sources without an IMU (SDK cameras, files).
+    bool set_imu_enabled(bool on);
+    [[nodiscard]] bool imu_enabled() const { return imu_enabled_; }
+    /// Latest completed IMU sample + a monotonic sample counter (the window
+    /// derives the sample rate from the counter delta). Safe from any
+    /// thread; the sample arrives on the libusb thread.
+    davis::ImuSample latest_imu() const;
+    [[nodiscard]] long imu_sample_count() const;
+#endif
 
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
     /// Live camera: applies the hardware ROI (I_ROI) so the sensor itself
@@ -312,6 +329,14 @@ private:
     std::unique_ptr<davis::DvxplorerDevice> dvx_device_;
     std::unique_ptr<davis::DvxLLBiases> dvx_biases_;
     bool dvx_streaming_started_{false};
+
+    /// IMU stream state (flag owned by the GUI thread; the sample is
+    /// written from the libusb thread under imu_mutex_).
+    bool imu_enabled_{false};
+    mutable std::mutex imu_mutex_;
+    davis::ImuSample imu_latest_{};
+    long imu_count_{0};
+    void on_imu_sample(const davis::ImuSample& sample);
 #endif
     /// External (non-SDK) file source and its reader thread. Mutually
     /// exclusive with camera_: only one is ever set.

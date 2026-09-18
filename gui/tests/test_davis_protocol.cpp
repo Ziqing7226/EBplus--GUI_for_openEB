@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "davis/davis_biases.h"
 #include "davis/davis_parser.h"
 #include "davis/dvxplorer_parser.h"
+#include "davis/imu_types.h"
 
 namespace {
 
@@ -550,4 +552,156 @@ TEST(DvxParser, IgnoresImuAndMiscWords) {
                   static_cast<std::uint16_t>(0x5000 | 0x0123),
                   static_cast<std::uint16_t>(0x6000 | 0x0234)}, events);
     EXPECT_TRUE(events.empty());
+}
+
+
+// ---------------------------------------------------------------------------
+// IMU6 sequence decode (shared ImuDecoder, per-parser tag order + temp).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Code-5 IMU data word: low 4 bits of the data field = code 0, low byte data.
+constexpr std::uint16_t imu_data_word(std::uint8_t byte) {
+    return static_cast<std::uint16_t>(0x5000 | byte);
+}
+// Code-5 IMU scale-config word: code 3 in bits 11..8; type [7:5],
+// accel range [4:3], gyro range [2:0].
+constexpr std::uint16_t imu_scale_word(std::uint8_t type, std::uint8_t accel_range,
+                                       std::uint8_t gyro_range) {
+    return static_cast<std::uint16_t>(0x5000 | (3 << 8) | (type << 5) | (accel_range << 3) |
+                                      gyro_range);
+}
+
+// Feeds one complete 14-byte sample and the IMU end marker; returns the
+// decoded sample (default if discarded).
+template <typename ParserT>
+gui::davis::ImuSample feed_imu_sample(ParserT& parser, std::uint16_t scale_word,
+                                      const std::array<std::uint8_t, 14>& bytes,
+                                      std::uint16_t end_ts) {
+    gui::davis::ImuSample got;
+    parser.set_imu_sink([&got](const gui::davis::ImuSample& s) { got = s; });
+
+    std::vector<std::uint16_t> words{special_word(5), scale_word};
+    for (const std::uint8_t b : bytes) words.push_back(imu_data_word(b));
+    words.push_back(ts_word(end_ts));
+    words.push_back(special_word(7));
+
+    std::vector<Metavision::EventCD> dropped;  // event sink placeholder
+    feed(parser, words, dropped);
+    return got;
+}
+
+} // namespace
+
+TEST(DvxImu, DecodesFullSampleWithSwappedTagsAndBmi160Temp) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1), ts_word(1000)}, dropped);  // rebase to 0
+
+    // type = temp|gyro|accel (7), accel ±4 g (1), gyro ±500 °/s (2).
+    const std::uint16_t scale = imu_scale_word(7, 1, 2);
+    std::array<std::uint8_t, 14> bytes = {
+        0x01, 0x00,  // tag1 = accelY  raw +256 → 256/8192 g
+        0xFF, 0xFF,  // tag3 = accelX  raw −1
+        0x08, 0x00,  // accelZ         raw +2048 → 0.25 g
+        0x01, 0x90,  // temperature    raw 400 → 400/512 + 23
+        0x02, 0x00,  // tag9  = gyroY  raw +512 → 512/65.536 °/s
+        0x00, 0x64,  // tag11 = gyroX  raw +100
+        0xFF, 0x9C,  // gyroZ          raw −100
+    };
+    const auto s = feed_imu_sample(parser, scale, bytes, 1600);
+
+    EXPECT_TRUE(s.valid);
+    EXPECT_EQ(s.t, 600);  // end marker (1600) − base (1000)
+    EXPECT_FLOAT_EQ(s.accel_y, 256.0F / 8192.0F);
+    EXPECT_FLOAT_EQ(s.accel_x, -1.0F / 8192.0F);
+    EXPECT_FLOAT_EQ(s.accel_z, 0.25F);
+    EXPECT_FLOAT_EQ(s.temperature, 400.0F / 512.0F + 23.0F);
+    EXPECT_FLOAT_EQ(s.gyro_y, 512.0F / 65.536F);
+    EXPECT_FLOAT_EQ(s.gyro_x, 100.0F / 65.536F);
+    EXPECT_FLOAT_EQ(s.gyro_z, -100.0F / 65.536F);
+}
+
+TEST(DavisImu, DecodesFullSampleWithStraightTagsAndDavistemp) {
+    gui::davis::Parser parser(346, 260, false);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1), ts_word(500)}, dropped);
+
+    const std::uint16_t scale = imu_scale_word(7, 3, 0);  // ±16 g, ±2000 °/s
+    std::array<std::uint8_t, 14> bytes = {
+        0x04, 0x00,  // tag1 = accelX raw +1024 → 1024/2048 g
+        0x00, 0x01,  // tag3 = accelY raw +1
+        0x00, 0x00,  // accelZ raw 0
+        0x0A, 0x28,  // temperature raw 2600 → 2600/340 + 35 (BMI160 model)
+        0x10, 0x00,  // tag9  = gyroX raw +4096 → 4096/16.384 °/s
+        0x00, 0x00,  // tag11 = gyroY
+        0x00, 0x00,  // gyroZ
+    };
+    const auto s = feed_imu_sample(parser, scale, bytes, 900);
+
+    EXPECT_TRUE(s.valid);
+    EXPECT_EQ(s.t, 400);
+    EXPECT_FLOAT_EQ(s.accel_x, 1024.0F / 2048.0F);
+    EXPECT_FLOAT_EQ(s.accel_y, 1.0F / 2048.0F);
+    EXPECT_FLOAT_EQ(s.accel_z, 0.0F);
+    EXPECT_FLOAT_EQ(s.temperature, 2600.0F / 340.0F + 35.0F);
+    EXPECT_FLOAT_EQ(s.gyro_x, 4096.0F / 16.384F);
+    EXPECT_FLOAT_EQ(s.gyro_y, 0.0F);
+    EXPECT_FLOAT_EQ(s.gyro_z, 0.0F);
+}
+
+TEST(DavisImu, InvenSenseTemperatureFormula) {
+    gui::davis::Parser parser(346, 260, false);
+    parser.set_imu_model(gui::davis::ImuModel::InvenSense6500_9250);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1), ts_word(100)}, dropped);
+
+    std::array<std::uint8_t, 14> bytes{};
+    bytes[6] = 0x13; bytes[7] = 0x88;  // temperature raw 5000
+    const auto s = feed_imu_sample(parser, imu_scale_word(7, 1, 2), bytes, 200);
+    EXPECT_FLOAT_EQ(s.temperature, 5000.0F / 333.87F + 21.0F);
+}
+
+TEST(DvxImu, AccelOnlySequenceCountJump) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1), ts_word(100)}, dropped);
+
+    // type = accel only (4): the device streams just the 6 accel bytes; the
+    // decoder's count jump (+8 after accelZ, no temp/gyro enabled) must land
+    // the sequence at the complete marker (14).
+    gui::davis::ImuSample got;
+    parser.set_imu_sink([&got](const gui::davis::ImuSample& s) { got = s; });
+
+    std::vector<std::uint16_t> words{special_word(5), imu_scale_word(4, 1, 2),
+                                     imu_data_word(0x02), imu_data_word(0x00),
+                                     imu_data_word(0x00), imu_data_word(0x01),
+                                     imu_data_word(0x00), imu_data_word(0x00),
+                                     ts_word(300), special_word(7)};
+    feed(parser, words, dropped);
+
+    EXPECT_TRUE(got.valid);
+    EXPECT_FLOAT_EQ(got.accel_y, 512.0F / 8192.0F);  // tag1 = accelY on DVX
+    EXPECT_FLOAT_EQ(got.temperature, 0.0F);          // never received
+    EXPECT_FLOAT_EQ(got.gyro_z, 0.0F);
+}
+
+TEST(DvxImu, IncompleteSequenceDiscarded) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1), ts_word(100)}, dropped);
+
+    gui::davis::ImuSample got;
+    bool called = false;
+    parser.set_imu_sink([&got, &called](const gui::davis::ImuSample& s) {
+        got = s;
+        called = true;
+    });
+
+    std::vector<std::uint16_t> words{special_word(5), imu_scale_word(7, 1, 2)};
+    for (int i = 0; i < 13; ++i) words.push_back(imu_data_word(0x11));  // one short
+    words.push_back(special_word(7));
+    feed(parser, words, dropped);
+    EXPECT_FALSE(called);
 }

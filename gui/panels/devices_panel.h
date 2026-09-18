@@ -8,8 +8,10 @@
 
 #include "abstract_panel.h"
 
+class QCheckBox;
 class QListWidget;
 class QPushButton;
+class QWidget;
 
 namespace gui {
 
@@ -25,6 +27,11 @@ public:
     public slots:
     void refresh_sources(const std::vector<std::pair<QString, QString>>& sources);
     void set_connected(bool connected);
+    /// Phase 2 capability: the IMU row appears only for sources that
+    /// provide the inivation IMU stream. Hiding also unchecks it.
+    void set_imu_available(bool available);
+    /// Programmatic check state (no toggled signal re-emission).
+    void set_imu_checked(bool on);
 
 signals:
     void refresh_requested();
@@ -32,6 +39,7 @@ signals:
     void connect_serial_requested(const QString& serial);
     void disconnect_requested();
     void self_test_requested();
+    void imu_stream_toggled(bool on);
 
 private:
     QListWidget* list_{nullptr};
@@ -40,6 +48,8 @@ private:
     QPushButton* btn_connect_selected_{nullptr};
     QPushButton* btn_disconnect_{nullptr};
     QPushButton* btn_self_test_{nullptr};
+    QWidget* imu_row_{nullptr};
+    QCheckBox* imu_check_{nullptr};
 };
 
 } // namespace gui

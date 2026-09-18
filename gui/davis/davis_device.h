@@ -26,6 +26,8 @@
 
 #include <libusb.h>
 
+#include "imu_types.h"
+
 #include <metavision/sdk/base/events/event_cd.h>
 
 #include "davis_biases.h"
@@ -63,6 +65,13 @@ public:
 
     void set_event_sink(EventSink sink);
     void set_gone_callback(GoneCallback callback);
+    /// Completed IMU6 samples (accel/gyro/temp) — invoked from the USB
+    /// thread when the IMU stream is enabled.
+    void set_imu_sink(const ImuSink& sink);
+    /// Enables/disables the IMU stream (three RUN registers; applied at
+    /// once, and re-applied by start() while @p on).
+    void set_imu_enabled(bool on);
+    [[nodiscard]] bool imu_enabled() const { return imu_enabled_; }
 
     /// Starts event streaming (data transfers + run switches + timestamp
     /// reset handshake; blocks up to ~1 s waiting for the reset marker).
@@ -135,6 +144,7 @@ private:
     EventSink sink_;
     GoneCallback gone_callback_;
     std::atomic<bool> streaming_{false};
+    bool imu_enabled_{false};
 };
 
 } // namespace gui::davis

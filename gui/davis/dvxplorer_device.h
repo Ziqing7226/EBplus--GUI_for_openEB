@@ -62,6 +62,13 @@ public:
 
     void set_event_sink(EventSink sink);
     void set_gone_callback(GoneCallback callback);
+    /// Completed IMU6 samples (accel/gyro/temp) — invoked from the USB
+    /// thread when the IMU stream is enabled.
+    void set_imu_sink(const ImuSink& sink);
+    /// Enables/disables the IMU stream (three RUN registers; applied at
+    /// once, and re-applied by start() while @p on).
+    void set_imu_enabled(bool on);
+    [[nodiscard]] bool imu_enabled() const { return imu_enabled_; }
     void start();
     void stop();
 
@@ -135,6 +142,7 @@ private:
     int contrast_off_{9};
     EventSink sink_;
     GoneCallback gone_callback_;
+    bool imu_enabled_{false};
     DvxParser parse_;
     std::atomic<bool> streaming_{false};
 };

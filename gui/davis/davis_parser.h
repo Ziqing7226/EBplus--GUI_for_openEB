@@ -28,6 +28,9 @@
 
 #include <metavision/sdk/base/events/event_cd.h>
 
+#include "imu_decoder.h"
+#include "imu_types.h"
+
 namespace gui::davis {
 
 class Parser {
@@ -51,6 +54,14 @@ public:
     /// True once a timestamp reset was seen (timestamps are now 0-based).
     [[nodiscard]] bool time_initialized() const { return t0_set_; }
 
+    /// Completed IMU6 samples (accel/gyro/temp) — invoked from the USB
+    /// thread whenever the IMU stream is enabled on the device.
+    void set_imu_sink(const ImuSink& sink) { imu_.set_sink(sink); }
+
+    /// IMU chip model (from MODULE_IMU / IMU_TYPE) — selects the
+    /// temperature formula. Default: Bosch BMI160.
+    void set_imu_model(ImuModel model) { imu_.set_model(model); }
+
     /// Full reset (device re-open).
     void reset();
 
@@ -66,6 +77,9 @@ private:
     std::int64_t t0_{0};
     std::int64_t current_{0};
     std::int16_t last_y_{0};
+
+    // DAVIS: X/Y tags carry X first; temperature formula by chip model.
+    ImuDecoder imu_{false, false};
 
     std::vector<Metavision::EventCD> batch_;
 };

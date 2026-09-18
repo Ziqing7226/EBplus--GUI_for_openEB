@@ -18,6 +18,7 @@ void DvxParser::reset() {
     last_x_ = 0;
     last_yg1_ = 0;
     last_yg2_ = 0;
+    imu_.reset();
     batch_.clear();
 }
 
@@ -54,6 +55,10 @@ void DvxParser::parse(const std::uint8_t* data, std::size_t size, const EventSin
                     last_x_ = 0;
                     last_yg1_ = 0;
                     last_yg2_ = 0;
+                } else if (data_part == 5) {
+                    imu_.start();  // IMU start (6 axes).
+                } else if (data_part == 7) {
+                    imu_.end(t0_set_ ? (current_ - t0_) : current_);
                 }
                 break;
 
@@ -93,6 +98,18 @@ void DvxParser::parse(const std::uint8_t* data, std::size_t size, const EventSin
                 break;
             }
 
+            case 5: { // Misc8 data: low 4 bits = code, low byte = data.
+                const auto misc8_code =
+                    static_cast<std::uint8_t>((data_part & 0x0F00) >> 8);
+                const auto misc8_data = static_cast<std::uint8_t>(data_part & 0x00FF);
+                if (misc8_code == 0) {
+                    imu_.data_byte(misc8_data);
+                } else if (misc8_code == 3) {
+                    imu_.scale_config(data_part);
+                }
+                break;
+            }
+
             case 7: { // Timestamp wrap: data = multiplier of 2^15 µs.
                 wrap_add_ += static_cast<std::int64_t>(0x8000) * data_part;
                 update_timestamp(wrap_add_);
@@ -100,7 +117,7 @@ void DvxParser::parse(const std::uint8_t* data, std::size_t size, const EventSin
             }
 
             default:
-                // 5/6 = IMU/misc data — consumed and ignored (events-only).
+                // 6 = misc10 data — consumed and ignored (events-only).
                 break;
         }
     }

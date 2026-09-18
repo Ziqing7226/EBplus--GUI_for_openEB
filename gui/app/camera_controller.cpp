@@ -216,6 +216,8 @@ bool CameraController::connect_davis(const davis::DeviceDescriptor& descriptor) 
     davis_device_->set_gone_callback([this]() {
         QMetaObject::invokeMethod(this, [this]() { on_davis_gone(); }, Qt::QueuedConnection);
     });
+    davis_device_->set_imu_sink([this](const davis::ImuSample& s) { on_imu_sample(s); });
+    davis_device_->set_imu_enabled(imu_enabled_);
 
     emit connected(sensor_info_);
     return true;
@@ -268,6 +270,8 @@ bool CameraController::connect_dvx(const davis::DeviceDescriptor& descriptor) {
     dvx_device_->set_gone_callback([this]() {
         QMetaObject::invokeMethod(this, [this]() { on_dvx_gone(); }, Qt::QueuedConnection);
     });
+    dvx_device_->set_imu_sink([this](const davis::ImuSample& s) { on_imu_sample(s); });
+    dvx_device_->set_imu_enabled(imu_enabled_);
 
     emit connected(sensor_info_);
     return true;
@@ -670,9 +674,13 @@ facility::TriggerOut* CameraController::trigger_out_facility() {
 CameraController::SourceCapabilities CameraController::source_capabilities() {
     SourceCapabilities caps;
 #if GUI_HAVE_DAVIS
-    // inivation device layer (DAVIS/DVXplorer): events + biases only — the
-    // trigger/ESP facilities are not wired yet, so their panels hide.
-    if (davis_device_ || dvx_device_) return caps;
+    // inivation device layer (DAVIS/DVXplorer): events + biases + the IMU
+    // stream; the trigger/ESP facilities are not wired yet, so those
+    // panels hide.
+    if (davis_device_ || dvx_device_) {
+        caps.imu = true;
+        return caps;
+    }
 #endif
     if (!camera_) return caps;  // nothing connected, or a file source.
     caps.trigger = trigger_in_facility() != nullptr ||
@@ -681,6 +689,36 @@ CameraController::SourceCapabilities CameraController::source_capabilities() {
                trail_filter_facility() != nullptr || erc_facility() != nullptr;
     return caps;
 }
+
+#if GUI_HAVE_DAVIS
+bool CameraController::set_imu_enabled(bool on) {
+    if (!davis_device_ && !dvx_device_) return false;
+    imu_enabled_ = on;
+    if (davis_device_) davis_device_->set_imu_enabled(on);
+    if (dvx_device_) dvx_device_->set_imu_enabled(on);
+    if (on) {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+        imu_count_ = 0;  // fresh session for the rate display
+    }
+    return true;
+}
+
+davis::ImuSample CameraController::latest_imu() const {
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+    return imu_latest_;
+}
+
+long CameraController::imu_sample_count() const {
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+    return imu_count_;
+}
+
+void CameraController::on_imu_sample(const davis::ImuSample& sample) {
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+    imu_latest_ = sample;
+    ++imu_count_;
+}
+#endif
 facility::CameraSync* CameraController::camera_sync_facility() {
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::CameraSync>();
@@ -1029,6 +1067,14 @@ void CameraController::teardown() {
     dvx_device_.reset();
     dvx_biases_.reset();
     dvx_streaming_started_ = false;
+    // Phase 2: the IMU stream is session-scoped — a source switch or
+    // disconnect clears the flag and the telemetry window.
+    imu_enabled_ = false;
+    {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+        imu_latest_ = davis::ImuSample{};
+        imu_count_ = 0;
+    }
 #endif
     // 0. Stop the external reader FIRST: it feeds statistics_ and
     //    frame_pipeline_ from its own thread, so it must be joined before
