@@ -9,7 +9,7 @@ Real-time visualization · camera control · recording & playback · calibration
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.8.0-blue)
+![Version](https://img.shields.io/badge/version-2.9.3-blue)
 
 ![Main Window](pic/1.9.0.png)
 
@@ -88,7 +88,7 @@ All panels degrade gracefully when the device lacks the corresponding HAL facili
 ### Preprocessing Filter Chain
 4 stackable stages applied in a thread-safe pipeline: Polarity Filter, Polarity Invert, Flip X, Flip Y. Toggled from the sidebar.
 
-### Algorithms (24 total)
+### Algorithms (25 total)
 EB plus ships **20 self-developed algorithms** plus **4 OpenEB filter stages**, all registered in a single `AlgoBridge` registry.
 
 | Category | Examples |
@@ -97,7 +97,8 @@ EB plus ships **20 self-developed algorithms** plus **4 OpenEB filter stages**, 
 | **Motion** | Sparse Optical Flow (4 modes), Direction Selective, EIS / Optical Gyro |
 | **Detection** | Blob Detector, Corner Detector (Harris/FAST/AGAST), Line Segment (ELiSeD) |
 | **Tracking** | Object Tracker (RCT, jAER-aligned), Hough Circle, Hough Line |
-| **Reconstruction** | Event-to-Video — **E2VID** (default, DL), BardowVariational, InteractingMaps |
+| **Reconstruction** | Event-to-Video — **E2VID / E2VID+ / FireNet+ / HyperE2VID** (DL modes), BardowVariational, InteractingMaps |
+| **DL Optical Flow** | Dense Optical Flow (DL) — EVFlowNet, HSV-coded dense flow |
 | **Analytics** | Frequency Detector, Frequency Map, Auto Bias |
 | **Visualization** | Time Surface, XYT 3D Point Cloud, Orientation Cluster |
 | **Calibration** | Intrinsic Calibration (blinking chessboard) |
@@ -107,40 +108,61 @@ Algorithms are **mutually exclusive** — enabling one disables the previous. Co
 #### Noise Filter (shared preprocessing)
 8 modes exposed in the sidebar based on the selected filter: BAF, STCF, Refractory, DWF, AgePolarity, Harmonic, Repetitious, SpatialBP.
 
-#### E2VID Neural Network Reconstruction (Default)
+#### Neural Reconstruction (E2VID family) & DL Optical Flow
 
-The Event-to-Video algorithm defaults to **E2VID** — a deep-learning model that reconstructs grayscale images from raw event streams. It is ported from [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) and runs via ONNX Runtime (CPU, multi-threaded).
+The Event-to-Video algorithm defaults to **E2VID** and offers **4 DL modes** (selected in the GUI; each mode has its own model file, so several weight sets can be installed side by side), plus the non-DL BardowVariational / InteractingMaps modes. A separate **Dense Optical Flow (DL)** algorithm renders EVFlowNet's per-pixel flow as a direction-coded HSV frame.
 
-**Setup** (one-time, ~5 minutes):
+| Mode | Model | Reference (paper / repo) | Pretrained weights |
+|------|-------|--------------------------|--------------------|
+| 2 = E2VID (default) | UNetRecurrent | [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) — Gallego et al., 2019 | [E2VID_lightweight.pth.tar](http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar) |
+| 3 = E2VID+ | FlowNet (joint head) | [event_cnn_minimal](https://github.com/TimoStoff/event_cnn_minimal) — Stoffregen et al., ECCV 2020 | [model pack](https://drive.google.com/open?id=1J6PbqYPOGlyspYsdH4fgg5pZpc_l-BOD) → `reconstruction_model.pth` |
+| 4 = FireNet+ | FireNet (~40K params) | ibid. | ibid. → `firenet_all_cts.pth` |
+| 5 = HyperE2VID | Hypernetwork UNet | [HyperE2VID](https://github.com/ercanburak/HyperE2VID) — Ercan et al., IEEE TIP 2024 | [model.pth](https://drive.google.com/drive/folders/1UuGnKwSz5C9di-cVH1QzSFjgTRNqpYep) |
+| DL flow | EVFlowNet | event_cnn_minimal (arch.: Zhu et al., 2018) | ibid. → `flow_model.pth` |
+
+**Setup** (one-time, ~10 minutes):
 
 ```bash
-# 1. Download ONNX Runtime 1.19.2 (Linux x64 CPU) into third_party/
 cd /path/to/GUI-for-openEB
+
+# 1. ONNX Runtime 1.19.2 (CPU) into third_party/
 mkdir -p third_party/onnxruntime && cd third_party/onnxruntime
 wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
 tar xzf onnxruntime-linux-x64-1.19.2.tgz --strip-components=1
 cd ../..
 
-# 2. Create Python venv for model conversion
+# 2. (optional, iGPU acceleration) OpenVINO + Intel compute driver — see wiki/compile.md G4b
+
+# 3. Python venv for model conversion
 python3 -m venv .venv && . .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy
+pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy scipy
 deactivate
 
-# 3. Download pre-trained PyTorch weights (~41 MB)
-wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar
+# 4. Reference repositories (conversion imports these; NOT redistributed)
+git clone --depth 1 https://github.com/uzh-rpg/rpg_e2vid ref/rpg_e2vid
+git clone --depth 1 https://github.com/TimoStoff/event_cnn_minimal ref/event_cnn_minimal
+git clone --depth 1 https://github.com/ercanburak/HyperE2VID ref/HyperE2VID
 
-# 4. Convert to ONNX (produces models/e2vid_lightweight.onnx)
-. .venv/bin/activate && python models/convert_to_onnx.py && deactivate
+# 5. Download the weights (links in the table above) into models/
 
-# 5. Rebuild (CMake auto-detects ONNX Runtime)
+# 6. Convert to ONNX
+. .venv/bin/activate
+python models/convert_to_onnx.py --input models/E2VID_lightweight.pth.tar --output models/e2vid_lightweight.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model e2vid_plus   --input reconstruction_model.pth --output models/e2vid_plus.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model firenet_plus --input firenet_all_cts.pth      --output models/firenet_plus.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model evflownet    --input flow_model.pth           --output models/evflownet.onnx
+python models/convert_hypere2vid_to_onnx.py        --input model.pth                                    --output models/hypere2vid.onnx
+deactivate
+
+# 7. Rebuild (CMake auto-detects ONNX Runtime / OpenVINO)
 cmake --build build -- -j$(nproc)
 ```
 
-After setup, launch EB plus and enable **Algorithm → Event → Video** — it defaults to E2VID mode with 128×128 ROI, 30 fps, and 1/4 downsample (64×64 inference → upsampled to 128×128). The GUI exposes toggleable parameters (model path, auto-HDR, unsharp mask, bilateral filter).
+In the GUI: **Algorithm → Event → Video** (defaults to E2VID mode: 128×128 ROI, 30 fps, 1/4 downsample) — pick the mode in the sidebar; each DL mode exposes its own model path. **Dense Optical Flow (DL)** runs at the unified ROI with internal 1/4 downsampling. All DL inference uses the iGPU via OpenVINO when available (Inference device = Auto), falling back to ONNX Runtime CPU.
 
-> **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps modes work without any setup — BardowVariational jointly estimates optical flow and intensity via Chambolle-Pock primal-dual optimization (all six λ terms), and InteractingMaps uses six interconnected maps (I/G/V/F/C/R) with rotation estimation via least squares.
+> **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps work without any setup.
 
-Algorithm specifications (all event-to-video modes): **E2VID** — event voxel grid → ONNX Runtime inference (UNetRecurrent, ConvLSTM state) → unsharp mask → auto-HDR rescaling → bilateral filter; **BardowVariational** — sliding window `[t−window_ms, t]` (events outside are dropped) → Chambolle–Pock primal–dual joint estimation of optical flow `u` and log-intensity `L` (λ1–λ6, with the λ6 prior applied only to pixels with no new events); **InteractingMaps** — same sliding window → six-map alternating relaxation (I/G/V/F/C/R) with Poisson gradient integration and V clamped to `[−1, 1]`. The two non-DL modes expose `window_ms` and an optional `decay_tau_ms`; GUI parameters are filtered by mode.
+> **Third-party models notice**: EB plus does NOT redistribute any pretrained weights or reference source code — the conversion scripts run against YOUR clones under `ref/` and the weights are downloaded from the official links above. Licenses of the referenced code: rpg_e2vid = GPL-3.0 (imported only at conversion time, on your machine, by your clone); event_cnn_minimal = no license file (weights shared by the authors for research use); HyperE2VID = MIT. The pretrained weights are academic releases; verify the applicable licenses (and patent landscape, where relevant) before commercial deployment.
 
 ### Theming
 - **5 background colors**: Gray, Green, Yellow, Pink, Blue (default)

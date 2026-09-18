@@ -154,6 +154,8 @@ python models/convert_hypere2vid_to_onnx.py \
 
 Notes: E2VID+/FireNet+/HyperE2VID have **no sigmoid head** — their raw output may exceed [0,1]; the display clips like the official pipelines, and **Auto HDR** stretches the range when reconstruction looks flat (typical for FireNet+ on small windows). All models consume RAW voxel grids (no normalization), matching this GUI's voxel builder.
 
+**Sources & licenses** (EB plus redistributes neither weights nor reference code — see the README for download links): rpg_e2vid = GPL-3.0 (imported only at conversion time by your own clone); event_cnn_minimal = no license file, weights shared by the authors for research use; HyperE2VID = MIT. Verify licenses/patents before commercial use.
+
 E2VID parameters exposed in the GUI: model path, inference device, `num_bins`, auto-HDR, unsharp amount/sigma, bilateral sigma.
 
 **Inference device (GPU acceleration, §4.4.2-GPU)**: the `device` parameter selects `Auto` (default) / `CPU` / `GPU`. With **OpenVINO** installed (see compile.md G4), Auto/GPU run the neural inference on the Intel iGPU via OpenVINO — the SAME `.onnx` model files are used, no re-conversion needed (measured ~11× faster than CPU: E2VID 5 ms vs 20 ms per frame at 64×64). Without OpenVINO — or on any GPU load/runtime failure — the engine silently falls back to ONNX Runtime CPU. The active runtime is shown in the algorithm status line (`model=loaded dev=gpu|cpu`).

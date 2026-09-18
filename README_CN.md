@@ -4,12 +4,12 @@
 
 基于 [openEB](https://github.com/prophesee-ai/openeb) v5.2.0 的开源 Qt 6 事件相机桌面应用。
 
-实时可视化 · 相机控制 · 录制回放 · 标定 · 24 个算法 · 可定制主题
+实时可视化 · 相机控制 · 录制回放 · 标定 · 25 个算法 · 可定制主题
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.8.0-blue)
+![Version](https://img.shields.io/badge/version-2.9.3-blue)
 
 ![主界面](pic/1.9.0.png)
 
@@ -99,7 +99,8 @@ EB plus 内置 **20 个自研算法** + **4 项 openEB 滤波阶段**，全部�
 | **运动** | Sparse Optical Flow（4 模式）、Direction Selective、EIS / Optical Gyro |
 | **检测** | Blob Detector、Corner Detector（Harris/FAST/AGAST）、Line Segment（ELiSeD）|
 | **跟踪** | Object Tracker（RCT，对齐 jAER）、Hough Circle、Hough Line |
-| **重建** | Event-to-Video —— **E2VID**（默认，DL）、BardowVariational、InteractingMaps |
+| **重建** | Event-to-Video —— **E2VID / E2VID+ / FireNet+ / HyperE2VID**（DL 模式）、BardowVariational、InteractingMaps |
+| **DL 光流** | Dense Optical Flow (DL) —— EVFlowNet，HSV 编码稠密光流 |
 | **分析** | Frequency Detector、Frequency Map、Auto Bias |
 | **可视化** | Time Surface、XYT 3D 点云、Orientation Cluster |
 | **标定** | Intrinsic Calibration（闪烁棋盘格）|
@@ -109,40 +110,61 @@ EB plus 内置 **20 个自研算法** + **4 项 openEB 滤波阶段**，全部�
 #### 噪声滤波（共享预处理）
 8 种模式按所选滤波器在侧栏暴露：BAF、STCF、Refractory、DWF、AgePolarity、Harmonic、Repetitious、SpatialBP。
 
-#### E2VID 神经网络重建（默认模式）
+#### 神经网络重建（E2VID 系列）与 DL 光流
 
-Event-to-Video 算法默认使用 **E2VID** —— 从原始事件流重建灰度图像的深度学习模型，移植自 [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid)，通过 ONNX Runtime（多线程 CPU）推理。
+Event-to-Video 算法默认使用 **E2VID**，共提供 **4 种 DL 模式**（GUI 内切换，各模式拥有独立模型文件，可并存多套权重），另有非 DL 的 BardowVariational / InteractingMaps 模式。独立的 **Dense Optical Flow (DL)** 算法将 EVFlowNet 的逐像素光流渲染为按方向编码的 HSV 帧。
 
-**部署**（一次性，约 5 分钟）：
+| 模式 | 模型 | 参考（论文 / 仓库） | 预训练权重 |
+|------|------|---------------------|------------|
+| 2 = E2VID（默认） | UNetRecurrent | [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) — Gallego 等, 2019 | [E2VID_lightweight.pth.tar](http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar) |
+| 3 = E2VID+ | FlowNet（联合头） | [event_cnn_minimal](https://github.com/TimoStoff/event_cnn_minimal) — Stoffregen 等, ECCV 2020 | [模型包](https://drive.google.com/open?id=1J6PbqYPOGlyspYsdH4fgg5pZpc_l-BOD) → `reconstruction_model.pth` |
+| 4 = FireNet+ | FireNet（约 4 万参数） | 同上 | 同上 → `firenet_all_cts.pth` |
+| 5 = HyperE2VID | 超网络 UNet | [HyperE2VID](https://github.com/ercanburak/HyperE2VID) — Ercan 等, IEEE TIP 2024 | [model.pth](https://drive.google.com/drive/folders/1UuGnKwSz5C9di-cVH1QzSFjgTRNqpYep) |
+| DL 光流 | EVFlowNet | event_cnn_minimal（架构：Zhu 等, 2018） | 同上 → `flow_model.pth` |
+
+**部署**（一次性，约 10 分钟）：
 
 ```bash
-# 1. 下载 ONNX Runtime 1.19.2（Linux x64 CPU）到 third_party/
 cd /path/to/GUI-for-openEB
+
+# 1. ONNX Runtime 1.19.2（CPU）装入 third_party/
 mkdir -p third_party/onnxruntime && cd third_party/onnxruntime
 wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
 tar xzf onnxruntime-linux-x64-1.19.2.tgz --strip-components=1
 cd ../..
 
-# 2. 创建 Python 转换环境
+# 2.（可选，核显加速）OpenVINO + Intel 计算驱动 —— 见 wiki/compile.md G4b
+
+# 3. 模型转换用 Python venv
 python3 -m venv .venv && . .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy
+pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy scipy
 deactivate
 
-# 3. 下载 PyTorch 预训练权重（约 41 MB）
-wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar
+# 4. 参考仓库（转换脚本运行时导入；本仓库不分发）
+git clone --depth 1 https://github.com/uzh-rpg/rpg_e2vid ref/rpg_e2vid
+git clone --depth 1 https://github.com/TimoStoff/event_cnn_minimal ref/event_cnn_minimal
+git clone --depth 1 https://github.com/ercanburak/HyperE2VID ref/HyperE2VID
 
-# 4. 转换为 ONNX（生成 models/e2vid_lightweight.onnx）
-. .venv/bin/activate && python models/convert_to_onnx.py && deactivate
+# 5. 下载权重（见上表链接）放入 models/
 
-# 5. 重新编译（CMake 自动检测 ONNX Runtime）
+# 6. 转换为 ONNX
+. .venv/bin/activate
+python models/convert_to_onnx.py --input models/E2VID_lightweight.pth.tar --output models/e2vid_lightweight.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model e2vid_plus   --input reconstruction_model.pth --output models/e2vid_plus.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model firenet_plus --input firenet_all_cts.pth      --output models/firenet_plus.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model evflownet    --input flow_model.pth           --output models/evflownet.onnx
+python models/convert_hypere2vid_to_onnx.py        --input model.pth                                    --output models/hypere2vid.onnx
+deactivate
+
+# 7. 重新编译（CMake 自动检测 ONNX Runtime / OpenVINO）
 cmake --build build -- -j$(nproc)
 ```
 
-完成后启动 EB plus，启用 **Algorithm → Event → Video** 即默认 E2VID 模式（128×128 ROI、30fps、1/4 下采样：64×64 推理 → 上采样回 128×128）。GUI 暴露可调参数：模型路径、auto-HDR、锐化强度、双边滤波。
+GUI 中：**Algorithm → Event → Video**（默认 E2VID 模式：128×128 ROI、30fps、1/4 下采样），在侧栏选择模式；每个 DL 模式暴露各自的模型路径。**Dense Optical Flow (DL)** 在统一 ROI 上运行并内部 1/4 下采样。所有 DL 推理在可用时走核显（Inference device = Auto，OpenVINO），否则回退 ONNX Runtime CPU。
 
-> **无 ONNX Runtime 时**：E2VID 自动回退到启发式模式（体素网格求和 + Sigmoid）。BardowVariational 和 InteractingMaps 模式无需任何额外依赖——BardowVariational 通过 Chambolle-Pock 原始-对偶优化联合估计光流与亮度（六个 λ 正则化项），InteractingMaps 使用六张互连图（I/G/V/F/C/R）交替松弛，旋转由线性最小二乘估计。
+> **无 ONNX Runtime 时**：E2VID 自动回退到启发式模式（体素网格求和 + Sigmoid）。BardowVariational 和 InteractingMaps 无需任何额外依赖。
 
-算法规格简述（三种重建路径）：**E2VID** — 事件体素网格 → ONNX Runtime 推理（UNetRecurrent，ConvLSTM 状态）→ 锐化 → auto-HDR 重缩放 → 双边滤波；**BardowVariational** — 滑动窗口 `[t−window_ms, t]`（窗口外事件丢弃）→ Chambolle–Pock 原始-对偶联合估计光流 `u` 与对数亮度 `L`（λ1–λ6，λ6 先验仅作用于无新事件像素）；**InteractingMaps** — 同一滑动窗口 → 六图交替松弛（I/G/V/F/C/R）+ Poisson 梯度积分，V 钳位 `[−1,1]`。两种非 DL 模式暴露 `window_ms` 与可选 `decay_tau_ms`；GUI 参数按模式过滤。
+> **第三方模型声明**：EB plus **不分发**任何预训练权重或参考源码——转换脚本针对你自行克隆到 `ref/` 的参考仓库运行，权重从上方官方链接下载。被引用代码的许可证：rpg_e2vid = GPL-3.0（仅在转换时、在你机器上、由你的克隆被导入）；event_cnn_minimal = 无 LICENSE 文件（作者以科研用途分享权重）；HyperE2VID = MIT。预训练权重均为学术发布；商用前请自行核实相应许可与专利状况。
 
 ### 主题
 - **5 种背景色**：Gray、Green、Yellow、Pink、Blue（默认）
