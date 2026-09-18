@@ -58,6 +58,7 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 | Direction Selective Filter | Overlay | jAER DirectionSelectiveFilter |
 | Sparse Optical Flow | Overlay | 4 modes: LocalPlanes / LucasKanade / BlockMatch / ClusterOF |
 | Dense Optical Flow | Overlay | PlaneFitting / TimeGradient / TripletMatching |
+| Dense Optical Flow (DL) | Standalone | EVFlowNet (Zhu 2018 / Stoffregen ECCV 2020); HSV frame, per-frame auto scale |
 | Blob Detector | Overlay | EMA background + connected components |
 | Object Tracker | Overlay | 4 modes: RCT / Median / Kalman / MultiHypothesis |
 | Corner Detector | Overlay | EndStopped / Harris / FAST / AGAST / Arc* |
@@ -70,7 +71,7 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 | EIS (Optical Gyro) | Overlay | jAER OpticalGyro, electronic image stabilization |
 | XYT 3D Visualizer | Standalone | GPU 3D point cloud |
 | Time Surface | Standalone | Hot / Plasma / Turbo palettes |
-| Event -> Video (E2VID) | Standalone | 3 modes (see below) |
+| Event -> Video (E2VID) | Standalone | 6 modes (see below) |
 | Frequency Detector | Overlay | blinking-light frequency detection |
 | Frequency Map | Standalone | flicker-frequency heatmap |
 
@@ -89,13 +90,18 @@ chessboard + two-pass Zhang solver), not a registered algorithm.
 
 ## Event-to-Video (E2VID)
 
-The Event-to-Video algorithm reconstructs grayscale intensity images from raw event streams. It has **3 modes**, selected via the `mode` parameter:
+The Event-to-Video algorithm reconstructs grayscale intensity images from raw event streams. It has **6 modes**, selected via the `mode` parameter:
 
 | Mode | Default | Description |
 |------|---------|-------------|
 | `0 = BardowVariational` | | Non-DL; joint optical-flow + log-intensity variational optimization |
 | `1 = InteractingMaps` | | Non-DL; six interconnected maps (I/G/V/F/C/R) with rotation estimation |
-| `2 = E2VID` | ✅ | DL; ONNX Runtime neural-network inference |
+| `2 = E2VID` | ✅ | DL; rpg_e2vid (Gallego et al. 2019), ONNX inference |
+| `3 = E2VID+` | | DL; Stoffregen et al., ECCV 2020 (FlowNet joint head) |
+| `4 = FireNet+` | | DL; lightweight recurrent net (ibid., ~40K params) |
+| `5 = HyperE2VID` | | DL; hypernetwork per-pixel dynamic convolutions (Ercan et al., IEEE TIP 2024) |
+
+Modes 2–5 share the same DL inference pipeline (and the device/num_bins/postproc parameters) and differ only in the loaded ONNX weights — each mode has its own **model path** parameter, so several weight sets can be installed side by side. Switching modes swaps the model.
 
 **Common parameters** (modes 0, 1): `output_fps` (1–120, default 30), `window_ms`, `decay_tau_ms` (0–5000, default 500).
 
@@ -127,6 +133,26 @@ cmake --build build -- -j$(nproc)
 ```
 
 E2VID defaults to 128×128 ROI + 30 fps + 1/4 downsample (64×64 inference → upsampled to 128×128). `num_bins` is auto-determined by the ONNX model's input channel count when a model is loaded.
+
+**Model setup (modes 2–5)**: convert the PyTorch weights once after downloading:
+
+```bash
+# E2VID (mode 2) — rpg_e2vid
+. .venv/bin/activate && python models/convert_to_onnx.py \
+    --input models/E2VID_lightweight.pth.tar --output models/e2vid_lightweight.onnx
+# E2VID+ (mode 3), FireNet+ (mode 4), EVFlowNet flow (dl_optical_flow) — event_cnn_minimal
+python models/convert_event_cnn_minimal_to_onnx.py --model e2vid_plus \
+    --input reconstruction_model.pth --output models/e2vid_plus.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model firenet_plus \
+    --input firenet_all_cts.pth --output models/firenet_plus.onnx
+python models/convert_event_cnn_minimal_to_onnx.py --model evflownet \
+    --input flow_model.pth --output models/evflownet.onnx
+# HyperE2VID (mode 5)
+python models/convert_hypere2vid_to_onnx.py \
+    --input model.pth --output models/hypere2vid.onnx
+```
+
+Notes: E2VID+/FireNet+/HyperE2VID have **no sigmoid head** — their raw output may exceed [0,1]; the display clips like the official pipelines, and **Auto HDR** stretches the range when reconstruction looks flat (typical for FireNet+ on small windows). All models consume RAW voxel grids (no normalization), matching this GUI's voxel builder.
 
 E2VID parameters exposed in the GUI: model path, inference device, `num_bins`, auto-HDR, unsharp amount/sigma, bilateral sigma.
 
