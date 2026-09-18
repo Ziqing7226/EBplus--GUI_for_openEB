@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QString>
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <memory>
 #include <optional>
@@ -114,6 +115,22 @@ public:
     /// @brief Returns the underlying Metavision::Camera (nullptr if none).
     /// External file sources (AEDAT4/ALPDATA) have no SDK camera.
     Metavision::Camera* camera_handle() { return camera_.get(); }
+
+    /// @brief True while an inivation device (DAVIS/DVXplorer) is connected
+    /// (Phase 4: routes recording to the AEDAT4 writer).
+    bool is_inivation_source() const {
+#if GUI_HAVE_DAVIS
+        return davis_device_ != nullptr || dvx_device_ != nullptr;
+#else
+        return false;
+#endif
+    }
+
+    /// @brief Phase 4: single-consumer tap on the RAW device stream (the
+    /// span as delivered by the device, before conditioning) — used by the
+    /// recorder to write AEDAT4 files. Invoked from the device thread.
+    using RawTap = std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)>;
+    void set_raw_tap(RawTap tap) { raw_tap_ = std::move(tap); }
 
     /// @brief Duration reported by an external file source (0 when the
     /// current source is an SDK camera or unknown until fully streamed).
@@ -354,6 +371,11 @@ private:
     long aps_count_{0};
     void on_aps_frame(const davis::ApsFrame& frame);
 #endif
+
+    /// Phase 4 recorder tap (raw device stream; nulled by teardown).
+    /// Unconditional — the AEDAT4 recorder installs it for inivation
+    /// sources only, but the accessor itself has no inivation dependency.
+    RawTap raw_tap_;
     /// External (non-SDK) file source and its reader thread. Mutually
     /// exclusive with camera_: only one is ever set.
     std::unique_ptr<ExternalFileSource> external_source_;

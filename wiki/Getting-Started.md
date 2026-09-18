@@ -107,7 +107,7 @@ Then **unplug and replug the camera** (so the session permission tag applies), a
 | Biases panel (all DAVIS coarse/fine + VDAC biases), save/load `.bias` | ✅ | ✅ (`contrast_on`/`contrast_off` only) |
 | Auto Bias controller (`diff_on`/`diff_off`) | ✅ | ❌ (no diff biases) |
 | Algorithms (all), unified software ROI, statistics | ✅ | ✅ |
-| RAW recording | ❌ (no `I_EventsStream`) | ❌ |
+| RAW recording | ✅ AEDAT4 (DV-native, uncompressed; processed-stream recording as for Prophesee) | ✅ AEDAT4 |
 | ROI / Trigger / ESP panels | ROI ❌ · Trigger/ESP auto-hidden (no facilities) | Trigger/ESP auto-hidden (no facilities) |
 | IMU stream (checkbox + live readout window) | ✅ | ✅ |
 | APS frames (checkbox + live preview window) | ✅ (grayscale) | ❌ (no APS hardware) |

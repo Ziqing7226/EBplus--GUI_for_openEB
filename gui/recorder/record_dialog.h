@@ -20,6 +20,9 @@ class RecordDialog : public QDialog {
     Q_OBJECT
 public:
     explicit RecordDialog(QWidget* parent = nullptr);
+    /// @brief Phase 4: inivation sources record to AEDAT4 — switches the
+    /// default suffix, file filter and hint text accordingly.
+    void set_aedat4_mode(bool on);
 
 signals:
     /// @brief Emitted when the user confirms: record to @p path, optionally
@@ -37,6 +40,7 @@ private:
     QLabel* lbl_status_{nullptr};
     QPushButton* btn_start_{nullptr};
     QPushButton* btn_close_{nullptr};
+    bool aedat4_{false};
 };
 
 } // namespace gui

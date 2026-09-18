@@ -37,21 +37,47 @@ bool RecorderController::start(CameraController* controller, const QString& path
         return false;
     }
     // Recording is only meaningful for live cameras: a file-playback source
-    // has no underlying hardware stream and log_raw_data would silently
-    // produce an empty / corrupt file.
+    // has no underlying hardware stream to record.
     if (controller->is_file_source()) {
         emit error(tr("Recording is only available for live cameras."));
-        return false;
-    }
-    auto* camera = controller->camera_handle();
-    if (!camera) {
-        emit error(tr("No camera connected."));
         return false;
     }
     // Recording while the camera is not streaming produces an empty file
     // (audit §六-C5) — require an active stream.
     if (!controller->is_running()) {
         emit error(tr("Camera is not streaming. Start streaming before recording."));
+        return false;
+    }
+    // Phase 4: inivation devices (DAVIS/DVXplorer) have no SDK event stream
+    // — record the raw device stream into an AEDAT4 (DV-native) file.
+    if (controller->is_inivation_source()) {
+        const auto& info = controller->sensor_info();
+        aedat4_writer_ = std::make_shared<Aedat4Writer>();
+        if (!aedat4_writer_->open(path.toStdString(), info.width, info.height,
+                                  info.serial.toStdString())) {
+            aedat4_writer_.reset();
+            emit error(tr("Failed to open recording file:\n%1").arg(path));
+            return false;
+        }
+        written_events_ = 0;
+        auto writer = aedat4_writer_;  // in-flight batches outlive stop()
+        controller->set_raw_tap([this, writer](const Metavision::EventCD* b,
+                                               const Metavision::EventCD* e) {
+            writer->write(b, e);
+            written_events_ += static_cast<std::uint64_t>(e - b);
+        });
+        controller_ = controller;
+        path_ = path;
+        recording_ = true;
+        aedat4_mode_ = true;
+        start_time_ = std::chrono::steady_clock::now();
+        timer_.start(1000);
+        emit recording_started(path);
+        return true;
+    }
+    auto* camera = controller->camera_handle();
+    if (!camera) {
+        emit error(tr("No camera connected."));
         return false;
     }
     Metavision::I_EventsStream* stream = nullptr;
@@ -87,14 +113,11 @@ bool RecorderController::start_processed(CameraController* controller,
     if (recording_ || !controller || !fp || path.isEmpty()) {
         return false;
     }
-    // Same guards as raw recording: live camera + active stream only.
+    // Same guards as raw recording: live source + active stream only. Any
+    // live source works here (the processed stream comes from the pipeline,
+    // not the SDK camera) — including inivation devices.
     if (controller->is_file_source()) {
         emit error(tr("Recording is only available for live cameras."));
-        return false;
-    }
-    auto* camera = controller->camera_handle();
-    if (!camera) {
-        emit error(tr("No camera connected."));
         return false;
     }
     if (!controller->is_running()) {
@@ -167,7 +190,17 @@ void RecorderController::stop() {
     recording_ = false;
     timer_.stop();
     flush_timer_.stop();
-    if (processed_mode_) {
+    if (aedat4_mode_) {
+        // Unhook the tap first (no NEW batches), then close — the shared_ptr
+        // in an in-flight tap lambda keeps the writer alive until that batch
+        // completes, and close() itself is mutex-serialized with write().
+        if (controller_) controller_->set_raw_tap(nullptr);
+        if (aedat4_writer_) {
+            aedat4_writer_->close();
+            aedat4_writer_.reset();
+        }
+        aedat4_mode_ = false;
+    } else if (processed_mode_) {
         // Unhook BEFORE closing the writer: clearing the listener takes the
         // pipeline's display_preproc_mutex_, so no in-flight callback can
         // touch the writer during/after close.

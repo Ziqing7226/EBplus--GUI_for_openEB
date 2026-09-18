@@ -62,6 +62,19 @@ gtest_discover_tests(test_panel_visibility
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
+# --- test_aedat4_writer: Phase 4 — writer output read back event-exact by
+# our AEDAT4 file source (the reader is the byte-level format reference). ---
+add_executable(test_aedat4_writer
+    test_aedat4_writer.cpp
+)
+target_link_libraries(test_aedat4_writer PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_aedat4_writer PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_aedat4_writer)
+
 # --- test_layout_manager: layout save/load symmetry (needs QApplication). ---
 # Custom main() creates an offscreen QApplication before InitGoogleTest, so we
 # link GTest::GTest (not GTest::Main) to avoid a duplicate main().

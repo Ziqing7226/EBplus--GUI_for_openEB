@@ -14,6 +14,9 @@
 #include <QStandardPaths>
 
 namespace gui {
+namespace {
+QString suffix_for(bool aedat4) { return aedat4 ? QStringLiteral(".aedat4") : QStringLiteral(".raw"); }
+} // namespace
 
 RecordDialog::RecordDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(tr("Start Recording"));
@@ -54,15 +57,35 @@ RecordDialog::RecordDialog(QWidget* parent) : QDialog(parent) {
     btn_row->addWidget(btn_close_);
     form->addRow(btn_row);
 
+    set_aedat4_mode(false);  // default RAW mode (after lbl_status_ exists)
+
     connect(btn_browse_, &QPushButton::clicked, this, &RecordDialog::on_browse);
     connect(btn_start_, &QPushButton::clicked, this, &RecordDialog::on_start);
     connect(btn_close_, &QPushButton::clicked, this, &QDialog::reject);
 }
 
+void RecordDialog::set_aedat4_mode(bool on) {
+    aedat4_ = on;
+    const QString suffix = suffix_for(on);
+    QString path = edt_output_->text();
+    if (!path.isEmpty()) {
+        const int dot = path.lastIndexOf(QLatin1Char('.'));
+        if (dot > 0) path = path.left(dot);
+        path += suffix;
+        edt_output_->setText(path);
+    }
+    if (!lbl_status_) return;  // constructor pre-phase (hint set there)
+    lbl_status_->setText(on
+        ? tr("Recording writes the inivation camera's raw event stream into an "
+             "AEDAT4 (DV-format) file.")
+        : tr("Recording starts the live camera's RAW event log."));
+}
+
 void RecordDialog::on_browse() {
     const QString path = QFileDialog::getSaveFileName(
         this, tr("Record to file"), edt_output_->text(),
-        tr("RAW files (*.raw);;All files (*)"));
+        aedat4_ ? tr("AEDAT4 files (*.aedat4);;All files (*)")
+                : tr("RAW files (*.raw);;All files (*)"));
     if (!path.isEmpty()) edt_output_->setText(path);
 }
 
@@ -72,9 +95,10 @@ void RecordDialog::on_start() {
         lbl_status_->setText(tr("An output path is required."));
         return;
     }
-    // Ensure the .raw extension is present so downstream tools and the SDK
-    // can identify the file format.
-    if (!path.endsWith(".raw", Qt::CaseInsensitive)) path += ".raw";
+    // Ensure the expected extension is present so downstream tools can
+    // identify the file format.
+    const QString suffix = suffix_for(aedat4_);
+    if (!path.endsWith(suffix, Qt::CaseInsensitive)) path += suffix;
     edt_output_->setText(path);
     // Create the output directory if needed (the timestamped default lives
     // in ~/Documents/EBplus/recordings which may not exist yet).

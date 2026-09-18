@@ -882,6 +882,10 @@ void CameraController::auto_bias_tick(const Metavision::EventCD* b,
 
 void CameraController::on_live_events(const Metavision::EventCD* b, const Metavision::EventCD* e) {
     try {
+        // Phase 4: the recorder's raw-device tap runs FIRST — the AEDAT4
+        // file must contain the unconditioned device stream, matching the
+        // RAW-recording semantics of the SDK cameras.
+        if (raw_tap_) raw_tap_(b, e);
         statistics_.add_events(b, e);
         if (is_file_) {
             // File mode: buffer RAW events — conditioning happens per-frame
@@ -1112,6 +1116,7 @@ void CameraController::teardown() {
         aps_count_ = 0;
     }
 #endif
+    raw_tap_ = nullptr;
     // 0. Stop the external reader FIRST: it feeds statistics_ and
     //    frame_pipeline_ from its own thread, so it must be joined before
     //    the pipeline is stopped below.

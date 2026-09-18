@@ -51,6 +51,7 @@ set(GUI_LIB_SOURCES
     recorder/playback_controller.cpp
     recorder/playback_controls.cpp
     recorder/recorder_controller.cpp
+    recorder/aedat4_writer.cpp
 )
 
 # Phase 9 / Phase 4 — calibration wizard + tools (built when sources are present).

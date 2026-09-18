@@ -17,6 +17,8 @@
 
 #include <metavision/sdk/stream/raw_evt2_event_file_writer.h>
 
+#include "recorder/aedat4_writer.h"
+
 namespace gui {
 
 class CameraController;
@@ -50,6 +52,12 @@ signals:
 private:
     bool recording_{false};
     bool processed_mode_{false};
+    /// Phase 4: inivation sources record to AEDAT4 (DV-native format) via
+    /// the controller's raw-device tap. The tap lambda holds a shared_ptr:
+    /// an in-flight batch on the USB thread keeps the writer alive while
+    /// stop() tears the recording down on the GUI thread.
+    bool aedat4_mode_{false};
+    std::shared_ptr<Aedat4Writer> aedat4_writer_;
     QString path_;
     QTimer timer_;           ///< Emits elapsed() once per second.
     QTimer flush_timer_;     ///< Calls I_EventsStream::get_latest_raw_data() to flush buffers.
@@ -64,7 +72,8 @@ private:
     std::chrono::steady_clock::time_point start_time_;
 
 public:
-    /// @brief Events written so far (processed mode; 0 in raw mode).
+    /// @brief Events written so far (processed + AEDAT4 modes; 0 in SDK
+    /// raw mode).
     std::uint64_t events_written() const { return written_events_.load(); }
     /// @brief True while a processed-mode recording is active.
     bool is_processed_recording() const { return recording_ && processed_mode_; }

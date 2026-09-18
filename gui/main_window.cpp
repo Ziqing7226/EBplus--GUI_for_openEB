@@ -1572,6 +1572,7 @@ void MainWindow::on_record_start() {
                     do_record_start(path, save_biases);
                 });
     }
+    record_dialog_->set_aedat4_mode(camera_.is_inivation_source());
     record_dialog_->show();
     record_dialog_->raise();
     record_dialog_->activateWindow();
