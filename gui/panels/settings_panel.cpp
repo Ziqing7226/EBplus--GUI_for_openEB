@@ -162,6 +162,14 @@ void SettingsPanel::refresh_icons() {
     update();
 }
 
+void SettingsPanel::apply_source_capabilities(bool trigger, bool esp) {
+    // The panels live inside their group page; QWidget::setVisible reflows
+    // the group layout. The ActivityBar icon is per-group, so it stays —
+    // the Hardware group keeps its other panels (Biases, ROI, Preprocessing).
+    if (auto* p = find_panel(QStringLiteral("esp"))) p->setVisible(esp);
+    if (auto* p = find_panel(QStringLiteral("trigger"))) p->setVisible(trigger);
+}
+
 void SettingsPanel::toggle_content() {
     if (!stacked_) return;
     const bool new_visible = !stacked_->isVisible();

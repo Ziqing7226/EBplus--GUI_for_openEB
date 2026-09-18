@@ -108,7 +108,7 @@ Then **unplug and replug the camera** (so the session permission tag applies), a
 | Auto Bias controller (`diff_on`/`diff_off`) | ✅ | ❌ (no diff biases) |
 | Algorithms (all), unified software ROI, statistics | ✅ | ✅ |
 | RAW recording | ❌ (no `I_EventsStream`) | ❌ |
-| ROI / Trigger / ESP panels | ❌ (facilities unavailable) | ❌ (facilities unavailable) |
+| ROI / Trigger / ESP panels | ROI ❌ · Trigger/ESP auto-hidden (no facilities) | Trigger/ESP auto-hidden (no facilities) |
 | APS frames / IMU / trigger streams | discarded by design | discarded by design |
 
 Firmware requirements — DAVIS: FX3 firmware 6, FX2 firmware 4, FPGA logic version 18 patch ≥ 1; DVXplorer: FX3 firmware 9, FPGA logic version 18 patch ≥ 4 (checked at connect — a clear error is shown otherwise).

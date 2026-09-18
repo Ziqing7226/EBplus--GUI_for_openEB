@@ -666,6 +666,21 @@ facility::TriggerOut* CameraController::trigger_out_facility() {
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::TriggerOut>();
 }
+
+CameraController::SourceCapabilities CameraController::source_capabilities() {
+    SourceCapabilities caps;
+#if GUI_HAVE_DAVIS
+    // inivation device layer (DAVIS/DVXplorer): events + biases only — the
+    // trigger/ESP facilities are not wired yet, so their panels hide.
+    if (davis_device_ || dvx_device_) return caps;
+#endif
+    if (!camera_) return caps;  // nothing connected, or a file source.
+    caps.trigger = trigger_in_facility() != nullptr ||
+                   trigger_out_facility() != nullptr;
+    caps.esp = anti_flicker_facility() != nullptr ||
+               trail_filter_facility() != nullptr || erc_facility() != nullptr;
+    return caps;
+}
 facility::CameraSync* CameraController::camera_sync_facility() {
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::CameraSync>();

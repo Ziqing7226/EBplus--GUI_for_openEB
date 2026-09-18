@@ -48,6 +48,20 @@ target_link_libraries(test_config_manager PRIVATE
 target_compile_options(test_config_manager PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_config_manager)
 
+# --- test_panel_visibility: Phase 1 capability framework — facility-backed
+# hardware panels hide for sources lacking trigger/ESP (needs QApplication). ---
+add_executable(test_panel_visibility
+    test_panel_visibility.cpp
+)
+target_link_libraries(test_panel_visibility PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_panel_visibility PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_panel_visibility
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 # --- test_layout_manager: layout save/load symmetry (needs QApplication). ---
 # Custom main() creates an offscreen QApplication before InitGoogleTest, so we
 # link GTest::GTest (not GTest::Main) to avoid a duplicate main().

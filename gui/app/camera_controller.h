@@ -139,6 +139,18 @@ public:
     facility::TriggerOut*  trigger_out_facility();
     facility::CameraSync*  camera_sync_facility();
 
+    /// @brief Which hardware facility groups the CURRENT source actually
+    /// provides (Phase 1 capability framework). Facility-backed panels that
+    /// lack their capability auto-hide while this source is connected.
+    /// SDK cameras report from their HAL facilities; inivation devices and
+    /// file sources report the device layer's implemented subset (biases
+    /// only — no trigger/ESP streams yet).
+    struct SourceCapabilities {
+        bool trigger{false};  ///< I_TriggerIn or I_TriggerOut present.
+        bool esp{false};      ///< Anti-flicker, trail or ERC module present.
+    };
+    SourceCapabilities source_capabilities();
+
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
     /// Live camera: applies the hardware ROI (I_ROI) so the sensor itself
     /// only outputs ROI events. File playback: forwards to FramePipeline's

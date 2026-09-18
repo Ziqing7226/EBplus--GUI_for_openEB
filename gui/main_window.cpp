@@ -855,6 +855,11 @@ void MainWindow::wire_signals() {
         settings_->roi_panel()->on_camera_connected(&camera_);
         settings_->esp_panel()->on_camera_connected(&camera_);
         settings_->trigger_panel()->on_camera_connected(&camera_);
+        // Phase 1 capability framework: hide facility-backed panels the
+        // connected source cannot back (inivation devices / file sources
+        // have no trigger or ESP facilities).
+        const auto caps = camera_.source_capabilities();
+        settings_->apply_source_capabilities(caps.trigger, caps.esp);
     });
     connect(&camera_, &CameraController::disconnected, this, [this]() {
         // Explicitly remove the CD callback before clearing the ID, so the
@@ -880,6 +885,10 @@ void MainWindow::wire_signals() {
         settings_->file_tools_panel()->set_record_enabled(false);
         settings_->file_tools_panel()->set_stop_enabled(false);
         settings_->file_tools_panel()->set_export_enabled(false);
+        // Restore the pre-Phase-1 layout: with no source connected the
+        // facility panels are visible again (they populate as "not
+        // supported", exactly as before).
+        settings_->apply_source_capabilities(true, true);
         roi_draw_pending_ = false;
         on_toggle_roi_drag(false);
         display_->clear();

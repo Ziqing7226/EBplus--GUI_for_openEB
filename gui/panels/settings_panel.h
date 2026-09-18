@@ -72,6 +72,13 @@ public:
     /// @brief Returns all registered panels.
     const std::vector<std::unique_ptr<AbstractPanel>>& panels() const { return panels_; }
 
+    /// @brief Phase 1 capability framework: shows/hides the facility-backed
+    /// hardware panels (ESP, Trigger) for the currently connected source.
+    /// Pass @p trigger/@p esp from CameraController::source_capabilities();
+    /// pass {true, true} (or call on disconnect) to restore the default
+    /// all-visible layout used when no camera is connected.
+    void apply_source_capabilities(bool trigger, bool esp);
+
     // Type-safe accessors (kept for MainWindow compatibility; each delegates
     // to find_panel() + static_cast so the registry is the single source of
     // truth). Phase 3 will migrate MainWindow to find_panel() directly.
