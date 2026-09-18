@@ -63,4 +63,8 @@ export QSG_RHI_BACKEND="${QSG_RHI_BACKEND:-opengl}"
 export QT_LOGGING_RULES="${QT_LOGGING_RULES:-*.warning=false}"
 
 # ---- launch ----
+# Run from the repo root: the GUI's default model paths
+# ("models/e2vid_lightweight.onnx", ...) are repo-relative and only resolve
+# when the working directory is the repository root.
+cd "$REPO_ROOT"
 exec "$BIN" "$@"

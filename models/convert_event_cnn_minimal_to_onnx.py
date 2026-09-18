@@ -6,7 +6,7 @@ ECCV 2020) 的三个预训练模型转换为 ONNX。
 用法:
     .venv/bin/python models/convert_event_cnn_minimal_to_onnx.py \
         --model {e2vid_plus,firenet_plus,evflownet} \
-        --input /path/to/xxx.pth --output models/xxx.onnx
+        --input ~/下载/reconstruction_model.pth --output models/e2vid_plus.onnx
 
 模型与接口（维度名是 C++ 端 e2vid_inference.h 状态形状规则的契约:
   H2/H4/H8 = 输入的 1/2、1/4、1/8 分辨率; H/W = 全分辨率）:

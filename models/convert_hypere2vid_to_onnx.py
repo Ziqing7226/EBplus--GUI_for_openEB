@@ -3,7 +3,7 @@
 
 用法:
     .venv/bin/python models/convert_hypere2vid_to_onnx.py \
-        --input /path/to/model.pth \
+        --input ~/下载/model.pth \
         --output models/hypere2vid.onnx
 
 参考: ref/HyperE2VID/model/{model.py, unet.py, submodules.py, hyper/}（MIT License,
