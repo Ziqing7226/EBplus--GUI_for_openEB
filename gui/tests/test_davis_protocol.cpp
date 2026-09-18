@@ -403,6 +403,83 @@ TEST(BiasApplier, OffAxisSignFlip) {
     EXPECT_EQ(fake.state_.at("bias_diff_on"), 1705);
 }
 
+// DVXplorer-shaped facility: two contrast thresholds, range 0-17.
+class FakeContrastBiases final : public Metavision::I_LL_Biases {
+public:
+    FakeContrastBiases() : Metavision::I_LL_Biases(Metavision::DeviceConfig{}) {}
+
+    std::map<std::string, int> get_all_biases() const override {
+        return {{"contrast_on", state_.at("contrast_on")},
+                {"contrast_off", state_.at("contrast_off")}};
+    }
+
+    bool get_bias_info_impl(const std::string& name,
+                            Metavision::LL_Bias_Info& info) const override {
+        if (name != "contrast_on" && name != "contrast_off") return false;
+        info = Metavision::LL_Bias_Info(0, 17, name, true, "test");
+        return true;
+    }
+
+protected:
+    bool set_impl(const std::string& name, int value) override {
+        state_[name] = value;
+        return true;
+    }
+    int get_impl(const std::string& name) const override {
+        auto it = state_.find(name);
+        return it == state_.end() ? 0 : it->second;
+    }
+
+public:
+    std::map<std::string, int> state_{{"contrast_on", 9}, {"contrast_off", 9}};
+};
+
+TEST(BiasApplier, ContrastAxesAttachAndInvertBothSigns) {
+    // DVXplorer adaptation: exact-name axes and BOTH delta signs flipped
+    // (higher contrast threshold → fewer events of that polarity).
+    FakeContrastBiases fake;
+    gui::BiasApplier applier;
+    ASSERT_TRUE(applier.attach_axes(&fake, "contrast_on", "contrast_off"));
+    applier.set_on_delta_sign(-1);
+    applier.set_off_delta_sign(-1);
+
+    EXPECT_EQ(applier.apply(4, 4), gui::BiasApplier::Status::Ok);
+    EXPECT_EQ(fake.state_.at("contrast_on"), 5);   // 9 − 4
+    EXPECT_EQ(fake.state_.at("contrast_off"), 5);
+
+    // Clamp: with inverted signs a negative user delta RAISES the register,
+    // so the values run into the HIGH range limit (17).
+    EXPECT_EQ(applier.apply(-20, -20), gui::BiasApplier::Status::Clamped);
+    EXPECT_EQ(fake.state_.at("contrast_on"), 17);
+    EXPECT_EQ(fake.state_.at("contrast_off"), 17);
+}
+
+TEST(BiasApplier, ContrastDiffAttachDoesNotMatch) {
+    // The plain diff-bias attach must NOT bind the contrast thresholds.
+    FakeContrastBiases fake;
+    gui::BiasApplier applier;
+    EXPECT_FALSE(applier.attach(&fake));
+    EXPECT_FALSE(applier.attach_axes(&fake, "diff_on", "diff_off"));
+}
+
+TEST(BiasApplier, ContrastHomeTargetsNine) {
+    // Homing walks toward the reference defaults (9/9), not 0.
+    FakeContrastBiases fake;
+    fake.state_["contrast_on"] = 14;
+    fake.state_["contrast_off"] = 12;
+    gui::BiasApplier applier;
+    ASSERT_TRUE(applier.attach_axes(&fake, "contrast_on", "contrast_off"));
+    applier.set_home_targets(9, 9);
+    for (int i = 0; i < 16 &&
+                    (fake.state_.at("contrast_on") != 9 ||
+                     fake.state_.at("contrast_off") != 9);
+         ++i) {
+        applier.home(4);
+    }
+    EXPECT_EQ(fake.state_.at("contrast_on"), 9);
+    EXPECT_EQ(fake.state_.at("contrast_off"), 9);
+}
+
 TEST(BiasApplier, DefaultTargetIsZero) {
     // Without explicit targets (Prophesee), homing still walks toward 0.
     FakeLLBiases fake;

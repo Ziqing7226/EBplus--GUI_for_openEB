@@ -1,13 +1,17 @@
 // gui/app/bias_applier.h — hardware side of the AutoBias controller.
 //
 // Owns the I_LL_Biases interaction for auto_bias (§4.4.6 rework): locates
-// the two writable sensitivity biases (names matched by substring
-// "diff_on"/"diff_off", same convention as the calibration wizard's LCD
-// noise-floor override), snapshots them on attach, applies integer deltas
-// with clamping to the hardware range, and restores the snapshot on
-// disable. apply() re-READS the current register value before each write,
-// so a manual edit in the Biases panel silently becomes the new baseline —
-// the controller never fights the user. Header-only.
+// the two writable sensitivity axes, snapshots them on attach, applies
+// integer deltas with clamping to the hardware range, and restores the
+// snapshot on disable. Axis selection (Phase 5): attach() matches the
+// "diff_on"/"diff_off" substrings (Prophesee + DAVIS, same convention as
+// the calibration wizard's LCD noise-floor override); attach_axes() binds
+// exact names — the DVXplorer contrast_on/contrast_off thresholds. Per-axis
+// delta signs accommodate polarity-inverted hardware (DAVIS OFF axis,
+// both DVXplorer contrast axes). apply() re-READS the current register
+// value before each write, so a manual edit in the Biases panel silently
+// becomes the new baseline — the controller never fights the user.
+// Header-only.
 
 #ifndef GUI_APP_BIAS_APPLIER_H
 #define GUI_APP_BIAS_APPLIER_H
@@ -25,50 +29,23 @@ public:
     enum class Status {
         Ok,        ///< Both deltas applied in full.
         Clamped,   ///< Applied, but at least one bias hit its range limit.
-        NoBias,    ///< Sensor exposes no bias_diff_on/off — not attachable.
+        NoBias,    ///< Sensor exposes neither requested axis — not attachable.
         Error,     ///< Facility call failed (device went away, …).
     };
 
-    /// @brief Locates the diff biases, reads their ranges and snapshots the
-    ///        current values. Returns false when the sensor does not expose
-    ///        bias_diff_on/off (the caller should keep auto_bias inactive).
+    /// @brief Locates the diff biases (substring match — Prophesee + DAVIS),
+    ///        reads their ranges and snapshots the current values. Returns
+    ///        false when the sensor does not expose them (the caller should
+    ///        keep auto_bias inactive).
     bool attach(Metavision::I_LL_Biases* biases) {
-        detach();
-        off_sign_ = 1;
-        if (!biases) return false;
-        try {
-            std::string name_on, name_off;
-            int lo_on = 0, hi_on = 0, lo_off = 0, hi_off = 0;
-            int cur_on = 0, cur_off = 0;
-            for (const auto& [name, value] : biases->get_all_biases()) {
-                if (name.find("diff_on") != std::string::npos) {
-                    Metavision::LL_Bias_Info info;
-                    if (!biases->get_bias_info(name, info)) continue;
-                    const auto range = info.get_bias_range();
-                    if (range.second <= range.first) continue;
-                    name_on = name; lo_on = range.first; hi_on = range.second;
-                    cur_on = value;
-                } else if (name.find("diff_off") != std::string::npos) {
-                    Metavision::LL_Bias_Info info;
-                    if (!biases->get_bias_info(name, info)) continue;
-                    const auto range = info.get_bias_range();
-                    if (range.second <= range.first) continue;
-                    name_off = name; lo_off = range.first; hi_off = range.second;
-                    cur_off = value;
-                }
-            }
-            if (name_on.empty() || name_off.empty()) return false;
-            biases_ = biases;
-            name_on_ = std::move(name_on);
-            name_off_ = std::move(name_off);
-            lo_on_ = lo_on; hi_on_ = hi_on;
-            lo_off_ = lo_off; hi_off_ = hi_off;
-            saved_on_ = cur_on;
-            saved_off_ = cur_off;
-            return true;
-        } catch (const std::exception&) {
-            return false;
-        }
+        return attach_impl(biases, "diff_on", "diff_off", false);
+    }
+
+    /// @brief Same, binding EXACT bias names — the DVXplorer
+    ///        contrast_on/contrast_off thresholds.
+    bool attach_axes(Metavision::I_LL_Biases* biases, const std::string& on_name,
+                     const std::string& off_name) {
+        return attach_impl(biases, on_name, off_name, true);
     }
 
     bool attached() const { return biases_ != nullptr; }
@@ -87,10 +64,16 @@ public:
     ///        and every OFF-axis delta is negated.
     void set_off_delta_sign(int sign) { off_sign_ = (sign < 0) ? -1 : 1; }
 
+    /// @brief Sets the sign of the ON-axis delta. Positive on Prophesee and
+    ///        DAVIS; negative for the DVXplorer contrast thresholds
+    ///        (higher threshold → fewer events of that polarity).
+    void set_on_delta_sign(int sign) { on_sign_ = (sign < 0) ? -1 : 1; }
+
     /// @brief Applies integer deltas: reads the CURRENT register values,
     ///        adds the deltas, clamps to the hardware range, writes back.
     Status apply(int delta_on, int delta_off) {
         if (!biases_) return Status::NoBias;
+        delta_on *= on_sign_;
         delta_off *= off_sign_;
         try {
             const int cur_on = biases_->get(name_on_);
@@ -153,12 +136,62 @@ public:
         name_off_.clear();
     }
 
-private:
+    /// Shared attach: @p exact selects exact-name binding (contrast axes)
+    /// vs substring matching (diff biases). Resets the per-axis signs — a
+    /// fresh attach starts from the Prophesee convention until the caller
+    /// overrides for inverted hardware.
+    bool attach_impl(Metavision::I_LL_Biases* biases, const std::string& match_on,
+                     const std::string& match_off, bool exact) {
+        const auto matches = [&exact, &match_on, &match_off](const std::string& name,
+                                                             bool on_axis) {
+            const std::string& want = on_axis ? match_on : match_off;
+            return exact ? (name == want) : (name.find(want) != std::string::npos);
+        };
+        detach();
+        on_sign_ = 1;
+        off_sign_ = 1;
+        if (!biases) return false;
+        try {
+            std::string name_on, name_off;
+            int lo_on = 0, hi_on = 0, lo_off = 0, hi_off = 0;
+            int cur_on = 0, cur_off = 0;
+            for (const auto& [name, value] : biases->get_all_biases()) {
+                if (name_on.empty() && matches(name, true)) {
+                    Metavision::LL_Bias_Info info;
+                    if (!biases->get_bias_info(name, info)) continue;
+                    const auto range = info.get_bias_range();
+                    if (range.second <= range.first) continue;
+                    name_on = name; lo_on = range.first; hi_on = range.second;
+                    cur_on = value;
+                } else if (name_off.empty() && matches(name, false)) {
+                    Metavision::LL_Bias_Info info;
+                    if (!biases->get_bias_info(name, info)) continue;
+                    const auto range = info.get_bias_range();
+                    if (range.second <= range.first) continue;
+                    name_off = name; lo_off = range.first; hi_off = range.second;
+                    cur_off = value;
+                }
+            }
+            if (name_on.empty() || name_off.empty()) return false;
+            biases_ = biases;
+            name_on_ = std::move(name_on);
+            name_off_ = std::move(name_off);
+            lo_on_ = lo_on; hi_on_ = hi_on;
+            lo_off_ = lo_off; hi_off_ = hi_off;
+            saved_on_ = cur_on;
+            saved_off_ = cur_off;
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
     /// Half the distance from @p v to @p target, clipped to [1, cap],
     /// applied toward @p target and clamped to the writable range [lo, hi]
     /// (the target may sit outside the range — then we stop at the nearest
     /// limit).
     static int step_toward(int v, int target, int cap, int lo, int hi) {
+        if (v == target) return v;  // already home — the min-step must not kick in
         const int dist = std::abs(target - v);
         const int step = std::clamp(dist / 2, 1, cap);
         int next = v > target ? v - step : v + step;
@@ -172,6 +205,7 @@ private:
     int lo_on_{0}, hi_on_{0}, lo_off_{0}, hi_off_{0};
     int saved_on_{0}, saved_off_{0};
     int home_on_{0}, home_off_{0};
+    int on_sign_{1};
     int off_sign_{1};
 };
 

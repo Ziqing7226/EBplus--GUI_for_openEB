@@ -110,8 +110,8 @@ void BiasesPanel::build_auto_bias_section(QVBoxLayout* outer) {
 
     connect(auto_bias_cb_, &QCheckBox::toggled, this, [this](bool on) {
         if (!camera_ || !camera_->set_auto_bias_enabled(on)) {
-            // File playback / sensor without diff biases: refuse and
-            // reflect the actual state.
+            // File playback / sensor without usable control axes (Prophesee
+            // without diff biases): refuse and reflect the actual state.
             QSignalBlocker b(auto_bias_cb_);
             auto_bias_cb_->setChecked(false);
         }

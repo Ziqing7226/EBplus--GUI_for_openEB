@@ -787,11 +787,29 @@ bool CameraController::set_auto_bias_enabled(bool on) {
     if (on == auto_bias_enabled()) return on;
     if (on) {
 #if GUI_HAVE_DAVIS
-        if (is_file_ || (!camera_ && !davis_device_)) return false;
+        if (is_file_ || (!camera_ && !davis_device_ && !dvx_device_)) return false;
 #else
         if (is_file_ || !camera_) return false;
 #endif
-        if (!bias_applier_.attach(biases_facility())) return false;
+#if GUI_HAVE_DAVIS
+        if (dvx_device_) {
+            // Phase 5 — DVXplorer: no diff biases; the ON/OFF contrast
+            // thresholds (0-17) are the two control axes. Bound by exact
+            // name, homing toward the reference defaults (9/9), and BOTH
+            // delta signs flipped: a higher contrast threshold yields
+            // FEWER events of that polarity (inverted vs diff biases).
+            if (!bias_applier_.attach_axes(biases_facility(),
+                                           "contrast_on", "contrast_off")) {
+                return false;
+            }
+            bias_applier_.set_on_delta_sign(-1);
+            bias_applier_.set_off_delta_sign(-1);
+            bias_applier_.set_home_targets(9, 9);
+        } else
+#endif
+        if (!bias_applier_.attach(biases_facility())) {
+            return false;
+        }
 #if GUI_HAVE_DAVIS
         if (davis_device_) {
             // DAVIS diff biases are absolute operating points with non-zero
@@ -811,6 +829,12 @@ bool CameraController::set_auto_bias_enabled(bool on) {
         {
             std::lock_guard<std::mutex> lk(auto_bias_mutex_);
             auto_bias_ctrl_.reset();
+            // Phase 5: the default step (32) is tuned for the 0-2047 diff
+            // range — on the DVXplorer 0-17 contrast range it would slam
+            // into a range limit every correction (bang-bang control), so
+            // cap the per-tick delta there.
+            auto_bias_ctrl_.set_max_step(dvx_device_ ? 2
+                                                     : gui_algo::AutoBiasController::kDefaultMaxStep);
             auto_bias_last_tick_ = -1;
         }
         auto_bias_enabled_.store(true, std::memory_order_relaxed);
