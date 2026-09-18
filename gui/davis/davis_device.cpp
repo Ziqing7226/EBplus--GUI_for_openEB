@@ -139,10 +139,6 @@ constexpr std::uint16_t DAVIS346_CHIP_USEAOUT = 141;
 constexpr std::uint16_t DAVIS346_CHIP_SELECTGRAYCOUNTER = 143;
 constexpr std::uint16_t DAVIS346_CHIP_TESTADC = 144;
 
-std::runtime_error usb_error(const std::string& msg, int code) {
-    return std::runtime_error(msg + " (libusb: " + libusb_error_name(code) + ")");
-}
-
 void store_be32(std::uint8_t* dst, std::uint32_t value) {
     dst[0] = static_cast<std::uint8_t>(value >> 24);
     dst[1] = static_cast<std::uint8_t>(value >> 16);
@@ -209,7 +205,7 @@ std::vector<DeviceDescriptor> find_devices() {
             }
             if (info.serial.empty()) {
                 // Session-local repeatable serial (reference behavior).
-                char tmp[8];
+                char tmp[16];
                 std::snprintf(tmp, sizeof(tmp), "TMP%05d", (info.bus << 8) | info.addr);
                 info.serial = tmp;
             }

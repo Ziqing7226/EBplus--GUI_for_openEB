@@ -36,6 +36,8 @@
 #if GUI_HAVE_DAVIS
 #include "davis/davis_ll_biases.h"
 #include "davis/davis_device.h"
+#include "davis/dvxplorer_ll_biases.h"
+#include "davis/dvxplorer_device.h"
 #endif
 #include "algo_bridge/filter_chain.h"
 #include "algo/analytics/auto_bias_controller.h"
@@ -101,7 +103,7 @@ public:
     bool is_running() const;
     bool is_connected() const {
 #if GUI_HAVE_DAVIS
-        if (davis_device_) return true;
+        if (davis_device_ || dvx_device_) return true;
 #endif
         return static_cast<bool>(camera_) || external_source_ != nullptr;
     }
@@ -270,6 +272,10 @@ private:
     bool connect_davis(const davis::DeviceDescriptor& descriptor);
     /// @brief DAVIS device unplugged mid-stream (from the libusb thread).
     void on_davis_gone();
+    /// @brief Connects to a live inivation DVXplorer camera (events + the
+    /// two contrast thresholds; no Auto Bias — no diff biases).
+    bool connect_dvx(const davis::DeviceDescriptor& descriptor);
+    void on_dvx_gone();
 #endif
     /// @brief Opens a non-SDK file format (AEDAT4 / ALPDATA): parses the
     /// header, populates sensor_info_ from the reader's metadata and starts
@@ -290,7 +296,10 @@ private:
     /// camera_ and with external_source_.
     std::unique_ptr<davis::Device> davis_device_;
     std::unique_ptr<davis::DavisLLBiases> davis_biases_;
-    bool streaming_started_{false};
+    bool davis_streaming_started_{false};
+    std::unique_ptr<davis::DvxplorerDevice> dvx_device_;
+    std::unique_ptr<davis::DvxLLBiases> dvx_biases_;
+    bool dvx_streaming_started_{false};
 #endif
     /// External (non-SDK) file source and its reader thread. Mutually
     /// exclusive with camera_: only one is ever set.

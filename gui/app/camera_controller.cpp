@@ -66,6 +66,9 @@ std::vector<std::pair<QString, QString>> CameraController::list_online_sources()
     for (const auto& device : davis::find_devices()) {
         out.emplace_back(QStringLiteral("DAVIS"), QString::fromStdString(device.serial));
     }
+    for (const auto& device : davis::find_dvx_devices()) {
+        out.emplace_back(QStringLiteral("DVXplorer"), QString::fromStdString(device.serial));
+    }
 #endif
     return out;
 }
@@ -90,6 +93,10 @@ bool CameraController::connect_first_available() {
         if (!devices.empty()) {
             return connect_davis(devices.front());
         }
+        const auto dvx_devices = davis::find_dvx_devices();
+        if (!dvx_devices.empty()) {
+            return connect_dvx(dvx_devices.front());
+        }
 #endif
         // teardown() already destroyed the previous camera/pipeline but never
         // emits disconnected() — do so here so the UI cleans up its stale
@@ -112,6 +119,11 @@ bool CameraController::connect_serial(const std::string& serial) {
         for (const auto& device : davis::find_devices()) {
             if (device.serial == serial) {
                 return connect_davis(device);
+            }
+        }
+        for (const auto& device : davis::find_dvx_devices()) {
+            if (device.serial == serial) {
+                return connect_dvx(device);
             }
         }
 #endif
@@ -215,6 +227,58 @@ void CameraController::on_davis_gone() {
     emit disconnected();
     emit error(tr("DAVIS camera disconnected."));
 }
+
+bool CameraController::connect_dvx(const davis::DeviceDescriptor& descriptor) {
+    teardown();
+    try {
+        dvx_device_ = std::make_unique<davis::DvxplorerDevice>(descriptor);
+        dvx_biases_ = std::make_unique<davis::DvxLLBiases>(*dvx_device_);
+    } catch (const std::exception& e) {
+        dvx_device_.reset();
+        dvx_biases_.reset();
+        emit disconnected();
+        emit error(QString::fromUtf8(e.what()));
+        return false;
+    }
+
+    is_file_ = false;
+    sensor_info_ = SensorInfo{};
+    sensor_info_.width = dvx_device_->width();
+    sensor_info_.height = dvx_device_->height();
+    sensor_info_.serial = QString::fromStdString(dvx_device_->serial());
+    sensor_info_.integrator = QStringLiteral("inivation");
+    sensor_info_.plugin_name = QStringLiteral("DVXplorer");
+    sensor_info_.encoding_format = QString::fromStdString(dvx_device_->model_name() + " EVS");
+
+    statistics_.reset();
+    filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
+    conditioner_.init(sensor_info_.width, sensor_info_.height);
+    conditioner_.set_filter_chain(&filter_chain_);
+    conditioner_.reset_temporal();
+
+    const std::uint16_t fps = frame_pipeline_.fps();
+    const Metavision::timestamp acc = frame_pipeline_.accumulation_time_us();
+    if (!frame_pipeline_.start(sensor_info_.width, sensor_info_.height, fps, acc)) {
+        teardown();
+        emit disconnected();
+        emit error(tr("Failed to start frame pipeline."));
+        return false;
+    }
+
+    dvx_device_->set_gone_callback([this]() {
+        QMetaObject::invokeMethod(this, [this]() { on_dvx_gone(); }, Qt::QueuedConnection);
+    });
+
+    emit connected(sensor_info_);
+    return true;
+}
+
+void CameraController::on_dvx_gone() {
+    if (!dvx_device_) return;
+    teardown();
+    emit disconnected();
+    emit error(tr("DVXplorer camera disconnected."));
+}
 #endif
 
 void CameraController::disconnect() {
@@ -294,7 +358,7 @@ void CameraController::on_external_source_done(const QString& error) {
 bool CameraController::start() {
 #if GUI_HAVE_DAVIS
     if (davis_device_) {
-        if (streaming_started_) return true;
+        if (davis_streaming_started_) return true;
         // Events flow through the same live path as the SDK CD callback:
         // statistics → auto bias → conditioning → listener → pipeline.
         davis_device_->set_event_sink(
@@ -307,7 +371,23 @@ bool CameraController::start() {
             emit error(QString::fromUtf8(e.what()));
             return false;
         }
-        streaming_started_ = true;
+        davis_streaming_started_ = true;
+        emit started();
+        return true;
+    }
+    if (dvx_device_) {
+        if (dvx_streaming_started_) return true;
+        dvx_device_->set_event_sink(
+            [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+                on_live_events(b, e);
+            });
+        try {
+            dvx_device_->start();
+        } catch (const std::exception& e) {
+            emit error(QString::fromUtf8(e.what()));
+            return false;
+        }
+        dvx_streaming_started_ = true;
         emit started();
         return true;
     }
@@ -372,9 +452,16 @@ bool CameraController::start() {
 bool CameraController::stop() {
 #if GUI_HAVE_DAVIS
     if (davis_device_) {
-        if (streaming_started_) {
+        if (davis_streaming_started_) {
             davis_device_->stop();
-            streaming_started_ = false;
+            davis_streaming_started_ = false;
+        }
+        return true;
+    }
+    if (dvx_device_) {
+        if (dvx_streaming_started_) {
+            dvx_device_->stop();
+            dvx_streaming_started_ = false;
         }
         return true;
     }
@@ -407,9 +494,8 @@ bool CameraController::stop() {
 
 bool CameraController::is_running() const {
 #if GUI_HAVE_DAVIS
-    if (davis_device_) {
-        return streaming_started_;
-    }
+    if (davis_device_) return davis_streaming_started_;
+    if (dvx_device_) return dvx_streaming_started_;
 #endif
     if (external_source_) {
         return external_running_.load(std::memory_order_relaxed);
@@ -426,6 +512,7 @@ bool CameraController::is_running() const {
 facility::Biases* CameraController::biases_facility() {
 #if GUI_HAVE_DAVIS
     if (davis_biases_) return davis_biases_.get();
+    if (dvx_biases_) return dvx_biases_.get();
 #endif
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::Biases>();
@@ -917,7 +1004,16 @@ void CameraController::teardown() {
     }
     davis_device_.reset();
     davis_biases_.reset();
-    streaming_started_ = false;
+    davis_streaming_started_ = false;
+    if (dvx_device_) {
+        try {
+            dvx_device_->stop();
+        } catch (...) {
+        }
+    }
+    dvx_device_.reset();
+    dvx_biases_.reset();
+    dvx_streaming_started_ = false;
 #endif
     // 0. Stop the external reader FIRST: it feeds statistics_ and
     //    frame_pipeline_ from its own thread, so it must be joined before

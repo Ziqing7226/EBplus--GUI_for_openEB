@@ -81,11 +81,11 @@ export QSG_RHI_BACKEND=opengl    # Qt 6 may default to Vulkan
 
 > **Wayland note**: Qt 6's Wayland plugin renders a black viewport for `QOpenGLWidget` children. The app and launcher force `QT_QPA_PLATFORM=xcb` (via XWayland) and `QSG_RHI_BACKEND=opengl` to ensure correct rendering.
 
-## Live inivation DAVIS Cameras (Optional, Preliminary)
+## Live inivation DAVIS / DVXplorer Cameras (Optional, Preliminary)
 
-**Preliminary support**: EB plus can connect to inivation **DAVIS346/640** cameras directly over USB — **events + biases only**. APS frames, IMU samples and trigger markers are parsed and discarded (the GUI is an events-only tool); the RAW recording, ROI and Trigger panels are not available for DAVIS, and other DAVIS-family features may still have compatibility gaps. **EB plus remains primarily designed and tested for Prophesee cameras.**
+**Preliminary support**: EB plus can connect to inivation **DAVIS346/640** and **DVXplorer** cameras directly over USB — **events + biases only**. APS frames, IMU samples and trigger markers are parsed and discarded (the GUI is an events-only tool); the RAW recording, ROI and Trigger panels are not available, and other inivation-family features may still have compatibility gaps. **EB plus remains primarily designed and tested for Prophesee cameras.**
 
-Build requirement: `libusb-1.0` development files (the CMake build auto-detects them; without them the DAVIS device layer is compiled out and everything else works as before).
+Build requirement: `libusb-1.0` development files (the CMake build auto-detects them; without them the inivation device layer is compiled out and everything else works as before).
 
 ### One-Time USB Permission Setup
 
@@ -97,21 +97,21 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-Then **unplug and replug the camera** (so the session permission tag applies), and connect it from the Devices panel (`Refresh` → `Connect First Available`, or by serial). DAVIS devices appear in the device list next to Prophesee ones.
+Then **unplug and replug the camera** (so the session permission tag applies), and connect it from the Devices panel (`Refresh` → `Connect First Available`, or by serial). inivation devices appear in the device list next to Prophesee ones.
 
-### Supported & Not Supported (DAVIS)
+### Supported & Not Supported (DAVIS / DVXplorer)
 
-| Feature | DAVIS346/640 |
-|---------|--------------|
-| Live event preview, all display modes | ✅ |
-| Biases panel (all DAVIS coarse/fine + VDAC biases), save/load `.bias` | ✅ |
-| Auto Bias controller (`diff_on`/`diff_off`) | ✅ |
-| Algorithms (all), unified software ROI, statistics | ✅ |
-| RAW recording | ❌ (no `I_EventsStream`) |
-| ROI / Trigger / ESP panels | ❌ (facilities unavailable) |
-| APS frames / IMU / trigger streams | discarded by design |
+| Feature | DAVIS346/640 | DVXplorer |
+|---------|--------------|-----------|
+| Live event preview, all display modes | ✅ | ✅ |
+| Biases panel (all DAVIS coarse/fine + VDAC biases), save/load `.bias` | ✅ | ✅ (`contrast_on`/`contrast_off` only) |
+| Auto Bias controller (`diff_on`/`diff_off`) | ✅ | ❌ (no diff biases) |
+| Algorithms (all), unified software ROI, statistics | ✅ | ✅ |
+| RAW recording | ❌ (no `I_EventsStream`) | ❌ |
+| ROI / Trigger / ESP panels | ❌ (facilities unavailable) | ❌ (facilities unavailable) |
+| APS frames / IMU / trigger streams | discarded by design | discarded by design |
 
-Firmware requirements: FX3 firmware 6, FX2 firmware 4; FPGA logic version 18 with patch ≥ 1 (checked at connect — a clear error is shown otherwise).
+Firmware requirements — DAVIS: FX3 firmware 6, FX2 firmware 4, FPGA logic version 18 patch ≥ 1; DVXplorer: FX3 firmware 9, FPGA logic version 18 patch ≥ 4 (checked at connect — a clear error is shown otherwise).
 
 ### DAVIS Bias Parameters
 
@@ -146,9 +146,13 @@ Auto Bias on DAVIS homes toward the **reference default values** (e.g. `diff_on`
 
 Note that the OFF-axis responds with inverted polarity on DAVIS (higher `diff_off` → more OFF events, measured on hardware), which EB plus compensates automatically. Also note the default rate band (1–50 Mev/s) was chosen for Prophesee sensors; DAVIS346 at reference biases runs around 0.1–0.3 Mev/s, so consider a band like 0.05–1 Mev/s for DAVIS.
 
+### DVXplorer Bias Parameters
+
+DVXplorer exposes exactly two sensitivity parameters in the Biases panel: `contrast_on` and `contrast_off` (range 0–17 each). Higher values make the corresponding polarity fire on smaller brightness changes. Auto Bias does not attach to DVXplorer (there are no diff biases to tune). Values are written to the sensor's bias-current registers on change and re-applied at every connect; the 0–17 split maps to two current ranges internally (8 + high-range bit), with the OFF ladder inverted on the register level (reference behavior).
+
 ### Other inivation cameras
 
-**DVXplorer** family cameras use a different (newer) USB protocol generation and are **not supported yet** — they are hidden from the device list. DAVIS240-family sensors are likewise rejected at connect with a clear message. Extending support means porting the respective protocol/bias tables (reference available in `ref/dv-processing-master`).
+DAVIS240-family sensors and other unsupported device types are rejected at connect with a clear message. Extending support means porting the respective protocol/bias tables (reference available in `ref/dv-processing-master`).
 
 ### Why "DAVIS346" reports 260 × 346 internally
 
@@ -173,8 +177,8 @@ If this fails, the SDK cannot find your vendor's HAL plugins — check `MV_HAL_P
 | HDF5 file open fails | HDF5 plugin path not set | Set `HDF5_PLUGIN_PATH` to the HDF5 plugin directory |
 | Dark mode not following system | Qt < 6.5 | Use Theme → Mode → Dark |
 | E2VID falls back to heuristic mode | ONNX Runtime not installed | See [Algorithms § E2VID](Algorithms.md#e2vid-setup) |
-| DAVIS connect: "failed to open USB device" | Missing udev rule, or device in use by another program (e.g. DV) | Install `gui/davis/66-inivation.rules` (see above), replug, close other apps |
-| DAVIS connect: firmware/logic version error | Camera firmware too old for the classic protocol checks | Update with inivation's Flashy tool |
+| inivation connect: "failed to open USB device" | Missing udev rule, or device in use by another program (e.g. DV) | Install `gui/davis/66-inivation.rules` (see above), replug, close other apps |
+| inivation connect: firmware/logic version error | Camera firmware too old for the protocol checks | Update with inivation's Flashy tool |
 
 ## Tests
 

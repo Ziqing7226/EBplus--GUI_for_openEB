@@ -12,6 +12,7 @@
 
 #include "davis/davis_biases.h"
 #include "davis/davis_parser.h"
+#include "davis/dvxplorer_parser.h"
 
 namespace {
 
@@ -412,3 +413,141 @@ TEST(BiasApplier, DefaultTargetIsZero) {
     EXPECT_EQ(fake.state_.at("bias_diff_off"), 0);
 }
 #endif
+
+
+// ---------------------------------------------------------------------------
+// DVXplorer wire decode (mgroup compression, separate polarity bit).
+// The parser is compiled unconditionally, so these run without libusb.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::uint16_t dvx_x_word(std::uint16_t x) {
+    return static_cast<std::uint16_t>(0x1000 | (x & 0x03FF));
+}
+// code 4: group1 address (6 bits), group2 offset (5 bits), bit 11 = minus.
+constexpr std::uint16_t dvx_y_group_word(std::uint16_t g1, std::uint16_t offset, bool minus) {
+    return static_cast<std::uint16_t>(0x4000 | (g1 & 0x003F) | ((offset & 0x001F) << 6) |
+                                      (minus ? 0x0800 : 0x0000));
+}
+// code 2/3 word: bits 7..0 = 8-pixel presence mask, bit 8 = polarity
+// (clear = ON/positive, set = OFF/negative).
+constexpr std::uint16_t dvx_pixel_word(std::uint16_t code, std::uint16_t mask_pol) {
+    return static_cast<std::uint16_t>(((code & 0x7) << 12) | (mask_pol & 0x01FF));
+}
+
+void feed(gui::davis::DvxParser& parser, const std::vector<std::uint16_t>& words,
+          std::vector<Metavision::EventCD>& out) {
+    std::vector<std::uint8_t> bytes;
+    for (const std::uint16_t w : words) {
+        bytes.push_back(static_cast<std::uint8_t>(w & 0xFF));
+        bytes.push_back(static_cast<std::uint8_t>(w >> 8));
+    }
+    parser.parse(bytes.data(), bytes.size(),
+        [&out](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            out.insert(out.end(), b, e);
+        });
+}
+
+} // namespace
+
+TEST(DvxParser, DecodesGroupEventsRebasedToZero) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> events;
+
+    // TS reset → the first timestamp (2000) becomes the stream base. X latch
+    // at column 40; Y-group latch: group1 = base group 5 (rows 40..47),
+    // group2 = +2 groups (rows 56..63). Pixel words then reference the two
+    // latched groups: code 3 → group 1 ON (bit 8 clear, mask 0x07),
+    // code 2 → group 2 OFF (bit 8 set, mask 0x60).
+    feed(parser, {special_word(1), ts_word(2000), dvx_x_word(40),
+                  dvx_y_group_word(5, 2, false), ts_word(2500),
+                  dvx_pixel_word(3, 0x0007), dvx_pixel_word(2, 0x0160)}, events);
+
+    ASSERT_EQ(events.size(), 5u);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(events[i].x, 40);
+        EXPECT_EQ(events[i].y, 40 + i);   // group 1 base row 40
+        EXPECT_EQ(events[i].p, 1);        // bit 8 clear = ON
+        EXPECT_EQ(events[i].t, 500);      // current(2500) − t0(2000)
+    }
+    // group 2 base row 56, mask bits 5 and 6, bit 8 set = OFF.
+    EXPECT_EQ(events[3].x, 40);
+    EXPECT_EQ(events[3].y, 61);
+    EXPECT_EQ(events[3].p, 0);
+    EXPECT_EQ(events[3].t, 500);
+    EXPECT_EQ(events[4].y, 62);
+    EXPECT_EQ(events[4].p, 0);
+}
+
+TEST(DvxParser, YGroupMinusOffset) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> events;
+
+    // Bit 11 set: group2 = group1 − offset (groups 5 and 3 → rows 40 and 24).
+    feed(parser, {special_word(1), ts_word(100), dvx_x_word(7),
+                  dvx_y_group_word(5, 2, true), dvx_pixel_word(3, 0x0001),
+                  dvx_pixel_word(2, 0x0001)}, events);
+
+    ASSERT_EQ(events.size(), 2u);
+    EXPECT_EQ(events[0].y, 40);  // group 1
+    EXPECT_EQ(events[0].p, 1);
+    EXPECT_EQ(events[1].y, 24);  // group 2 = 40 − 16
+    EXPECT_EQ(events[1].p, 1);
+}
+
+TEST(DvxParser, XResetMarker) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> events;
+
+    // X address 1023 = startup-reset marker → lastX latches to 0.
+    feed(parser, {special_word(1), ts_word(500), dvx_x_word(1023), ts_word(600),
+                  dvx_pixel_word(2, 0x0007)}, events);
+
+    ASSERT_EQ(events.size(), 3u);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(events[i].x, 0);
+        EXPECT_EQ(events[i].y, 0 + i);  // lastYG2 still 0 after the reset
+    }
+}
+
+TEST(DvxParser, TsWrapAndReset) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> events;
+
+    // Base at 0x7FF0, then a wrap word with multiplier 2 (wrapAdd += 2·2^15),
+    // then a timestamp 16 into the new wrap period.
+    feed(parser, {special_word(1), ts_word(0x7FF0), wrap_word(2)}, events);
+    EXPECT_TRUE(events.empty());
+    feed(parser, {ts_word(16), dvx_pixel_word(3, 0x0002)}, events);
+
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].t, 2LL * 0x8000 + 16 - 0x7FF0);
+}
+
+TEST(DvxParser, DropsOutOfBoundsPixels) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> events;
+
+    // Group 62 starts at row 496 ≥ 480 → every pixel of the group is dropped;
+    // group 59 (rows 472..479) fits and survives in full.
+    feed(parser, {special_word(1), ts_word(100), dvx_x_word(0),
+                  dvx_y_group_word(62, 0, false), dvx_pixel_word(3, 0x00FF)}, events);
+    EXPECT_TRUE(events.empty());
+
+    feed(parser, {dvx_y_group_word(59, 0, false), dvx_pixel_word(3, 0x00FF)}, events);
+    ASSERT_EQ(events.size(), 8u);
+    EXPECT_EQ(events[0].y, 472);
+    EXPECT_EQ(events[7].y, 479);
+}
+
+TEST(DvxParser, IgnoresImuAndMiscWords) {
+    gui::davis::DvxParser parser(640, 480);
+    std::vector<Metavision::EventCD> events;
+
+    // Codes 5/6 carry IMU/misc data — consumed and ignored (events-only).
+    feed(parser, {special_word(1), ts_word(100),
+                  static_cast<std::uint16_t>(0x5000 | 0x0123),
+                  static_cast<std::uint16_t>(0x6000 | 0x0234)}, events);
+    EXPECT_TRUE(events.empty());
+}
