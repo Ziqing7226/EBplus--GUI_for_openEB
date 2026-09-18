@@ -35,12 +35,13 @@
 #include "stream_conditioner.h"
 #include "statistics_controller.h"
 #include "external_file_source.h"
+#include "davis/aps_decoder.h"
+#include "davis/imu_types.h"
 #if GUI_HAVE_DAVIS
 #include "davis/davis_ll_biases.h"
 #include "davis/davis_device.h"
 #include "davis/dvxplorer_ll_biases.h"
 #include "davis/dvxplorer_device.h"
-#include "davis/imu_types.h"
 #endif
 #include "algo_bridge/filter_chain.h"
 #include "algo/analytics/auto_bias_controller.h"
@@ -172,13 +173,16 @@ public:
     };
     SourceCapabilities source_capabilities();
 
-#if GUI_HAVE_DAVIS
+    // Phase 2/3: IMU/APS stream API. Declared unconditionally (the IMU/APS
+    // windows and the devices panel compile in every configuration); builds
+    // without libusb degrade to "not available" (set_* return false, the
+    // samples/counters read back empty).
     /// @brief Enables/disables the inivation IMU stream. The three IMU RUN
     /// registers are written immediately while streaming and re-applied by
-    /// the device on every start(); the flag persists across reconnects.
-    /// Returns false for sources without an IMU (SDK cameras, files).
+    /// the device on every start(); the flag is session-scoped (teardown
+    /// clears it).
     bool set_imu_enabled(bool on);
-    [[nodiscard]] bool imu_enabled() const { return imu_enabled_; }
+    [[nodiscard]] bool imu_enabled() const;
     /// Latest completed IMU sample + a monotonic sample counter (the window
     /// derives the sample rate from the counter delta). Safe from any
     /// thread; the sample arrives on the libusb thread.
@@ -188,11 +192,10 @@ public:
     /// APS_RUN; session-scoped like the IMU flag). Returns false for
     /// sources without APS frames (DVXplorer, SDK cameras, files).
     bool set_aps_enabled(bool on);
-    [[nodiscard]] bool aps_enabled() const { return aps_enabled_; }
+    [[nodiscard]] bool aps_enabled() const;
     /// Latest completed APS frame (cloned under the mutex).
     davis::ApsFrame latest_aps_frame() const;
     [[nodiscard]] long aps_frame_count() const;
-#endif
 
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
     /// Live camera: applies the hardware ROI (I_ROI) so the sensor itself
@@ -362,15 +365,15 @@ private:
     mutable std::mutex imu_mutex_;
     davis::ImuSample imu_latest_{};
     long imu_count_{0};
-    void on_imu_sample(const davis::ImuSample& sample);
 
     /// APS frame stream state (DAVIS only; same session-scoped pattern).
     bool aps_enabled_{false};
     mutable std::mutex aps_mutex_;
     davis::ApsFrame aps_latest_{};
     long aps_count_{0};
-    void on_aps_frame(const davis::ApsFrame& frame);
 #endif
+    void on_imu_sample(const davis::ImuSample& sample);
+    void on_aps_frame(const davis::ApsFrame& frame);
 
     /// Phase 4 recorder tap (raw device stream; nulled by teardown).
     /// Unconditional — the AEDAT4 recorder installs it for inivation

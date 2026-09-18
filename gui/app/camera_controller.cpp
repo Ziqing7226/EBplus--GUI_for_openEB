@@ -715,8 +715,12 @@ CameraController::SourceCapabilities CameraController::source_capabilities() {
     return caps;
 }
 
-#if GUI_HAVE_DAVIS
+// The IMU/APS stream API is source-agnostic from the callers' point of
+// view (the windows and the devices panel compile in every configuration);
+// without libusb the members below do not exist and the API degrades to
+// "not available".
 bool CameraController::set_imu_enabled(bool on) {
+#if GUI_HAVE_DAVIS
     if (!davis_device_ && !dvx_device_) return false;
     imu_enabled_ = on;
     if (davis_device_) davis_device_->set_imu_enabled(on);
@@ -726,25 +730,50 @@ bool CameraController::set_imu_enabled(bool on) {
         imu_count_ = 0;  // fresh session for the rate display
     }
     return true;
+#else
+    (void)on;
+    return false;
+#endif
+}
+
+bool CameraController::imu_enabled() const {
+#if GUI_HAVE_DAVIS
+    return imu_enabled_;
+#else
+    return false;
+#endif
 }
 
 davis::ImuSample CameraController::latest_imu() const {
+#if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(imu_mutex_);
     return imu_latest_;
+#else
+    return {};
+#endif
 }
 
 long CameraController::imu_sample_count() const {
+#if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(imu_mutex_);
     return imu_count_;
+#else
+    return 0;
+#endif
 }
 
 void CameraController::on_imu_sample(const davis::ImuSample& sample) {
+#if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(imu_mutex_);
     imu_latest_ = sample;
     ++imu_count_;
+#else
+    (void)sample;
+#endif
 }
 
 bool CameraController::set_aps_enabled(bool on) {
+#if GUI_HAVE_DAVIS
     if (!davis_device_) return false;  // APS frames are DAVIS-only.
     aps_enabled_ = on;
     davis_device_->set_aps_enabled(on);
@@ -753,24 +782,47 @@ bool CameraController::set_aps_enabled(bool on) {
         aps_count_ = 0;  // fresh session for the rate display
     }
     return true;
+#else
+    (void)on;
+    return false;
+#endif
+}
+
+bool CameraController::aps_enabled() const {
+#if GUI_HAVE_DAVIS
+    return aps_enabled_;
+#else
+    return false;
+#endif
 }
 
 davis::ApsFrame CameraController::latest_aps_frame() const {
+#if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(aps_mutex_);
     return aps_latest_;
+#else
+    return {};
+#endif
 }
 
 long CameraController::aps_frame_count() const {
+#if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(aps_mutex_);
     return aps_count_;
+#else
+    return 0;
+#endif
 }
 
 void CameraController::on_aps_frame(const davis::ApsFrame& frame) {
+#if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(aps_mutex_);
     aps_latest_ = frame;
     ++aps_count_;
-}
+#else
+    (void)frame;
 #endif
+}
 facility::CameraSync* CameraController::camera_sync_facility() {
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::CameraSync>();
