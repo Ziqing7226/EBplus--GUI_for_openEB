@@ -37,8 +37,15 @@ public:
     enum class Mode {
         BardowVariational,  ///< TV-L1 variational (Chambolle-Pock), default.
         InteractingMaps,    ///< Six-map interconnection (Cook 2011).
-        E2VID,              ///< Neural-network inference (ONNX Runtime or fallback).
+        E2VID,              ///< Neural reconstruction (rpg_e2vid, Gallego 2019).
+        E2VIDPlus,          ///< Neural reconstruction (Stoffregen ECCV 2020).
+        FireNetPlus,        ///< Lightweight neural reconstruction (ibid.).
+        HyperE2VID,         ///< Hypernetwork dynamic conv (Ercan TIP 2024).
     };
+
+    /// Neural (DL) reconstruction modes — modes 2..5 share the same
+    /// inference pipeline and differ only in the loaded ONNX model.
+    static bool mode_is_dl(Mode m) { return m >= Mode::E2VID; }
 
     /// @brief Constructs the reconstructor.
     /// @param width,height Sensor dimensions (or ROI dimensions).
@@ -62,7 +69,7 @@ public:
     /// For E2VID: buffers events for the next voxel grid + inference call.
     void process(const Event* events, std::size_t n) {
         if (events == nullptr || n == 0) return;
-        if (mode_ == Mode::E2VID) {
+        if (mode_is_dl(mode_)) {
             // Buffer events for E2VID voxel grid inference (E2VID handles
             // its own downsample internally).
             e2vid_event_buffer_.insert(e2vid_event_buffer_.end(),
@@ -128,11 +135,14 @@ public:
                 frame = reconstruct_interacting();
                 break;
             case Mode::E2VID:
+            case Mode::E2VIDPlus:
+            case Mode::FireNetPlus:
+            case Mode::HyperE2VID:
                 frame = reconstruct_e2vid();
                 break;
         }
-        // Upsample non-E2VID downsampled output back to sensor/ROI size.
-        if (mode_ != Mode::E2VID && downsample_ &&
+        // Upsample non-DL downsampled output back to sensor/ROI size.
+        if (!mode_is_dl(mode_) && downsample_ &&
             frame.rows != height_ && !frame.empty()) {
             cv::resize(frame, frame, cv::Size(width_, height_),
                        0, 0, cv::INTER_NEAREST);

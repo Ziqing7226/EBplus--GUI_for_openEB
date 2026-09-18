@@ -16,6 +16,7 @@
 #include "algo/cv/blob_detector.h"
 #include "algo/cv/sparse_optical_flow.h"
 #include "algo/cv/dense_optical_flow.h"
+#include "algo/cv/dl_optical_flow.h"
 
 using namespace gui::backend_detail;
 
@@ -704,6 +705,86 @@ private:
 };
 
 
+/// DLOpticalFlow backend — EVFlowNet (Zhu 2018 / Stoffregen ECCV 2020)
+/// deep dense optical flow: one 5-bin voxel per accumulation window in,
+/// per-pixel (u, v) displacement out, rendered as an HSV-coded frame
+/// (Standalone window; reuse of the E2VIDInference runtime selection means
+/// the status line reports dev=gpu|cpu like event_to_video).
+class DLOpticalFlowBackend final : public AlgoBackend {
+    gui_algo::DLOpticalFlow algo_;
+    std::string model_path_;
+    int device_{0};  ///< 0=Auto, 1=CPU, 2=GPU (§4.4.2-GPU)
+    int output_fps_{30};
+    std::vector<Metavision::EventCD> passthrough_;
+    RoiFilter roi_;
+    std::vector<gui_algo::Event> roi_buf_;
+public:
+    DLOpticalFlowBackend(int w, int h)
+        : algo_(w, h, 30) { roi_.init(w, h); }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (roi_.set_param(k, v)) return;
+        if (k == "model_path") {
+            model_path_ = v;
+            if (!model_path_.empty()) algo_.set_model_path(model_path_);
+        } else if (k == "device") {
+            device_ = to_i(v);
+            algo_.set_device(device_);
+        } else if (k == "output_fps") {
+            output_fps_ = to_i(v);
+            algo_.set_output_fps(output_fps_);
+        } else if (k == "max_velocity_px_s") {
+            algo_.set_max_velocity_px_s(static_cast<float>(to_d(v)));
+        }
+    }
+    std::string get_param(const std::string& k) const override {
+        auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "model_path") return model_path_;
+        if (k == "device") return from_i(device_);
+        if (k == "output_fps") return from_i(output_fps_);
+        if (k == "max_velocity_px_s") return from_d(algo_.max_velocity_px_s());
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        auto [ev, n] = roi_.apply(as_events(passthrough_.data()), passthrough_.size(), roi_buf_);
+        algo_.process(ev, n);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        cv::Mat frame = algo_.get_frame();
+        if (!frame.empty()) {
+            r.has_frame = true;
+            r.frame = frame.clone();
+        }
+        r.status = "flow_dl";
+        if (algo_.is_model_loaded()) {
+            r.status += " model=loaded dev=" + algo_.active_runtime();
+        } else {
+            r.status += " model=missing";
+        }
+        r.status += std::string(roi_.region.enabled ? " (ROI)" : "");
+        return r;
+    }
+    void reset() override { algo_.reset(); passthrough_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        // Persist tuned params across the rebuild (the auto-ROI resize hits
+        // the live instance).
+        const std::string mp = model_path_;
+        const int dev = device_;
+        const int fps = output_fps_;
+        const float mv = algo_.max_velocity_px_s();
+        algo_ = gui_algo::DLOpticalFlow(w, h, fps);
+        model_path_ = mp;
+        device_ = dev;
+        algo_.set_device(device_);
+        algo_.set_max_velocity_px_s(mv);
+        if (!model_path_.empty()) algo_.set_model_path(model_path_);
+    }
+};
+
+
 // --- Per-category factory (called by create_algo_backend in backend_factory.cpp)
 std::unique_ptr<AlgoBackend> create_cv_backend(const std::string& name,
                                           int width, int height) {
@@ -714,6 +795,7 @@ std::unique_ptr<AlgoBackend> create_cv_backend(const std::string& name,
     if (name == "blob_detector")               return std::make_unique<BlobDetectorBackend>(width, height);
     if (name == "sparse_optical_flow")         return std::make_unique<SparseOpticalFlowBackend>(width, height);
     if (name == "dense_optical_flow")          return std::make_unique<DenseOpticalFlowBackend>(width, height);
+    if (name == "dl_optical_flow")             return std::make_unique<DLOpticalFlowBackend>(width, height);
     return nullptr;
 }
 

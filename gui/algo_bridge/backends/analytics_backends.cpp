@@ -39,8 +39,10 @@ class EventToVideoBackend final : public AlgoBackend {
     float relaxation_step_{0.1F};
     int im_iterations_{50};
     float fov_deg_{60.0F};
-    // E2VID params.
-    std::string model_path_;
+    // E2VID params. Each DL mode (2=E2VID, 3=E2VID+, 4=FireNet+,
+    // 5=HyperE2VID) has its own model path so all weight sets can be
+    // installed side by side; switching modes swaps the loaded model.
+    std::string model_paths_[4];
     int e2vid_num_bins_{5};
     int e2vid_device_{0};  ///< 0=Auto, 1=CPU, 2=GPU (§4.4.2-GPU)
     bool e2vid_auto_hdr_{false};
@@ -57,6 +59,11 @@ public:
         roi_.compute(sensor_w_, sensor_h_);
         preproc_.halve_coords_ = true;
         rebuild();
+    }
+    /// Index into model_paths_[] for DL modes (2..5), -1 for non-DL modes.
+    static int dl_index(gui_algo::EventToVideo::Mode m) {
+        return gui_algo::EventToVideo::mode_is_dl(m) ? static_cast<int>(m) - 2
+                                                     : -1;
     }
     void rebuild() {
         const int aw = roi_.enabled ? roi_.rw : sensor_w_;
@@ -80,14 +87,14 @@ public:
         algo_->set_relaxation_step(relaxation_step_);
         algo_->set_im_iterations(im_iterations_);
         algo_->set_fov_deg(fov_deg_);
-        // E2VID: load the ONNX model if a path is set. An empty path keeps
-        // the heuristic fallback; a non-empty path triggers load_model which
-        // may fail silently and also fall back (BUG-G9: comment corrected —
-        // the model IS loaded here in rebuild(), not deferred).
+        // E2VID family: load the current mode's ONNX model if a path is set.
+        // An empty path keeps the heuristic fallback (BUG-G9: comment
+        // corrected — the model IS loaded here in rebuild(), not deferred).
         // Device policy goes BEFORE the model load so the fresh instance
         // selects its runtime on the first load (no double reload).
         algo_->set_e2v_device(e2vid_device_);
-        if (!model_path_.empty()) algo_->set_model_path(model_path_);
+        const int di = dl_index(mode_);
+        if (di >= 0) algo_->set_model_path(model_paths_[di]);
         algo_->set_e2vid_num_bins(e2vid_num_bins_);
         // Re-sync from the algo: when a model is loaded, set_num_bins ignores
         // the caller's value and uses model_num_bins_ (e2vid_inference.h).
@@ -121,9 +128,16 @@ public:
         bool need_rebuild = false;
         if (k == "mode") {
             int m = to_i(v);
-            if (m >= 0 && m <= 2) {
+            if (m >= 0 && m <= 5) {
                 mode_ = static_cast<gui_algo::EventToVideo::Mode>(m);
-                if (algo_) algo_->set_mode(mode_);
+                if (algo_) {
+                    algo_->set_mode(mode_);
+                    // Switching between DL modes swaps the loaded model
+                    // (each mode has its own weights; an empty path for the
+                    // target mode unloads and falls back to heuristic).
+                    const int di = dl_index(mode_);
+                    if (di >= 0) algo_->set_model_path(model_paths_[di]);
+                }
             }
         } else if (k == "output_fps") {
             output_fps_ = to_i(v);
@@ -163,10 +177,20 @@ public:
         } else if (k == "fov_deg") {
             fov_deg_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_fov_deg(fov_deg_);
-        } else if (k == "model_path") {
-            model_path_ = v;
-            if (algo_) {
-                algo_->set_model_path(model_path_);
+        } else if (k == "model_path" || k == "e2vid_plus_model_path" ||
+                   k == "firenet_plus_model_path" ||
+                   k == "hypere2vid_model_path") {
+            // Per-DL-mode weight paths. The key determines which slot is
+            // written (mode 2 keeps the legacy "model_path" key for config
+            // backward compatibility); only the CURRENT mode's path is
+            // applied to the live algo.
+            const int slot = (k == "model_path") ? 0
+                             : (k == "e2vid_plus_model_path") ? 1
+                             : (k == "firenet_plus_model_path") ? 2
+                                                                : 3;
+            model_paths_[slot] = v;
+            if (algo_ && dl_index(mode_) == slot) {
+                algo_->set_model_path(v);
                 // num_bins is dictated by the loaded model (rpg_e2vid:
                 // model.num_bins). Sync the persisted value so subsequent
                 // ROI rebuilds keep the model's channel count.
@@ -253,11 +277,14 @@ public:
         if (k == "relaxation_step") return from_d(relaxation_step_);
         if (k == "im_iterations") return from_i(im_iterations_);
         if (k == "fov_deg") return from_d(fov_deg_);
-        if (k == "model_path") return model_path_;
+        if (k == "model_path") return model_paths_[0];
+        if (k == "e2vid_plus_model_path") return model_paths_[1];
+        if (k == "firenet_plus_model_path") return model_paths_[2];
+        if (k == "hypere2vid_model_path") return model_paths_[3];
         if (k == "model_loaded") {
             // Pseudo-param (not registered) for the panel's one-shot error
-            // hint (§五-H1): only meaningful in E2VID mode; empty = N/A.
-            return (mode_ == gui_algo::EventToVideo::Mode::E2VID && algo_)
+            // hint (§五-H1): only meaningful in DL modes; empty = N/A.
+            return (gui_algo::EventToVideo::mode_is_dl(mode_) && algo_)
                        ? from_b(algo_->e2vid_model_loaded()) : std::string{};
         }
         if (k == "num_bins") return from_i(e2vid_num_bins_);
@@ -318,7 +345,7 @@ public:
         // so users don't mistake heuristic output for "E2VID quality".
         // dev= shows the active neural runtime (gpu = OpenVINO GPU plugin,
         // cpu = ONNX Runtime) — the Auto policy can silently pick either.
-        if (algo_->mode() == gui_algo::EventToVideo::Mode::E2VID) {
+        if (gui_algo::EventToVideo::mode_is_dl(algo_->mode())) {
             if (algo_->e2vid_model_loaded()) {
                 r.status += " model=loaded dev=" + algo_->e2v_active_runtime();
             } else {

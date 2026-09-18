@@ -771,6 +771,22 @@ void AlgoBridge::register_self_cv() {
           pint("spatial_radius", "Spatial radius (px)", "3", "1", "16"),
           pfloat("max_velocity_px_s", "Max velocity (px/s)", "20000", "100", "100000")}});
 
+    // §4.3.x DL dense optical flow — EV-FlowNet architecture (Zhu et al.
+    // 2018) retrained by Stoffregen et al. ECCV 2020 (event_cnn_minimal).
+    // One 5-bin voxel per accumulation window → per-pixel (u, v) velocity,
+    // HSV-coded frame (hue = direction, value = speed) in a Standalone
+    // window. Inference reuses the E2VID runtime selection (OpenVINO iGPU →
+    // ONNX Runtime CPU). Model conversion:
+    // models/convert_event_cnn_minimal_to_onnx.py --model evflownet.
+    add({"dl_optical_flow", "Dense Optical Flow (DL)", "cv", "self",
+         AlgoDisplayMode::Standalone,
+         {pstring("model_path", "Model path (ONNX)", "models/evflownet.onnx"),
+          penum("device", "Inference device", "0",
+                {"0=Auto (iGPU if available)", "1=CPU", "2=GPU"}),
+          pint("output_fps", "Output fps", "30", "1", "120"),
+          pfloat("max_velocity_px_s", "HSV speed scale (px/s, 0=auto)", "0",
+                 "0", "100000")}});
+
     // §4.3.10 Blob Detector. Default threshold 5: the foreground is the
     // per-pixel event count above the EMA background over a 33 ms window, so
     // a default of 50 demanded ~50 events/pixel and small/moving blobs never
@@ -957,13 +973,19 @@ void AlgoBridge::register_self_analytics() {
     // borrowed the heatmap+CC stage that Lighthouse itself later replaced
     // with Goertzel frequency-identity detection; no tracking, no IDs).
 
-    // §4.4.2 Event To Video (3 modes). Parameters are mode-scoped via
+    // §4.4.2 Event To Video (6 modes). Parameters are mode-scoped via
     // mode_filter: the UI shows only the params that apply to the currently
-    // selected mode (BardowVariational=0, InteractingMaps=1, E2VID=2).
-    // Common params (mode, output_fps) have an empty mode_filter.
+    // selected mode (BardowVariational=0, InteractingMaps=1, E2VID=2,
+    // E2VID+=3, FireNet+=4, HyperE2VID=5). Common params (mode, output_fps)
+    // have an empty mode_filter. Modes 2..5 share the same DL inference
+    // pipeline (and the device/num_bins/postproc rows) and differ only in
+    // the loaded ONNX weights — each mode has its own model path so several
+    // weight sets can be installed side by side.
     add({"event_to_video", "Event -> Video (E2VID)", "analytics", "self",
          AlgoDisplayMode::Standalone,
-         {penum("mode", "Mode", "2", {"0=BardowVariational", "1=InteractingMaps", "2=E2VID"}),
+         {penum("mode", "Mode", "2",
+                {"0=BardowVariational", "1=InteractingMaps", "2=E2VID",
+                 "3=E2VID+", "4=FireNet+", "5=HyperE2VID"}),
           pint("output_fps", "Output fps", "30", "1", "120"),
           // --- Shared non-DL params (mode 0,1) ---
           pfloat("window_ms", "Window (ms)", "50", "10", "500", "0,1"),
@@ -984,21 +1006,24 @@ void AlgoBridge::register_self_analytics() {
           pfloat("relaxation_step", "Relaxation step", "0.1", "0.001", "0.5", "1"),
           pint("im_iterations", "Relax iterations", "50", "10", "1000", "1"),
           pfloat("fov_deg", "Camera FOV (deg)", "60", "10", "170", "1"),
-          // --- E2VID (mode 2) ---
+          // --- DL reconstruction modes (2..5) ---
           pstring("model_path", "Model path (ONNX)", "models/e2vid_lightweight.onnx", "2"),
+          pstring("e2vid_plus_model_path", "Model path (ONNX)", "models/e2vid_plus.onnx", "3"),
+          pstring("firenet_plus_model_path", "Model path (ONNX)", "models/firenet_plus.onnx", "4"),
+          pstring("hypere2vid_model_path", "Model path (ONNX)", "models/hypere2vid.onnx", "5"),
           // Inference device: Auto runs the neural path on the Intel iGPU via
           // OpenVINO when the build has it and a GPU is present (measured
           // ~11× faster than CPU); CPU/GPU pin the respective runtime, with
           // silent CPU degradation when the GPU path is unavailable.
           penum("device", "Inference device", "0",
-                {"0=Auto (iGPU if available)", "1=CPU", "2=GPU"}, "2"),
-          pint("num_bins", "Num bins", "5", "1", "20", "2"),
-          pbool("auto_hdr", "Auto HDR", "false", "2"),
+                {"0=Auto (iGPU if available)", "1=CPU", "2=GPU"}, "2,3,4,5"),
+          pint("num_bins", "Num bins", "5", "1", "20", "2,3,4,5"),
+          pbool("auto_hdr", "Auto HDR", "false", "2,3,4,5"),
           // 1/4 downsample is now a shared preprocessing stage
           // (preproc_downsample) — removed the per-algo downsample param.
-          pfloat("unsharp_amount", "Unsharp amount", "0.3", "0.0", "2.0", "2"),
-          pfloat("unsharp_sigma", "Unsharp sigma", "1.0", "0.1", "5.0", "2"),
-          pfloat("bilateral_sigma", "Bilateral sigma", "0.0", "0.0", "10.0", "2")}});
+          pfloat("unsharp_amount", "Unsharp amount", "0.3", "0.0", "2.0", "2,3,4,5"),
+          pfloat("unsharp_sigma", "Unsharp sigma", "1.0", "0.1", "5.0", "2,3,4,5"),
+          pfloat("bilateral_sigma", "Bilateral sigma", "0.0", "0.0", "10.0", "2,3,4,5")}});
 
     // §4.4.4 ISI Analyzer removed (2026-08-22, user decision):
     // fully self-invented per-pixel ISI histogram (loosely inspired by jAER
