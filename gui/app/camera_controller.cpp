@@ -838,8 +838,10 @@ bool CameraController::set_auto_bias_enabled(bool on) {
             // reference defaults — homing drifts toward those defaults, not
             // toward 0 (which is the Prophesee convention).
             int t_on = 0, t_off = 0;
-            if (davis::davis_reference_default("diff_on", t_on) &&
-                davis::davis_reference_default("diff_off", t_off)) {
+            if (davis::davis_reference_default_for(davis_device_->chip_model(),
+                                                   "diff_on", t_on) &&
+                davis::davis_reference_default_for(davis_device_->chip_model(),
+                                                   "diff_off", t_off)) {
                 bias_applier_.set_home_targets(t_on, t_off);
             }
             // DAVIS OFF-axis polarity is inverted vs Prophesee (measured on

@@ -101,18 +101,20 @@ Then **unplug and replug the camera** (so the session permission tag applies), a
 
 ### Supported & Not Supported (DAVIS / DVXplorer)
 
-| Feature | DAVIS346/640 | DVXplorer |
-|---------|--------------|-----------|
-| Live event preview, all display modes | ✅ | ✅ |
-| Biases panel (all DAVIS coarse/fine + VDAC biases), save/load `.bias` | ✅ | ✅ (`contrast_on`/`contrast_off` only) |
-| Auto Bias controller | ✅ (`diff_on`/`diff_off`) | ✅ (`contrast_on`/`contrast_off`, both axes inverted — higher threshold = fewer events; homing to the 9/9 defaults; coarse 18-step control) |
-| Algorithms (all), unified software ROI, statistics | ✅ | ✅ |
-| RAW recording | ✅ AEDAT4 (DV-native, uncompressed; processed-stream recording as for Prophesee) | ✅ AEDAT4 |
-| Unified software ROI | ✅ (DAVIS also drives the hardware ROI filter — keep-inside, register-write failures fall back to software) | ✅ (software) |
-| Trigger / ESP panels | auto-hidden (no facilities) | auto-hidden (no facilities) |
-| IMU stream (checkbox + live readout window) | ✅ | ✅ |
-| APS frames (checkbox + live preview window) | ✅ (grayscale) | ❌ (no APS hardware) |
-| APS frames / trigger streams | discarded by design | discarded by design |
+| Feature | DAVIS346/640 | DAVIS240A/B/C · CDAVIS¹ | DVXplorer |
+|---------|--------------|--------------------------|-----------|
+| Live event preview, all display modes | ✅ | ✅ | ✅ |
+| Biases panel, save/load `.bias` | ✅ (full coarse/fine + VDAC set) | ✅ (own 240 bias map; CDAVIS = 346 set) | ✅ (`contrast_on`/`contrast_off` only) |
+| Auto Bias controller | ✅ (`diff_on`/`diff_off`, homes to 1535/1025) | ✅ (same axes; homes to 1535/1024 on 240) | ✅ (`contrast_on`/`contrast_off`, both axes inverted — higher threshold = fewer events; homes to 9/9; coarse 18-step control) |
+| Algorithms (all), unified software ROI, statistics | ✅ | ✅ | ✅ |
+| Hardware ROI filter | ✅ keep-inside (falls back to software) | ✅ | ❌ (software only) |
+| RAW recording | ✅ AEDAT4 (DV-native; processed-stream recording too) | ✅ AEDAT4 | ✅ AEDAT4 |
+| Trigger / ESP panels | auto-hidden (no facilities) | auto-hidden | auto-hidden |
+| IMU stream (checkbox + readout window) | ✅ | ✅ | ✅ |
+| APS frames (checkbox + preview window) | ✅ (grayscale) | ✅ (grayscale; 240 gain quirk handled) | ❌ (no APS hardware) |
+| Firmware / logic at connect | FX3 fw 6 · FX2 fw 4 · logic 18 patch ≥ 1 | same as 346/640 | FX3 fw 9 · logic 18 patch ≥ 4 |
+
+¹ DAVIS240A/B/C and CDAVIS follow the reference implementation (own register map, defaults and quirks) but have **not been tested on hardware** — expect a connect-time error for genuinely unsupported combinations.
 
 Firmware requirements — DAVIS: FX3 firmware 6, FX2 firmware 4, FPGA logic version 18 patch ≥ 1; DVXplorer: FX3 firmware 9, FPGA logic version 18 patch ≥ 4 (checked at connect — a clear error is shown otherwise).
 
@@ -155,7 +157,7 @@ DVXplorer exposes exactly two sensitivity parameters in the Biases panel: `contr
 
 ### Other inivation cameras
 
-DAVIS240-family sensors and other unsupported device types are rejected at connect with a clear message. Extending support means porting the respective protocol/bias tables (reference available in `ref/dv-processing-master`).
+Unsupported device types (anything outside DAVIS240A/B/C / 346 / 640 / CDAVIS — e.g. DVS128, eDVS) are rejected at connect with a clear message.
 
 ### Why "DAVIS346" reports 260 × 346 internally
 

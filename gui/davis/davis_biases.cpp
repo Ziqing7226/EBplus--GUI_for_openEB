@@ -44,6 +44,84 @@ const std::vector<BiasSpec>& davis346_bias_table() {
     return table;
 }
 
+const std::vector<BiasSpec>& davis240_bias_table() {
+    static const std::vector<BiasSpec> table = {
+        // DAVIS240 register map (dv Davis240BiasCF enum values) — own
+        // addresses, no VDAC biases (aps_overflow_level is coarse/fine
+        // here). IF_THR/IF_REFR default disabled (dv {sex}-only init).
+        {"diff",                  BiasKind::CoarseFine,  0, true,  true,  true,  true,  4,  39},
+        {"diff_on",               BiasKind::CoarseFine,  1, true,  true,  true,  true,  5, 255},
+        {"diff_off",              BiasKind::CoarseFine,  2, true,  true,  true,  true,  4,   0},
+        {"aps_cascode",           BiasKind::CoarseFine,  3, true,  false, true,  true,  5, 185},
+        {"diff_cascode",          BiasKind::CoarseFine,  4, true,  false, true,  true,  5, 115},
+        {"aps_readout_follower",  BiasKind::CoarseFine,  5, true,  true,  true,  true,  6, 219},
+        {"local_buffer",          BiasKind::CoarseFine,  6, true,  true,  true,  true,  5, 164},
+        {"pixel_inverter",        BiasKind::CoarseFine,  7, true,  true,  true,  true,  6, 144},
+        {"photoreceptor",         BiasKind::CoarseFine,  8, false, true,  true,  true,  2,  58},
+        {"photocircuit_follower", BiasKind::CoarseFine,  9, false, true,  true,  true,  1,  16},
+        {"refractory",            BiasKind::CoarseFine, 10, false, true,  true,  true,  4,  25},
+        {"aer_pull_down",         BiasKind::CoarseFine, 11, true,  true,  true,  true,  6,  91},
+        {"lcol_timeout",          BiasKind::CoarseFine, 12, true,  true,  true,  true,  5,  49},
+        {"aer_pull_up_x",         BiasKind::CoarseFine, 13, false, true,  true,  true,  4,  80},
+        {"aer_pull_up_y",         BiasKind::CoarseFine, 14, false, true,  true,  true,  7, 152},
+        {"if_thr_bn",             BiasKind::CoarseFine, 15, true,  true,  true,  false, 0,   0},
+        {"if_refr_bn",            BiasKind::CoarseFine, 16, true,  true,  true,  false, 0,   0},
+        {"pad_follower",          BiasKind::CoarseFine, 17, true,  true,  true,  true,  7, 215},
+        {"aps_overflow_level",    BiasKind::CoarseFine, 18, true,  true,  true,  true,  6, 253},
+        {"bias_buffer",           BiasKind::CoarseFine, 19, true,  true,  true,  true,  5, 254},
+    };
+    return table;
+}
+
+const std::vector<BiasSpec>& davis_cdavis_bias_table() {
+    static const std::vector<BiasSpec> table = {
+        // CDAVIS VDAC set (dv CDavisBiasVDAC enum; fields {coarse = current
+        // index, fine = voltage}).
+        {"aps_cascode",           BiasKind::VDAC,       0, true,  true,  true,  true,  5,  32},
+        {"ovg1_low",              BiasKind::VDAC,       1, true,  true,  true,  true,  7,  63},
+        {"ovg2_low",              BiasKind::VDAC,       2, true,  true,  true,  true,  0,   0},
+        {"tx2ovg2_high",          BiasKind::VDAC,       3, true,  true,  true,  true,  0,   0},
+        {"gnd07",                 BiasKind::VDAC,       4, true,  true,  true,  true,  6,  10},
+        {"adc_test_voltage",      BiasKind::VDAC,       5, true,  true,  true,  true,  0,  27},
+        {"adc_reference_high",    BiasKind::VDAC,       6, true,  true,  true,  true,  7,  46},
+        {"adc_reference_low",     BiasKind::VDAC,       7, true,  true,  true,  true,  7,   8},
+        // CDAVIS coarse/fine map (dv CDavisBiasCF enum). IF_THR/IF_REFR,
+        // local_buffer, pad_follower and readout_buffer default disabled
+        // (dv {sex}-only inits).
+        {"if_refr_bn",            BiasKind::CoarseFine,  8, true,  true,  true,  false, 0,   0},
+        {"if_thr_bn",             BiasKind::CoarseFine,  9, true,  true,  true,  false, 0,   0},
+        {"local_buffer",          BiasKind::CoarseFine, 10, true,  true,  true,  false, 0,   0},
+        {"pad_follower",          BiasKind::CoarseFine, 11, true,  true,  true,  false, 0,   0},
+        {"pixel_inverter",        BiasKind::CoarseFine, 13, true,  true,  true,  true,  5, 164},
+        {"diff",                  BiasKind::CoarseFine, 14, true,  true,  true,  true,  3, 135},
+        {"diff_on",               BiasKind::CoarseFine, 15, true,  true,  true,  true,  6,  84},
+        {"diff_off",              BiasKind::CoarseFine, 16, true,  true,  true,  true,  2,  20},
+        {"photoreceptor",         BiasKind::CoarseFine, 17, false, true,  true,  true,  3,  88},
+        {"photocircuit_follower", BiasKind::CoarseFine, 18, false, true,  true,  true,  2,  45},
+        {"refractory",            BiasKind::CoarseFine, 19, false, true,  true,  true,  4,  25},
+        {"array_bias_buffer",     BiasKind::CoarseFine, 20, true,  true,  true,  true,  3, 128},
+        {"array_logic_buffer",    BiasKind::CoarseFine, 22, true,  true,  true,  true,  6, 255},
+        {"fall_time",             BiasKind::CoarseFine, 23, true,  true,  true,  true,  7,  41},
+        {"rise_time",             BiasKind::CoarseFine, 24, false, true,  true,  true,  6, 162},
+        {"readout_buffer",        BiasKind::CoarseFine, 25, false, true,  true,  false, 0,   0},
+        {"aps_readout_follower",  BiasKind::CoarseFine, 26, true,  true,  true,  true,  7, 102},
+        {"adc_comparator",        BiasKind::CoarseFine, 27, false, true,  true,  true,  4, 159},
+        {"dac_buffer",            BiasKind::CoarseFine, 28, false, true,  true,  true,  6, 194},
+        {"lcol_timeout",          BiasKind::CoarseFine, 30, true,  true,  true,  true,  5,  49},
+        {"aer_pull_down",         BiasKind::CoarseFine, 31, true,  true,  true,  true,  6,  91},
+        {"aer_pull_up_x",         BiasKind::CoarseFine, 32, false, true,  true,  true,  5,  80},
+        {"aer_pull_up_y",         BiasKind::CoarseFine, 33, false, true,  true,  true,  7, 152},
+        {"bias_buffer",           BiasKind::CoarseFine, 34, true,  true,  true,  true,  6, 251},
+    };
+    return table;
+}
+
+const std::vector<BiasSpec>& davis_bias_table_for(int chip_id) {
+    if (chip_id >= 0 && chip_id <= 2) return davis240_bias_table();  // 240A/B/C
+    if (chip_id == 7) return davis_cdavis_bias_table();              // CDAVIS
+    return davis346_bias_table();  // 346 / 640
+}
+
 std::uint16_t encode_coarse_fine(bool enabled, bool sex_n, bool type_normal,
                                  bool current_normal, std::uint8_t fine, std::uint8_t coarse) {
     std::uint16_t v = 0;
@@ -74,7 +152,11 @@ std::uint16_t encode_vdac(std::uint8_t voltage, std::uint8_t current) {
 }
 
 bool davis_reference_default(const std::string& name, int& value) {
-    for (const auto& spec : davis346_bias_table()) {
+    return davis_reference_default_for(5, name, value);  // 346/640 defaults
+}
+
+bool davis_reference_default_for(int chip_id, const std::string& name, int& value) {
+    for (const auto& spec : davis_bias_table_for(chip_id)) {
         if (name == spec.name) {
             value = (spec.kind == BiasKind::VDAC)
                         ? spec.fine
@@ -97,7 +179,14 @@ std::uint16_t encode_shifted_source(std::uint8_t ref, std::uint8_t reg) {
 // ---------------------------------------------------------------------------
 
 BiasStore::BiasStore(std::function<void(std::uint16_t, std::uint16_t)> on_write)
-    : on_write_(std::move(on_write)), table_(davis346_bias_table()) {}
+    : on_write_(std::move(on_write)),
+      model_table_(&davis346_bias_table()),
+      table_(davis346_bias_table()) {}
+
+void BiasStore::set_table(const std::vector<BiasSpec>& table) {
+    model_table_ = &table;
+    table_ = table;
+}
 
 void BiasStore::send(const BiasSpec& spec) {
     std::uint16_t word = 0;
@@ -116,7 +205,7 @@ void BiasStore::apply_defaults() {
     // Restore from the IMMUTABLE reference table — runtime adjustments
     // (set_linear) mutate table_ and would otherwise become the new
     // "defaults" on reconnect.
-    table_ = davis346_bias_table();
+    table_ = *model_table_;
     for (const auto& spec : table_) {
         send(spec);
     }

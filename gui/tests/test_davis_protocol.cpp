@@ -480,6 +480,119 @@ TEST(BiasApplier, ContrastHomeTargetsNine) {
     EXPECT_EQ(fake.state_.at("contrast_off"), 9);
 }
 
+TEST(DavisBiases, Davis240TableOwnRegisterMap) {
+    const auto& t240 = gui::davis::davis240_bias_table();
+    const gui::davis::BiasSpec* diff = nullptr;
+    const gui::davis::BiasSpec* diff_on = nullptr;
+    const gui::davis::BiasSpec* diff_off = nullptr;
+    const gui::davis::BiasSpec* overflow = nullptr;
+    bool has_vdac = false;
+    for (const auto& spec : t240) {
+        if (spec.name == std::string_view("diff")) diff = &spec;
+        if (spec.name == std::string_view("diff_on")) diff_on = &spec;
+        if (spec.name == std::string_view("diff_off")) diff_off = &spec;
+        if (spec.name == std::string_view("aps_overflow_level")) overflow = &spec;
+        has_vdac = has_vdac || spec.kind == gui::davis::BiasKind::VDAC;
+    }
+    ASSERT_NE(diff, nullptr);
+    ASSERT_NE(diff_on, nullptr);
+    ASSERT_NE(diff_off, nullptr);
+    ASSERT_NE(overflow, nullptr);
+    // DAVIS240 register map: diff@0, diff_on@1, diff_off@2 (vs 10/11/12 on
+    // the 346); aps_overflow_level is a COARSE/FINE bias (no VDAC set).
+    EXPECT_EQ(diff->address, 0);
+    EXPECT_EQ(diff_on->address, 1);
+    EXPECT_EQ(diff_off->address, 2);
+    EXPECT_FALSE(has_vdac);
+    EXPECT_EQ(overflow->kind, gui::davis::BiasKind::CoarseFine);
+    // Reference defaults: diff {4,39} → 1063, diff_on {5,255} → 1535,
+    // diff_off {4,0} → 1024; if_thr_bn/if_refr_bn disabled.
+    EXPECT_EQ(gui::davis::cf_linearize(diff->coarse, diff->fine), 1063);
+    EXPECT_EQ(gui::davis::cf_linearize(diff_on->coarse, diff_on->fine), 1535);
+    EXPECT_EQ(gui::davis::cf_linearize(diff_off->coarse, diff_off->fine), 1024);
+    for (const auto& spec : t240) {
+        if (spec.name == std::string_view("if_thr_bn") ||
+            spec.name == std::string_view("if_refr_bn")) {
+            EXPECT_FALSE(spec.enabled);
+        }
+    }
+}
+
+TEST(DavisBiases, TableSelectorMapsChipIds) {
+    // 240A/B/C → 240 table (diff@0); 346/640 → 346 table (diff@10);
+    // CDAVIS → own table (diff@14).
+    EXPECT_EQ(gui::davis::davis_bias_table_for(0)[0].address, 0);
+    EXPECT_EQ(gui::davis::davis_bias_table_for(1)[0].address, 0);
+    EXPECT_EQ(gui::davis::davis_bias_table_for(2)[0].address, 0);
+    const auto find_diff = [](const std::vector<gui::davis::BiasSpec>& t) {
+        for (const auto& spec : t)
+            if (spec.name == std::string_view("diff")) return spec.address;
+        return std::uint16_t{0xFFFF};
+    };
+    EXPECT_EQ(find_diff(gui::davis::davis_bias_table_for(5)), 10);
+    EXPECT_EQ(find_diff(gui::davis::davis_bias_table_for(6)), 10);
+    EXPECT_EQ(find_diff(gui::davis::davis_cdavis_bias_table()), 14);
+    EXPECT_EQ(find_diff(gui::davis::davis_bias_table_for(7)), 14);
+}
+
+TEST(DavisBiases, CDAVISTableOwnSet) {
+    const auto& t = gui::davis::davis_cdavis_bias_table();
+    const gui::davis::BiasSpec* ovg1 = nullptr;
+    const gui::davis::BiasSpec* readout = nullptr;
+    int vdac_count = 0;
+    for (const auto& spec : t) {
+        if (spec.name == std::string_view("ovg1_low")) ovg1 = &spec;
+        if (spec.name == std::string_view("readout_buffer")) readout = &spec;
+        if (spec.kind == gui::davis::BiasKind::VDAC) ++vdac_count;
+    }
+    ASSERT_NE(ovg1, nullptr);
+    EXPECT_EQ(ovg1->address, 1);   // CDavisBiasVDAC::OVG1Low
+    EXPECT_EQ(ovg1->fine, 63);     // voltage 63, current 7
+    EXPECT_EQ(ovg1->coarse, 7);
+    ASSERT_NE(readout, nullptr);
+    EXPECT_FALSE(readout->enabled);  // {sex}-only init → disabled
+    EXPECT_FALSE(readout->sex_n_type);  // P-type
+    EXPECT_EQ(vdac_count, 8);      // full CDAVIS VDAC set
+}
+
+TEST(DavisBiases, ReferenceDefaultsPerModel) {
+    int v = 0;
+    ASSERT_TRUE(gui::davis::davis_reference_default_for(0, "diff_on", v));
+    EXPECT_EQ(v, 1535);
+    ASSERT_TRUE(gui::davis::davis_reference_default_for(0, "diff_off", v));
+    EXPECT_EQ(v, 1024);  // 240: {4,0} vs the 346 {4,1}
+    ASSERT_TRUE(gui::davis::davis_reference_default_for(5, "diff_off", v));
+    EXPECT_EQ(v, 1025);
+    ASSERT_TRUE(gui::davis::davis_reference_default_for(7, "diff_on", v));
+    EXPECT_EQ(v, gui::davis::cf_linearize(6, 84));   // 1620 — CDAVIS own map
+    ASSERT_TRUE(gui::davis::davis_reference_default_for(7, "diff_off", v));
+    EXPECT_EQ(v, gui::davis::cf_linearize(2, 20));   // 532
+    ASSERT_TRUE(gui::davis::davis_reference_default_for(7, "ovg1_low", v));
+    EXPECT_EQ(v, 63);  // VDAC: linearized value = voltage
+    EXPECT_FALSE(gui::davis::davis_reference_default_for(0, "nonexistent", v));
+}
+
+TEST(DavisBiases, BiasStoreSwitchesTables) {
+    std::vector<std::pair<std::uint16_t, std::uint16_t>> writes;
+    gui::davis::BiasStore store([&](std::uint16_t addr, std::uint16_t word) {
+        writes.emplace_back(addr, word);
+    });
+    store.set_table(gui::davis::davis240_bias_table());
+    writes.clear();
+    store.apply_defaults();
+    // The 240 diff register (address 0) must have been programmed.
+    bool diff_programmed = false;
+    for (const auto& [addr, word] : writes)
+        if (addr == 0) diff_programmed = true;
+    EXPECT_TRUE(diff_programmed);
+
+    int v = 0;
+    ASSERT_TRUE(store.set_linear("diff_on", 1000));
+    ASSERT_TRUE(store.get_linear("diff_on", v));
+    EXPECT_EQ(v, 1000);
+    EXPECT_FALSE(store.set_linear("adc_reference_high", 5));  // no VDAC on 240
+}
+
 TEST(BiasApplier, DefaultTargetIsZero) {
     // Without explicit targets (Prophesee), homing still walks toward 0.
     FakeLLBiases fake;

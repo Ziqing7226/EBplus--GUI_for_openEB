@@ -97,6 +97,9 @@ public:
     [[nodiscard]] int width() const { return width_; }
     [[nodiscard]] int height() const { return height_; }
     [[nodiscard]] const std::string& serial() const { return serial_; }
+    /// Sensor chip identifier (MODULE_SYSINFO / chip identifier) — selects
+    /// the model-specific bias table and quirk handling.
+    [[nodiscard]] int chip_model() const { return chip_model_; }
     [[nodiscard]] const std::string& model_name() const { return model_name_; }
 
     /// Bias store (register state + device writes). Lives as long as the
@@ -162,6 +165,7 @@ private:
     bool imu_enabled_{false};
     bool aps_enabled_{false};
     bool has_roi_filter_{false};
+    int chip_model_{5};
 };
 
 } // namespace gui::davis

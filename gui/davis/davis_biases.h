@@ -41,6 +41,20 @@ struct BiasSpec {
 /// substring lookup matches). Addresses are the dv-processing enum values.
 const std::vector<BiasSpec>& davis346_bias_table();
 
+/// DAVIS240A/B/C bias table — own register map (diff@0, diff_on@1, …, no
+/// VDAC biases; aps_overflow_level is coarse/fine there) and own defaults.
+const std::vector<BiasSpec>& davis240_bias_table();
+
+/// CDAVIS bias tables — own VDAC set (ovg1_low/ovg2_low/…) and own
+/// coarse/fine register map (diff@14/diff_on@15/diff_off@16, fall/rise
+/// time, array buffers; several biases default disabled).
+const std::vector<BiasSpec>& davis_cdavis_bias_table();
+
+/// Model selector: chip identifier (MODULE_SYSINFO / chip identifier) →
+/// table. DAVIS240A/B/C (ids 0/1/2) → 240 table; CDAVIS (7) → CDAVIS
+/// table; 346/640 (5/6) → the 346/640 table.
+const std::vector<BiasSpec>& davis_bias_table_for(int chip_id);
+
 /// Linearized panel value for a coarse/fine pair (monotonic in coarse, fine).
 inline int cf_linearize(std::uint8_t coarse, std::uint8_t fine) {
     return static_cast<int>(coarse) * 256 + static_cast<int>(fine);
@@ -65,12 +79,17 @@ std::uint16_t encode_vdac(std::uint8_t voltage, std::uint8_t current);
 std::uint16_t encode_shifted_source(std::uint8_t ref, std::uint8_t reg);
 
 /// Linearized reference default for a DAVIS bias name, e.g.
-/// diff_on → 1535 (false when the name is unknown).
+/// diff_on → 1535 (false when the name is unknown). Uses the 346/640 table.
 bool davis_reference_default(const std::string& name, int& value);
+/// Model-aware variant (e.g. diff_off → 1025 on 346/640, 1024 on 240).
+bool davis_reference_default_for(int chip_id, const std::string& name, int& value);
 
 /// DAVIS346 shifted-source bias register addresses (dv constants).
 constexpr std::uint16_t DAVIS346_BIAS_SSP = 35;
 constexpr std::uint16_t DAVIS346_BIAS_SSN = 36;
+/// DAVIS240 shifted-source bias register addresses.
+constexpr std::uint16_t DAVIS240_BIAS_SSP = 20;
+constexpr std::uint16_t DAVIS240_BIAS_SSN = 21;
 
 /// Bias state + register synthesis, decoupled from USB so it is unit-testable.
 /// @p send_word is invoked for every register change (device write).
@@ -81,6 +100,11 @@ public:
 
     /// Programs all defaults to the device (reference power-up table).
     void apply_defaults();
+
+    /// @brief Phase 7: selects the model bias table (DAVIS240 vs 346/640).
+    /// Must be called before apply_defaults(); apply_defaults() restores
+    /// from the selected table.
+    void set_table(const std::vector<BiasSpec>& table);
 
     /// Linearized value lookup/set by name (false when unknown).
     bool get_linear(const std::string& name, int& value) const;
@@ -94,6 +118,7 @@ private:
     void send(const BiasSpec& spec);
 
     std::function<void(std::uint16_t address, std::uint16_t word)> on_write_;
+    const std::vector<BiasSpec>* model_table_;
     std::vector<BiasSpec> table_;
 };
 

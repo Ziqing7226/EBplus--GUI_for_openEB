@@ -87,6 +87,12 @@ constexpr std::uint16_t APS_ORIENTATION_INFO = 2;
 constexpr std::uint16_t APS_RUN = 4;
 constexpr std::uint16_t APS_WAIT_ON_TRANSFER_STALL = 5;
 constexpr std::uint16_t APS_HAS_GLOBAL_SHUTTER = 6;
+constexpr std::uint16_t APS_TRANSFER = 14;
+constexpr std::uint16_t APS_RSFDSETTLE = 15;
+constexpr std::uint16_t APS_GSPDRESET = 16;
+constexpr std::uint16_t APS_GSRESETFALL = 17;
+constexpr std::uint16_t APS_GSTXFALL = 18;
+constexpr std::uint16_t APS_GSFDRESET = 19;
 constexpr std::uint16_t APS_GLOBAL_SHUTTER = 7;
 constexpr std::uint16_t APS_START_COLUMN_0 = 8;
 constexpr std::uint16_t APS_START_ROW_0 = 9;
@@ -621,11 +627,19 @@ void Device::configure_idle() {
     }
 
     const auto chip_id = static_cast<int>(spi_config_receive(MODULE_SYSINFO, SYSINFO_CHIP_IDENTIFIER));
-    if (chip_id != SENSOR_CHIP_DAVIS346 && chip_id != SENSOR_CHIP_DAVIS640) {
+    const bool is_240 = (chip_id == SENSOR_CHIP_DAVIS240A || chip_id == SENSOR_CHIP_DAVIS240B ||
+                         chip_id == SENSOR_CHIP_DAVIS240C);
+    const bool is_cdavis = (chip_id == SENSOR_CHIP_CDAVIS);
+    if (chip_id != SENSOR_CHIP_DAVIS346 && chip_id != SENSOR_CHIP_DAVIS640 && !is_240 && !is_cdavis) {
         throw std::runtime_error("DAVIS: unsupported sensor model (chip id " + std::to_string(chip_id) +
-                                 "); only DAVIS346/640 are supported by this integration.");
+                                 "); supported: DAVIS240A/B/C, DAVIS346, DAVIS640, CDAVIS.");
     }
-    model_name_ = (chip_id == SENSOR_CHIP_DAVIS346) ? "DAVIS346" : "DAVIS640";
+    chip_model_ = chip_id;
+    model_name_ = is_240 ? (chip_id == SENSOR_CHIP_DAVIS240A ? "DAVIS240A"
+                              : chip_id == SENSOR_CHIP_DAVIS240B ? "DAVIS240B"
+                                                                 : "DAVIS240C")
+                         : (chip_id == SENSOR_CHIP_DAVIS640 ? "DAVIS640"
+                                                            : is_cdavis ? "CDAVIS" : "DAVIS346");
 
     // Clocks (Hz) scaled by the deviation factor (per-mille).
     const auto logic_clock = static_cast<double>(spi_config_receive(MODULE_SYSINFO, SYSINFO_LOGIC_CLOCK));
@@ -693,7 +707,17 @@ void Device::configure_idle() {
     // with the reference init).
     spi_config_send(MODULE_APS, APS_WAIT_ON_TRANSFER_STALL, true);
     spi_config_send(MODULE_APS, APS_GLOBAL_SHUTTER, true);
-    spi_config_send(MODULE_CHIP, DAVIS346_CHIP_GLOBAL_SHUTTER, true);
+    // Global shutter: not present on CDAVIS (reference skips the write).
+    if (!is_cdavis) spi_config_send(MODULE_CHIP, DAVIS346_CHIP_GLOBAL_SHUTTER, true);
+    // CDAVIS-specific APS timing (reference, in ADC-clock cycles).
+    if (is_cdavis) {
+        spi_config_send(MODULE_APS, APS_TRANSFER, 1200);
+        spi_config_send(MODULE_APS, APS_RSFDSETTLE, 100);
+        spi_config_send(MODULE_APS, APS_GSPDRESET, 100);
+        spi_config_send(MODULE_APS, APS_GSRESETFALL, 100);
+        spi_config_send(MODULE_APS, APS_GSTXFALL, 100);
+        spi_config_send(MODULE_APS, APS_GSFDRESET, 300);
+    }
     spi_config_send(MODULE_APS, APS_RUN, false);
     spi_config_send(MODULE_APS, APS_START_COLUMN_0, 0);
     spi_config_send(MODULE_APS, APS_START_ROW_0, 0);
@@ -757,10 +781,14 @@ void Device::configure_idle() {
     }
 
     // Default biases (reference power-up table) + shifted-source biases.
+    // Phase 7: the DAVIS240 family has its own register map and defaults.
+    biases_.set_table(davis_bias_table_for(chip_id));
     biases_.apply_defaults();
+    const auto ssp_addr = is_240 ? DAVIS240_BIAS_SSP : DAVIS346_BIAS_SSP;
+    const auto ssn_addr = is_240 ? DAVIS240_BIAS_SSN : DAVIS346_BIAS_SSN;
     const auto ssp_word = encode_shifted_source(1, 33); // reference defaults
-    spi_config_send(MODULE_BIAS, DAVIS346_BIAS_SSP, ssp_word);
-    spi_config_send(MODULE_BIAS, DAVIS346_BIAS_SSN, ssp_word);
+    spi_config_send(MODULE_BIAS, ssp_addr, ssp_word);
+    spi_config_send(MODULE_BIAS, ssn_addr, ssp_word);
 }
 
 void Device::send_timestamp_reset() {
