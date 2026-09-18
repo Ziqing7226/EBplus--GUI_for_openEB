@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <fstream>
 #include <thread>
 #include <vector>
 
@@ -150,7 +151,24 @@ public:
     bool load_model(const std::string& model_path) {
         model_path_ = model_path;
 #if defined(GUI_ALGO_HAS_OPENVINO)
-        ov_release();  // drop any previous runtime state (also resets the latch)
+        ov_release();  // drop any previous runtime state
+#endif
+        // Empty path = explicit unload (a fresh backend before config
+        // restore, or a mode switch to a DL mode without weights): fall
+        // back to the heuristic WITHOUT probing the runtimes. A missing
+        // file degrades just as quietly — only a file that EXISTS but
+        // fails to load prints a diagnostic (the status line already
+        // shows model=heuristic in the quiet cases).
+        if (model_path.empty() ||
+            !std::ifstream(model_path, std::ios::binary).good()) {
+#if defined(GUI_ALGO_HAS_ONNXRUNTIME)
+            session_.reset();
+#endif
+            model_loaded_ = false;
+            active_runtime_.clear();
+            return false;
+        }
+#if defined(GUI_ALGO_HAS_OPENVINO)
         if (device_ != Device::CPU && ov_gpu_available() && ov_try_load(model_path)) {
             model_loaded_ = true;
             active_runtime_ = "gpu";

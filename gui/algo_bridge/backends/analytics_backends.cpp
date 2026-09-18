@@ -136,7 +136,12 @@ public:
                     // (each mode has its own weights; an empty path for the
                     // target mode unloads and falls back to heuristic).
                     const int di = dl_index(mode_);
-                    if (di >= 0) algo_->set_model_path(model_paths_[di]);
+                    if (di >= 0) {
+                        algo_->set_model_path(model_paths_[di]);
+                        // Re-sync: the newly loaded model dictates num_bins
+                        // (same contract as the model_path branch, BUG-N11).
+                        e2vid_num_bins_ = algo_->e2vid_num_bins();
+                    }
                 }
             }
         } else if (k == "output_fps") {
