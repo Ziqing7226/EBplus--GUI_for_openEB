@@ -108,7 +108,8 @@ Then **unplug and replug the camera** (so the session permission tag applies), a
 | Auto Bias controller | ✅ (`diff_on`/`diff_off`) | ✅ (`contrast_on`/`contrast_off`, both axes inverted — higher threshold = fewer events; homing to the 9/9 defaults; coarse 18-step control) |
 | Algorithms (all), unified software ROI, statistics | ✅ | ✅ |
 | RAW recording | ✅ AEDAT4 (DV-native, uncompressed; processed-stream recording as for Prophesee) | ✅ AEDAT4 |
-| ROI / Trigger / ESP panels | ROI ❌ · Trigger/ESP auto-hidden (no facilities) | Trigger/ESP auto-hidden (no facilities) |
+| Unified software ROI | ✅ (DAVIS also drives the hardware ROI filter — keep-inside, register-write failures fall back to software) | ✅ (software) |
+| Trigger / ESP panels | auto-hidden (no facilities) | auto-hidden (no facilities) |
 | IMU stream (checkbox + live readout window) | ✅ | ✅ |
 | APS frames (checkbox + live preview window) | ✅ (grayscale) | ❌ (no APS hardware) |
 | APS frames / trigger streams | discarded by design | discarded by design |

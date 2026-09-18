@@ -79,6 +79,14 @@ public:
     /// once, and re-applied by start() while @p on).
     void set_aps_enabled(bool on);
     [[nodiscard]] bool aps_enabled() const { return aps_enabled_; }
+    /// @brief Phase 6: programs the DVS hardware ROI filter (keep-inside)
+    /// with a USER-frame rect. Mirrors the reference sequence (stop DVS,
+    /// four ROI registers, restore run). Returns false when the sensor
+    /// lacks the filter, the rect is invalid, or the SPI write fails —
+    /// the conditioner's software ROI still applies either way.
+    bool set_hw_roi(int x, int y, int w, int h);
+    /// Resets the filter to the full sensor (the disabled shape).
+    bool clear_hw_roi();
 
     /// Starts event streaming (data transfers + run switches + timestamp
     /// reset handshake; blocks up to ~1 s waiting for the reset marker).
@@ -153,6 +161,7 @@ private:
     std::atomic<bool> streaming_{false};
     bool imu_enabled_{false};
     bool aps_enabled_{false};
+    bool has_roi_filter_{false};
 };
 
 } // namespace gui::davis

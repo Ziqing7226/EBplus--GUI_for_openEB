@@ -550,33 +550,55 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
         emit roi_state_changed(en, x0, y0, x1, y1);
         return true;
     }
-    auto* roi = roi_facility();
-    if (!roi) return false;
-    try {
-        // Compute the window (auto-center on -1, clamp to sensor), mirroring
-        // ProcessRegion::compute so live and file paths agree.
-        const int sw = sensor_info_.width > 0 ? sensor_info_.width : 1280;
-        const int sh = sensor_info_.height > 0 ? sensor_info_.height : 720;
-        const int rw = (w <= 0) ? sw : std::min(w, sw);
-        const int rh = (h <= 0) ? sh : std::min(h, sh);
-        const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
-        const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
-        if (rw <= 0 || rh <= 0) return false;
-        // Phase 2.6 debug D-5: the mode is part of the unified state (was
-        // hardcoded ROI, clobbering RONI set via the RoiPanel), and the
-        // window/mode are configured even when disabling so callers can
-        // pre-configure a rect while the ROI is off (mirrors the file path,
-        // which stores the rect unconditionally).
-        roi->set_mode(roni_mode ? Metavision::I_ROI::Mode::RONI
-                                : Metavision::I_ROI::Mode::ROI);
-        roi->set_windows({Metavision::I_ROI::Window(rx, ry, rw, rh)});
-        roi->enable(enabled);
+    // Compute the window (auto-center on -1, clamp to sensor), mirroring
+    // ProcessRegion::compute so live and file paths agree.
+    const int sw = sensor_info_.width > 0 ? sensor_info_.width : 1280;
+    const int sh = sensor_info_.height > 0 ? sensor_info_.height : 720;
+    const int rw = (w <= 0) ? sw : std::min(w, sw);
+    const int rh = (h <= 0) ? sh : std::min(h, sh);
+    const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
+    const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
+    if (rw <= 0 || rh <= 0) return false;
+
+#if GUI_HAVE_DAVIS
+    if (davis_device_ || dvx_device_) {
+        // Phase 6: DAVIS accelerates keep-inside ROI with the DVS ROI
+        // filter (best-effort — a failed register write only costs USB
+        // bandwidth, the conditioner's software crop still applies).
+        // RONI (drop-inside) and DVXplorer are software-only.
+        if (davis_device_) {
+            if (enabled && !roni_mode) {
+                davis_device_->set_hw_roi(rx, ry, rw, rh);
+            } else {
+                davis_device_->clear_hw_roi();
+            }
+        }
         roi_enabled_ = enabled;
         roi_roni_ = roni_mode;
         roi_x0_ = rx; roi_y0_ = ry;
         roi_x1_ = rx + rw; roi_y1_ = ry + rh;
-    } catch (const std::exception&) {
-        return false;
+    } else
+#endif
+    {
+        auto* roi = roi_facility();
+        if (!roi) return false;
+        try {
+            // Phase 2.6 debug D-5: the mode is part of the unified state
+            // (was hardcoded ROI, clobbering RONI set via the RoiPanel), and
+            // the window/mode are configured even when disabling so callers
+            // can pre-configure a rect while the ROI is off (mirrors the
+            // file path, which stores the rect unconditionally).
+            roi->set_mode(roni_mode ? Metavision::I_ROI::Mode::RONI
+                                    : Metavision::I_ROI::Mode::ROI);
+            roi->set_windows({Metavision::I_ROI::Window(rx, ry, rw, rh)});
+            roi->enable(enabled);
+            roi_enabled_ = enabled;
+            roi_roni_ = roni_mode;
+            roi_x0_ = rx; roi_y0_ = ry;
+            roi_x1_ = rx + rw; roi_y1_ = ry + rh;
+        } catch (const std::exception&) {
+            return false;
+        }
     }
     // Conditioner follows the ROI (highest priority): ROI mode → crop+shift
     // to ROI-relative (canonical for algorithms); RONI → drop-inside,
@@ -833,8 +855,13 @@ bool CameraController::set_auto_bias_enabled(bool on) {
             // range — on the DVXplorer 0-17 contrast range it would slam
             // into a range limit every correction (bang-bang control), so
             // cap the per-tick delta there.
-            auto_bias_ctrl_.set_max_step(dvx_device_ ? 2
-                                                     : gui_algo::AutoBiasController::kDefaultMaxStep);
+#if GUI_HAVE_DAVIS
+            const int max_step =
+                dvx_device_ ? 2 : gui_algo::AutoBiasController::kDefaultMaxStep;
+#else
+            const int max_step = gui_algo::AutoBiasController::kDefaultMaxStep;
+#endif
+            auto_bias_ctrl_.set_max_step(max_step);
             auto_bias_last_tick_ = -1;
         }
         auto_bias_enabled_.store(true, std::memory_order_relaxed);

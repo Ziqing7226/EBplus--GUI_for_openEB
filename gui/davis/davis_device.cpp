@@ -71,16 +71,16 @@ constexpr std::uint16_t DVS_HAS_BACKGROUND_ACTIVITY_FILTER = 30;
 constexpr std::uint16_t DVS_FILTER_BACKGROUND_ACTIVITY = 31;
 constexpr std::uint16_t DVS_FILTER_BACKGROUND_ACTIVITY_TIME = 32;
 constexpr std::uint16_t DVS_FILTER_REFRACTORY_PERIOD = 33;
-constexpr std::uint16_t DVS_FILTER_REFRACTORY_PERIOD_TIME = 34;
-constexpr std::uint16_t DVS_HAS_SKIP_FILTER = 50;
-constexpr std::uint16_t DVS_FILTER_SKIP_EVENTS = 51;
-constexpr std::uint16_t DVS_HAS_POLARITY_FILTER = 60;
-constexpr std::uint16_t DVS_FILTER_POLARITY_FLATTEN = 61;
 constexpr std::uint16_t DVS_HAS_ROI_FILTER = 40;
 constexpr std::uint16_t DVS_FILTER_ROI_START_COLUMN = 41;
 constexpr std::uint16_t DVS_FILTER_ROI_START_ROW = 42;
 constexpr std::uint16_t DVS_FILTER_ROI_END_COLUMN = 43;
 constexpr std::uint16_t DVS_FILTER_ROI_END_ROW = 44;
+constexpr std::uint16_t DVS_FILTER_REFRACTORY_PERIOD_TIME = 34;
+constexpr std::uint16_t DVS_HAS_SKIP_FILTER = 50;
+constexpr std::uint16_t DVS_FILTER_SKIP_EVENTS = 51;
+constexpr std::uint16_t DVS_HAS_POLARITY_FILTER = 60;
+constexpr std::uint16_t DVS_FILTER_POLARITY_FLATTEN = 61;
 constexpr std::uint16_t APS_SIZE_COLUMNS = 0;
 constexpr std::uint16_t APS_SIZE_ROWS = 1;
 constexpr std::uint16_t APS_ORIENTATION_INFO = 2;
@@ -560,6 +560,43 @@ void Device::set_aps_enabled(bool on) {
     if (streaming_.load()) spi_config_send(MODULE_APS, APS_RUN, on);
 }
 
+bool Device::set_hw_roi(int x, int y, int w, int h) {
+    if (!has_roi_filter_ || w <= 0 || h <= 0) return false;
+    if (x < 0 || y < 0 || x + w > width_ || y + h > height_) return false;
+    try {
+        // Reference sequence: stop the DVS, write the four ROI registers,
+        // restore the run state. Registers are written in USER coordinates
+        // (the reference applies only flip adjustments, which this port
+        // does not expose).
+        const bool running = streaming_.load();
+        if (running) spi_config_send(MODULE_DVS, DVS_RUN, false);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_START_COLUMN, x);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_END_COLUMN, x + w - 1);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_START_ROW, y);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_END_ROW, y + h - 1);
+        if (running) spi_config_send(MODULE_DVS, DVS_RUN, true);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool Device::clear_hw_roi() {
+    if (!has_roi_filter_) return false;
+    try {
+        const bool running = streaming_.load();
+        if (running) spi_config_send(MODULE_DVS, DVS_RUN, false);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_START_COLUMN, 0);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_END_COLUMN, width_ - 1);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_START_ROW, 0);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_END_ROW, height_ - 1);
+        if (running) spi_config_send(MODULE_DVS, DVS_RUN, true);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 void Device::configure_idle() {
     // Verify firmware/logic version (reference hard-fails on mismatch).
     {
@@ -613,6 +650,7 @@ void Device::configure_idle() {
     parser_ = Parser(columns, rows, invert_xy);
     parser_.set_imu_model(static_cast<ImuModel>(
         spi_config_receive(MODULE_IMU, IMU_TYPE)));
+    has_roi_filter_ = spi_config_receive(MODULE_DVS, DVS_HAS_ROI_FILTER) != 0;
     const auto aps_columns = static_cast<int>(spi_config_receive(MODULE_APS, APS_SIZE_COLUMNS));
     const auto aps_rows = static_cast<int>(spi_config_receive(MODULE_APS, APS_SIZE_ROWS));
     const auto aps_orientation = spi_config_receive(MODULE_APS, APS_ORIENTATION_INFO);
@@ -706,6 +744,17 @@ void Device::configure_idle() {
     // USB early-packet delay: 1 ms in USB-clock ticks.
     spi_config_send(MODULE_USB, USB_EARLY_PACKET_DELAY,
         static_cast<std::uint32_t>(std::llround(1000.0F * usb_clock_)));
+
+    // Reset the DVS ROI filter to the full sensor — a stale ROI left by a
+    // previous session would silently drop events after reconnect. Same
+    // coordinate convention as set_hw_roi: USER-frame dims (width_/height_,
+    // swapped from the device registers on inverted sensors).
+    if (has_roi_filter_) {
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_START_COLUMN, 0);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_END_COLUMN, width_ - 1);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_START_ROW, 0);
+        spi_config_send(MODULE_DVS, DVS_FILTER_ROI_END_ROW, height_ - 1);
+    }
 
     // Default biases (reference power-up table) + shifted-source biases.
     biases_.apply_defaults();
