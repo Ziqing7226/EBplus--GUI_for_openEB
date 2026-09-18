@@ -152,6 +152,8 @@ python models/convert_hypere2vid_to_onnx.py \
     --input model.pth --output models/hypere2vid.onnx
 ```
 
+> **FireNet+ device note**: the OpenVINO GPU plugin (2026.4, iGPU) executes this graph incorrectly — the output collapses to a near-constant image. The `Auto` device policy therefore resolves FireNet+ to **CPU**; an explicit `GPU` choice is honored but produces the flat output described above (visible as `dev=gpu` in the status line). All other DL modes run correctly on the iGPU.
+
 Notes: E2VID+/FireNet+/HyperE2VID have **no sigmoid head** — their raw output may exceed [0,1]; the display clips like the official pipelines, and **Auto HDR** stretches the range when reconstruction looks flat (typical for FireNet+ on small windows). All models consume RAW voxel grids (no normalization), matching this GUI's voxel builder.
 
 **Sources & licenses** (EB plus redistributes neither weights nor reference code — see the README for download links): rpg_e2vid = GPL-3.0 (imported only at conversion time by your own clone); event_cnn_minimal = no license file, weights shared by the authors for research use; HyperE2VID = MIT. Verify licenses/patents before commercial use.

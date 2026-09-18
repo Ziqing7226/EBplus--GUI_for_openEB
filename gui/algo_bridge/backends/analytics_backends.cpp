@@ -65,6 +65,20 @@ public:
         return gui_algo::EventToVideo::mode_is_dl(m) ? static_cast<int>(m) - 2
                                                      : -1;
     }
+    /// Resolves the user's device policy for the current mode. FireNet+
+    /// executes WRONG on the OpenVINO GPU plugin (upstream 2026.4 iGPU
+    /// issue: the output collapses to a near-constant image — std 0.005 vs
+    /// 0.118 on CPU; the FP32 precision hint does not help; ORT-CPU and
+    /// OV-CPU agree bit-for-bit) — Auto therefore resolves to CPU for that
+    /// mode. An explicit GPU choice is still honored and visible in the
+    /// status line (dev=gpu).
+    int resolved_device() const {
+        if (mode_ == gui_algo::EventToVideo::Mode::FireNetPlus &&
+            e2vid_device_ == 0) {
+            return 1;  // CPU
+        }
+        return e2vid_device_;
+    }
     void rebuild() {
         const int aw = roi_.enabled ? roi_.rw : sensor_w_;
         const int ah = roi_.enabled ? roi_.rh : sensor_h_;
@@ -92,7 +106,7 @@ public:
         // corrected — the model IS loaded here in rebuild(), not deferred).
         // Device policy goes BEFORE the model load so the fresh instance
         // selects its runtime on the first load (no double reload).
-        algo_->set_e2v_device(e2vid_device_);
+        algo_->set_e2v_device(resolved_device());
         const int di = dl_index(mode_);
         if (di >= 0) algo_->set_model_path(model_paths_[di]);
         algo_->set_e2vid_num_bins(e2vid_num_bins_);
@@ -137,6 +151,9 @@ public:
                     // target mode unloads and falls back to heuristic).
                     const int di = dl_index(mode_);
                     if (di >= 0) {
+                        // Re-resolve the device for the new mode BEFORE the
+                        // load (FireNet+ Auto resolves to CPU).
+                        algo_->set_e2v_device(resolved_device());
                         algo_->set_model_path(model_paths_[di]);
                         // Re-sync: the newly loaded model dictates num_bins
                         // (same contract as the model_path branch, BUG-N11).
@@ -205,7 +222,7 @@ public:
             e2vid_device_ = to_i(v);
             // set_device reloads the model from the cached path when the
             // policy changes, so the runtime selection takes effect.
-            if (algo_) algo_->set_e2v_device(e2vid_device_);
+            if (algo_) algo_->set_e2v_device(resolved_device());
         } else if (k == "num_bins") {
             e2vid_num_bins_ = to_i(v);
             if (algo_) {
