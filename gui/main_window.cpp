@@ -50,6 +50,7 @@
 #include "app/icon_provider.h"
 #include "display/display_strategy.h"
 #include "widgets/activity_bar.h"
+#include "widgets/aps_window.h"
 #include "widgets/imu_window.h"
 #include "widgets/unified_roi_dialog.h"
 
@@ -749,6 +750,7 @@ void MainWindow::wire_signals() {
     // Phase 2: IMU stream toggle (Devices panel) — enables the inivation
     // IMU stream and opens the live readout window.
     connect(dp, &DevicesPanel::imu_stream_toggled, this, &MainWindow::on_imu_toggled);
+    connect(dp, &DevicesPanel::aps_stream_toggled, this, &MainWindow::on_aps_toggled);
     // Sensor self-test — opens a Standalone AlgoWindow with the refractory-
     // period heatmap. On close, a report dialog is shown (design §4.4.8).
     connect(dp, &DevicesPanel::self_test_requested, this, [this]() {
@@ -866,6 +868,8 @@ void MainWindow::wire_signals() {
         settings_->apply_source_capabilities(caps.trigger, caps.esp);
         settings_->devices_panel()->set_imu_available(caps.imu);
         set_imu_ui_state(camera_.imu_enabled());
+        settings_->devices_panel()->set_aps_available(caps.aps);
+        set_aps_ui_state(camera_.aps_enabled());
     });
     connect(&camera_, &CameraController::disconnected, this, [this]() {
         // Explicitly remove the CD callback before clearing the ID, so the
@@ -900,6 +904,8 @@ void MainWindow::wire_signals() {
         // readout window.
         if (imu_window_) imu_window_->close();
         settings_->devices_panel()->set_imu_available(false);
+        if (aps_window_) aps_window_->close();
+        settings_->devices_panel()->set_aps_available(false);
         roi_draw_pending_ = false;
         on_toggle_roi_drag(false);
         display_->clear();
@@ -2356,6 +2362,33 @@ void MainWindow::on_imu_toggled(bool on) {
 
 void MainWindow::set_imu_ui_state(bool on) {
     if (auto* dp = settings_->devices_panel()) dp->set_imu_checked(on);
+}
+
+void MainWindow::on_aps_toggled(bool on) {
+    if (on) {
+        if (!camera_.set_aps_enabled(true)) {
+            set_aps_ui_state(false);
+            statusBar()->showMessage(tr("APS frames not available for this source."), 3000);
+            return;
+        }
+        if (!aps_window_) {
+            aps_window_ = new ApsWindow(&camera_, this);
+            connect(aps_window_, &ApsWindow::window_closed, this, [this]() {
+                camera_.set_aps_enabled(false);
+                set_aps_ui_state(false);
+            });
+        }
+        aps_window_->show();
+        aps_window_->raise();
+        statusBar()->showMessage(tr("APS stream enabled"), 2000);
+    } else {
+        camera_.set_aps_enabled(false);
+        if (aps_window_) aps_window_->close();
+    }
+}
+
+void MainWindow::set_aps_ui_state(bool on) {
+    if (auto* dp = settings_->devices_panel()) dp->set_aps_checked(on);
 }
 
 } // namespace gui

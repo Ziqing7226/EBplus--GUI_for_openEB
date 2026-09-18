@@ -110,6 +110,7 @@ Then **unplug and replug the camera** (so the session permission tag applies), a
 | RAW recording | ❌ (no `I_EventsStream`) | ❌ |
 | ROI / Trigger / ESP panels | ROI ❌ · Trigger/ESP auto-hidden (no facilities) | Trigger/ESP auto-hidden (no facilities) |
 | IMU stream (checkbox + live readout window) | ✅ | ✅ |
+| APS frames (checkbox + live preview window) | ✅ (grayscale) | ❌ (no APS hardware) |
 | APS frames / trigger streams | discarded by design | discarded by design |
 
 Firmware requirements — DAVIS: FX3 firmware 6, FX2 firmware 4, FPGA logic version 18 patch ≥ 1; DVXplorer: FX3 firmware 9, FPGA logic version 18 patch ≥ 4 (checked at connect — a clear error is shown otherwise).

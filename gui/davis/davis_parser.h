@@ -11,12 +11,13 @@
 //     1 → Y address (data = y)
 //     2 → X address, polarity OFF
 //     3 → X address, polarity ON
-//     4/5/6 → APS pixel / IMU / misc data (consumed, ignored for events)
+//     4     → APS pixel value (decoded when the APS stream is enabled)
+//     5/6   → IMU / misc data (IMU decoded; misc10 ignored)
 //     7 → timestamp wrap: wrapAdd += 0x8000 * data
 // Events are emitted with timestamps rebased to 0 at the first timestamp
-// reset/word, sorted by construction. APS frame data and IMU samples are
-// consumed and discarded (the GUI is events-only). Out-of-range coordinates
-// are dropped (the reference asserts; dropping is safer in a GUI).
+// reset/word, sorted by construction. IMU samples and APS frames are decoded
+// via set_imu_sink/set_aps_sink consumers (Phase 2/3). Out-of-range
+// coordinates are dropped (the reference asserts; dropping is safer).
 
 #ifndef GUI_DAVIS_DAVIS_PARSER_H
 #define GUI_DAVIS_DAVIS_PARSER_H
@@ -28,6 +29,7 @@
 
 #include <metavision/sdk/base/events/event_cd.h>
 
+#include "aps_decoder.h"
 #include "imu_decoder.h"
 #include "imu_types.h"
 
@@ -62,6 +64,16 @@ public:
     /// temperature formula. Default: Bosch BMI160.
     void set_imu_model(ImuModel model) { imu_.set_model(model); }
 
+    /// Completed APS frames (grayscale) — invoked from the USB thread when
+    /// the APS stream is enabled on the device.
+    void set_aps_sink(const ApsFrameSink& sink) { aps_.set_sink(sink); }
+
+    /// APS sensor configuration (chip model, APS register dimensions before
+    /// orientation swap, MODULE_APS orientation info).
+    void set_aps_config(int model, int device_width, int device_height, int orientation) {
+        aps_.configure(model, device_width, device_height, orientation);
+    }
+
     /// Full reset (device re-open).
     void reset();
 
@@ -80,6 +92,9 @@ private:
 
     // DAVIS: X/Y tags carry X first; temperature formula by chip model.
     ImuDecoder imu_{false, false};
+
+    // APS frame stream (DAVIS-only hardware).
+    ApsDecoder aps_;
 
     std::vector<Metavision::EventCD> batch_;
 };

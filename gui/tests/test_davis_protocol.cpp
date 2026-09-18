@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "davis/aps_decoder.h"
 #include "davis/davis_biases.h"
 #include "davis/davis_parser.h"
 #include "davis/dvxplorer_parser.h"
@@ -702,6 +703,143 @@ TEST(DvxImu, IncompleteSequenceDiscarded) {
     std::vector<std::uint16_t> words{special_word(5), imu_scale_word(7, 1, 2)};
     for (int i = 0; i < 13; ++i) words.push_back(imu_data_word(0x11));  // one short
     words.push_back(special_word(7));
+    feed(parser, words, dropped);
+    EXPECT_FALSE(called);
+}
+
+
+// ---------------------------------------------------------------------------
+// APS frame decode (davis Parser: column readouts + CDS + frame emission).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Feeds one rolling-shutter frame: 4 columns × 3 rows, each column a reset
+// pass followed by a signal pass. `reset_raw`/`signal_raw` repeat for all
+// pixels. Returns the emitted frame (valid=false if discarded).
+gui::davis::ApsFrame feed_aps_frame(gui::davis::Parser& parser, std::uint16_t reset_raw,
+                                    std::uint16_t signal_raw, std::uint16_t exposure_ts) {
+    gui::davis::ApsFrame got;
+    parser.set_aps_sink([&got](const gui::davis::ApsFrame& f) { got = f; });
+
+    std::vector<Metavision::EventCD> dropped;
+    std::vector<std::uint16_t> words{special_word(9), ts_word(1000), ts_word(exposure_ts),
+        special_word(14)};
+    for (int col = 0; col < 4; ++col) {
+        words.push_back(special_word(11));  // reset column start
+        for (int row = 0; row < 3; ++row) words.push_back(aps_pixel_word(reset_raw));
+        words.push_back(special_word(13));  // column end
+        words.push_back(special_word(12));  // signal column start
+        for (int row = 0; row < 3; ++row) words.push_back(aps_pixel_word(signal_raw));
+        words.push_back(special_word(13));
+    }
+    words.push_back(special_word(10));  // frame end
+    feed(parser, words, dropped);
+    return got;
+}
+
+} // namespace
+
+TEST(DavisAps, CdsFrameDecodedWithSaturations) {
+    gui::davis::Parser parser(4, 3, false);
+    parser.set_aps_config(5, 4, 3, 0);  // DAVIS346-like model, no inversion.
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1)}, dropped);  // rebase timestamps
+
+    // Normal exposure: reset 800 → 200, signal 400 → 100 → CDS 100.
+    const auto frame = feed_aps_frame(parser, 800, 400, 1500);
+    ASSERT_TRUE(frame.valid);
+    EXPECT_EQ(frame.t, 500);  // exposure start (1500) − base (1000)
+    EXPECT_EQ(frame.width, 4);
+    EXPECT_EQ(frame.height, 3);
+    EXPECT_FLOAT_EQ(frame.image.at<std::uint8_t>(0, 0), 100.0F);
+    EXPECT_FLOAT_EQ(frame.image.at<std::uint8_t>(2, 3), 100.0F);
+
+    // Low reset (300 → 75 < the 96 cutoff) → saturated pixel forced white.
+    const auto clipped = feed_aps_frame(parser, 300, 100, 1600);
+    ASSERT_TRUE(clipped.valid);
+    EXPECT_FLOAT_EQ(clipped.image.at<std::uint8_t>(1, 1), 255.0F);
+
+    // Zero signal (tons of light) → saturated pixel forced white.
+    const auto blinding = feed_aps_frame(parser, 800, 0, 1700);
+    ASSERT_TRUE(blinding.valid);
+    EXPECT_FLOAT_EQ(blinding.image.at<std::uint8_t>(0, 2), 255.0F);
+}
+
+TEST(DavisAps, InvertedSensorTransposesReadout) {
+    // DAVIS346-style orientation (invertXY): 3 device columns × 4 device
+    // rows → 4×3 user frame; consecutive pixel words within a column land
+    // along the USER x axis.
+    gui::davis::Parser parser(3, 4, true);
+    parser.set_aps_config(5, 3, 4, 4);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1)}, dropped);
+
+    gui::davis::ApsFrame got;
+    parser.set_aps_sink([&got](const gui::davis::ApsFrame& f) { got = f; });
+
+    std::vector<std::uint16_t> words{special_word(9), ts_word(100), special_word(14)};
+    for (int col = 0; col < 3; ++col) {
+        words.push_back(special_word(11));
+        for (int row = 0; row < 4; ++row) {
+            words.push_back(aps_pixel_word(800));  // reset → 200 everywhere
+        }
+        words.push_back(special_word(13));
+        words.push_back(special_word(12));
+        for (int row = 0; row < 4; ++row) {
+            words.push_back(aps_pixel_word(static_cast<std::uint16_t>(400 + 40 * row)));
+            // signal → 100 + 10·row; CDS → 200 − (100 + 10·row) = 100 − 10·row
+        }
+        words.push_back(special_word(13));
+    }
+    words.push_back(special_word(10));
+    feed(parser, words, dropped);
+
+    ASSERT_TRUE(got.valid);
+    EXPECT_EQ(got.width, 4);
+    EXPECT_EQ(got.height, 3);
+    // First column (countX=0) walks user y=0, x=0..3 after the transpose.
+    EXPECT_FLOAT_EQ(got.image.at<std::uint8_t>(0, 0), 100);
+    EXPECT_FLOAT_EQ(got.image.at<std::uint8_t>(0, 1), 90);
+    EXPECT_FLOAT_EQ(got.image.at<std::uint8_t>(0, 2), 80);
+    EXPECT_FLOAT_EQ(got.image.at<std::uint8_t>(0, 3), 70);
+}
+
+TEST(DavisAps, Davis240GainShift) {
+    // DAVIS240 models shift the 10-bit ADC value by one to compensate the
+    // reduced dynamic range (reference): 800 → clamp(1600, 0, 1023) → 255.
+    gui::davis::Parser parser(4, 3, false);
+    parser.set_aps_config(0, 4, 3, 0);  // DAVIS240A
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1)}, dropped);
+
+    const auto frame = feed_aps_frame(parser, 800, 400, 100);
+    ASSERT_TRUE(frame.valid);
+    // Both passes shift: reset 800 → clamp(1600) = 1023 → 255; signal
+    // 400 → clamp(800) = 800 → 200; CDS = 255 − 200 = 55.
+    EXPECT_FLOAT_EQ(frame.image.at<std::uint8_t>(0, 0), 55);
+}
+
+TEST(DavisAps, IncompleteColumnCountDiscardsFrame) {
+    gui::davis::Parser parser(4, 3, false);
+    parser.set_aps_config(5, 4, 3, 0);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1)}, dropped);
+
+    bool called = false;
+    parser.set_aps_sink([&called](const gui::davis::ApsFrame&) { called = true; });
+
+    // Drop the last column entirely: countX ends at 3, expected 4.
+    std::vector<std::uint16_t> words{special_word(9), special_word(14)};
+    for (int col = 0; col < 3; ++col) {
+        words.push_back(special_word(11));
+        for (int row = 0; row < 3; ++row) words.push_back(aps_pixel_word(800));
+        words.push_back(special_word(13));
+        words.push_back(special_word(12));
+        for (int row = 0; row < 3; ++row) words.push_back(aps_pixel_word(400));
+        words.push_back(special_word(13));
+    }
+    words.push_back(special_word(10));
     feed(parser, words, dropped);
     EXPECT_FALSE(called);
 }

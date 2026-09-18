@@ -72,6 +72,13 @@ public:
     /// once, and re-applied by start() while @p on).
     void set_imu_enabled(bool on);
     [[nodiscard]] bool imu_enabled() const { return imu_enabled_; }
+    /// Completed APS frames — invoked from the USB thread when the APS
+    /// stream is enabled.
+    void set_aps_sink(const ApsFrameSink& sink);
+    /// Enables/disables the APS stream (MODULE_APS / APS_RUN; applied at
+    /// once, and re-applied by start() while @p on).
+    void set_aps_enabled(bool on);
+    [[nodiscard]] bool aps_enabled() const { return aps_enabled_; }
 
     /// Starts event streaming (data transfers + run switches + timestamp
     /// reset handshake; blocks up to ~1 s waiting for the reset marker).
@@ -145,6 +152,7 @@ private:
     GoneCallback gone_callback_;
     std::atomic<bool> streaming_{false};
     bool imu_enabled_{false};
+    bool aps_enabled_{false};
 };
 
 } // namespace gui::davis

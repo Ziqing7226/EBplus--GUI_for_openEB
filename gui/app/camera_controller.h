@@ -151,6 +151,7 @@ public:
         bool trigger{false};  ///< I_TriggerIn or I_TriggerOut present.
         bool esp{false};      ///< Anti-flicker, trail or ERC module present.
         bool imu{false};      ///< inivation IMU6 stream (enable + read out).
+        bool aps{false};      ///< inivation APS frames (DAVIS only).
     };
     SourceCapabilities source_capabilities();
 
@@ -166,6 +167,14 @@ public:
     /// thread; the sample arrives on the libusb thread.
     davis::ImuSample latest_imu() const;
     [[nodiscard]] long imu_sample_count() const;
+    /// @brief Enables/disables the DAVIS APS frame stream (MODULE_APS /
+    /// APS_RUN; session-scoped like the IMU flag). Returns false for
+    /// sources without APS frames (DVXplorer, SDK cameras, files).
+    bool set_aps_enabled(bool on);
+    [[nodiscard]] bool aps_enabled() const { return aps_enabled_; }
+    /// Latest completed APS frame (cloned under the mutex).
+    davis::ApsFrame latest_aps_frame() const;
+    [[nodiscard]] long aps_frame_count() const;
 #endif
 
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
@@ -337,6 +346,13 @@ private:
     davis::ImuSample imu_latest_{};
     long imu_count_{0};
     void on_imu_sample(const davis::ImuSample& sample);
+
+    /// APS frame stream state (DAVIS only; same session-scoped pattern).
+    bool aps_enabled_{false};
+    mutable std::mutex aps_mutex_;
+    davis::ApsFrame aps_latest_{};
+    long aps_count_{0};
+    void on_aps_frame(const davis::ApsFrame& frame);
 #endif
     /// External (non-SDK) file source and its reader thread. Mutually
     /// exclusive with camera_: only one is ever set.

@@ -551,6 +551,15 @@ void Device::set_imu_enabled(bool on) {
     }
 }
 
+void Device::set_aps_sink(const ApsFrameSink& sink) {
+    parser_.set_aps_sink(sink);
+}
+
+void Device::set_aps_enabled(bool on) {
+    aps_enabled_ = on;
+    if (streaming_.load()) spi_config_send(MODULE_APS, APS_RUN, on);
+}
+
 void Device::configure_idle() {
     // Verify firmware/logic version (reference hard-fails on mismatch).
     {
@@ -604,6 +613,10 @@ void Device::configure_idle() {
     parser_ = Parser(columns, rows, invert_xy);
     parser_.set_imu_model(static_cast<ImuModel>(
         spi_config_receive(MODULE_IMU, IMU_TYPE)));
+    const auto aps_columns = static_cast<int>(spi_config_receive(MODULE_APS, APS_SIZE_COLUMNS));
+    const auto aps_rows = static_cast<int>(spi_config_receive(MODULE_APS, APS_SIZE_ROWS));
+    const auto aps_orientation = spi_config_receive(MODULE_APS, APS_ORIENTATION_INFO);
+    parser_.set_aps_config(chip_id, aps_columns, aps_rows, static_cast<int>(aps_orientation));
 
     // Shut the device down into a known idle state before configuring.
     spi_config_send(MODULE_DVS, DVS_RUN, false);
@@ -737,6 +750,7 @@ void Device::start() {
             spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, true);
             spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, true);
         }
+        if (aps_enabled_) spi_config_send(MODULE_APS, APS_RUN, true);
         send_timestamp_reset();
         if (!wait_for_timestamp_reset()) {
             throw std::runtime_error("DAVIS: no timestamp reset received — stream did not start.");
@@ -767,6 +781,7 @@ void Device::stop() {
             spi_config_send(MODULE_IMU, IMU_RUN_GYROSCOPE, false);
             spi_config_send(MODULE_IMU, IMU_RUN_TEMPERATURE, false);
         }
+        if (aps_enabled_) spi_config_send(MODULE_APS, APS_RUN, false);
         spi_config_send(MODULE_MULTIPLEXER, MUX_RUN, false);
         spi_config_send(MODULE_MULTIPLEXER, MUX_TIMESTAMP_RUN, false);
         spi_config_send(MODULE_USB, USB_RUN, false);

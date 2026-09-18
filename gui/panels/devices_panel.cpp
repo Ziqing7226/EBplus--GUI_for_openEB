@@ -67,9 +67,25 @@ DevicesPanel::DevicesPanel(QWidget* parent) : AbstractPanel(parent) {
     imu_row_->setVisible(false);
     layout->addWidget(imu_row_);
 
+    // Phase 3: APS frame stream toggle (DAVIS only).
+    aps_row_ = new QWidget(this);
+    auto* aps_layout = new QHBoxLayout(aps_row_);
+    aps_layout->setContentsMargins(0, 0, 0, 0);
+    aps_check_ = new QCheckBox(tr("APS frames (grayscale preview)"), aps_row_);
+    aps_check_->setToolTip(
+        tr("<b>APS frames</b><br><br>"
+           "Reads the camera's active-pixel sensor frames (the grayscale "
+           "imaging sensor alongside the event sensor) and opens a live "
+           "preview window."));
+    aps_layout->addWidget(aps_check_);
+    aps_row_->setLayout(aps_layout);
+    aps_row_->setVisible(false);
+    layout->addWidget(aps_row_);
+
     set_connected(false);
 
     connect(imu_check_, &QCheckBox::toggled, this, &DevicesPanel::imu_stream_toggled);
+    connect(aps_check_, &QCheckBox::toggled, this, &DevicesPanel::aps_stream_toggled);
     connect(btn_refresh_, &QPushButton::clicked, this, &DevicesPanel::refresh_requested);
     connect(btn_connect_first_, &QPushButton::clicked, this, &DevicesPanel::connect_first_requested);
     connect(btn_connect_selected_, &QPushButton::clicked, this, [this]() {
@@ -113,6 +129,16 @@ void DevicesPanel::set_imu_available(bool available) {
 void DevicesPanel::set_imu_checked(bool on) {
     const QSignalBlocker block(imu_check_);
     imu_check_->setChecked(on);
+}
+
+void DevicesPanel::set_aps_available(bool available) {
+    aps_row_->setVisible(available);
+    if (!available) set_aps_checked(false);
+}
+
+void DevicesPanel::set_aps_checked(bool on) {
+    const QSignalBlocker block(aps_check_);
+    aps_check_->setChecked(on);
 }
 
 } // namespace gui

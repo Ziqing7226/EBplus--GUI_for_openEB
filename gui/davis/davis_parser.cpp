@@ -18,6 +18,7 @@ void Parser::reset() {
     current_ = 0;
     last_y_ = 0;
     imu_.reset();
+    aps_.reset();
     batch_.clear();
 }
 
@@ -62,6 +63,20 @@ void Parser::parse(const std::uint8_t* data, std::size_t size, const EventSink& 
                     imu_.start();  // IMU start (6 axes).
                 } else if (data_part == 7) {
                     imu_.end(t0_set_ ? (current_ - t0_) : current_);
+                } else if (data_part == 8) {
+                    aps_.frame_start(true);  // APS global-shutter frame start.
+                } else if (data_part == 9) {
+                    aps_.frame_start(false);  // APS rolling-shutter frame start.
+                } else if (data_part == 10) {
+                    aps_.frame_end(t0_set_ ? (current_ - t0_) : current_);
+                } else if (data_part == 11) {
+                    aps_.reset_col_start();
+                } else if (data_part == 12) {
+                    aps_.signal_col_start();
+                } else if (data_part == 13) {
+                    aps_.col_end();
+                } else if (data_part == 14) {
+                    aps_.exposure_start(t0_set_ ? (current_ - t0_) : current_);
                 }
                 break;
 
@@ -93,12 +108,20 @@ void Parser::parse(const std::uint8_t* data, std::size_t size, const EventSink& 
                 break;
             }
 
+            case 4:  // APS pixel: 12-bit ADC value.
+                aps_.pixel(data_part);
+                break;
+
             case 5: { // Misc8 data: low 4 bits = code, low byte = data.
                 const auto misc8_code =
                     static_cast<std::uint8_t>((data_part & 0x0F00) >> 8);
                 const auto misc8_data = static_cast<std::uint8_t>(data_part & 0x00FF);
                 if (misc8_code == 0) {
                     imu_.data_byte(misc8_data);
+                } else if (misc8_code == 1) {
+                    aps_.roi_part1(misc8_data);
+                } else if (misc8_code == 2) {
+                    aps_.roi_part2(misc8_data);
                 } else if (misc8_code == 3) {
                     imu_.scale_config(data_part);
                 }
@@ -112,8 +135,7 @@ void Parser::parse(const std::uint8_t* data, std::size_t size, const EventSink& 
             }
 
             default:
-                // 4 = APS pixel, 6 = misc10 — consumed and ignored
-                // (events-only stream).
+                // 6 = misc10 — consumed and ignored (events-only stream).
                 break;
         }
     }

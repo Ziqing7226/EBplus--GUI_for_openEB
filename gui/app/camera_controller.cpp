@@ -218,6 +218,8 @@ bool CameraController::connect_davis(const davis::DeviceDescriptor& descriptor) 
     });
     davis_device_->set_imu_sink([this](const davis::ImuSample& s) { on_imu_sample(s); });
     davis_device_->set_imu_enabled(imu_enabled_);
+    davis_device_->set_aps_sink([this](const davis::ApsFrame& f) { on_aps_frame(f); });
+    davis_device_->set_aps_enabled(aps_enabled_);
 
     emit connected(sensor_info_);
     return true;
@@ -679,6 +681,7 @@ CameraController::SourceCapabilities CameraController::source_capabilities() {
     // panels hide.
     if (davis_device_ || dvx_device_) {
         caps.imu = true;
+        caps.aps = davis_device_ != nullptr;  // APS frames: DAVIS only.
         return caps;
     }
 #endif
@@ -717,6 +720,33 @@ void CameraController::on_imu_sample(const davis::ImuSample& sample) {
     std::lock_guard<std::mutex> lock(imu_mutex_);
     imu_latest_ = sample;
     ++imu_count_;
+}
+
+bool CameraController::set_aps_enabled(bool on) {
+    if (!davis_device_) return false;  // APS frames are DAVIS-only.
+    aps_enabled_ = on;
+    davis_device_->set_aps_enabled(on);
+    if (on) {
+        std::lock_guard<std::mutex> lock(aps_mutex_);
+        aps_count_ = 0;  // fresh session for the rate display
+    }
+    return true;
+}
+
+davis::ApsFrame CameraController::latest_aps_frame() const {
+    std::lock_guard<std::mutex> lock(aps_mutex_);
+    return aps_latest_;
+}
+
+long CameraController::aps_frame_count() const {
+    std::lock_guard<std::mutex> lock(aps_mutex_);
+    return aps_count_;
+}
+
+void CameraController::on_aps_frame(const davis::ApsFrame& frame) {
+    std::lock_guard<std::mutex> lock(aps_mutex_);
+    aps_latest_ = frame;
+    ++aps_count_;
 }
 #endif
 facility::CameraSync* CameraController::camera_sync_facility() {
@@ -1074,6 +1104,12 @@ void CameraController::teardown() {
         std::lock_guard<std::mutex> lock(imu_mutex_);
         imu_latest_ = davis::ImuSample{};
         imu_count_ = 0;
+    }
+    aps_enabled_ = false;
+    {
+        std::lock_guard<std::mutex> lock(aps_mutex_);
+        aps_latest_ = davis::ApsFrame{};
+        aps_count_ = 0;
     }
 #endif
     // 0. Stop the external reader FIRST: it feeds statistics_ and

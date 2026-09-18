@@ -70,6 +70,7 @@ class ExportDialog;
 class CalibrationWizard;
 class FocusDialog;
 class ImuWindow;
+class ApsWindow;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -121,6 +122,9 @@ private slots:
     void on_imu_toggled(bool on);
     /// Devices-panel IMU toggle (programmatic state sync).
     void set_imu_ui_state(bool on);
+    /// Phase 3: APS stream toggle from the Devices panel.
+    void on_aps_toggled(bool on);
+    void set_aps_ui_state(bool on);
     void on_open_algo_window(const std::string& algo_name);
     void on_save_layout();
     void on_load_layout();
@@ -259,6 +263,8 @@ private:
     std::shared_ptr<AlgoInstance> xyt_algo_;
     // Phase 2: live IMU readout window (inivation sources only).
     QPointer<ImuWindow> imu_window_;
+    // Phase 3: live APS frame preview window (DAVIS only).
+    QPointer<ApsWindow> aps_window_;
 
     /// Generic AlgoWindow instances keyed by algo name (design §5.6.6).
     /// Every self-developed algorithm gets an AlgoWindow when enabled, so the
