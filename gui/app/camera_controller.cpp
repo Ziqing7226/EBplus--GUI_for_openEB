@@ -869,15 +869,15 @@ bool CameraController::set_auto_bias_enabled(bool on) {
         if (dvx_device_) {
             // Phase 5 — DVXplorer: no diff biases; the ON/OFF contrast
             // thresholds (0-17) are the two control axes. Bound by exact
-            // name, homing toward the reference defaults (9/9), and BOTH
-            // delta signs flipped: a higher contrast threshold yields
-            // FEWER events of that polarity (inverted vs diff biases).
+            // name, homing toward the reference defaults (9/9). Delta
+            // signs stay at the default +1: the controller's convention is
+            // "positive delta = fewer events of that polarity", and a
+            // higher contrast register means exactly that (hardware-
+            // measured: contrast 0 floods at ~19 Mev/s, 12 is quiet).
             if (!bias_applier_.attach_axes(biases_facility(),
                                            "contrast_on", "contrast_off")) {
                 return false;
             }
-            bias_applier_.set_on_delta_sign(-1);
-            bias_applier_.set_off_delta_sign(-1);
             bias_applier_.set_home_targets(9, 9);
         } else
 #endif

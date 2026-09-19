@@ -105,7 +105,7 @@ Then **unplug and replug the camera** (so the session permission tag applies), a
 |---------|--------------|--------------------------|-----------|
 | Live event preview, all display modes | ✅ | ✅ | ✅ |
 | Biases panel, save/load `.bias` | ✅ (full coarse/fine + VDAC set) | ✅ (own 240 bias map; CDAVIS = 346 set) | ✅ (`contrast_on`/`contrast_off` only) |
-| Auto Bias controller | ✅ (`diff_on`/`diff_off`, homes to 1535/1025) | ✅ (same axes; homes to 1535/1024 on 240) | ✅ (`contrast_on`/`contrast_off`, both axes inverted — higher threshold = fewer events; homes to 9/9; coarse 18-step control) |
+| Auto Bias controller | ✅ (`diff_on`/`diff_off`, homes to 1535/1025) | ✅ (same axes; homes to 1535/1024 on 240) | ✅ (`contrast_on`/`contrast_off`, homes to the 9/9 defaults; coarse 18-step control; hardware-verified 2026-09-19) |
 | Algorithms (all), unified software ROI, statistics | ✅ | ✅ | ✅ |
 | Hardware ROI filter | ✅ keep-inside (falls back to software) | ✅ | ❌ (software only) |
 | RAW recording | ✅ AEDAT4 (DV-native; processed-stream recording too) | ✅ AEDAT4 | ✅ AEDAT4 |

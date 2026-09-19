@@ -434,22 +434,21 @@ public:
     std::map<std::string, int> state_{{"contrast_on", 9}, {"contrast_off", 9}};
 };
 
-TEST(BiasApplier, ContrastAxesAttachAndInvertBothSigns) {
-    // DVXplorer adaptation: exact-name axes and BOTH delta signs flipped
-    // (higher contrast threshold → fewer events of that polarity).
+TEST(BiasApplier, ContrastAxesAttachDefaultSigns) {
+    // DVXplorer adaptation: exact-name axes. The controller's convention is
+    // "positive delta = fewer events of that polarity", and a higher
+    // contrast register means exactly that — so the DEFAULT +1 signs are
+    // correct (no flip; hardware-measured: contrast 0 floods at ~19 Mev/s).
     FakeContrastBiases fake;
     gui::BiasApplier applier;
     ASSERT_TRUE(applier.attach_axes(&fake, "contrast_on", "contrast_off"));
-    applier.set_on_delta_sign(-1);
-    applier.set_off_delta_sign(-1);
 
     EXPECT_EQ(applier.apply(4, 4), gui::BiasApplier::Status::Ok);
-    EXPECT_EQ(fake.state_.at("contrast_on"), 5);   // 9 − 4
-    EXPECT_EQ(fake.state_.at("contrast_off"), 5);
+    EXPECT_EQ(fake.state_.at("contrast_on"), 13);  // 9 + 4
+    EXPECT_EQ(fake.state_.at("contrast_off"), 13);
 
-    // Clamp: with inverted signs a negative user delta RAISES the register,
-    // so the values run into the HIGH range limit (17).
-    EXPECT_EQ(applier.apply(-20, -20), gui::BiasApplier::Status::Clamped);
+    // Clamp at the high range limit.
+    EXPECT_EQ(applier.apply(20, 20), gui::BiasApplier::Status::Clamped);
     EXPECT_EQ(fake.state_.at("contrast_on"), 17);
     EXPECT_EQ(fake.state_.at("contrast_off"), 17);
 }
