@@ -2,21 +2,38 @@
 //
 // Gyro-dominant design modeled on dv-processing's RotationIntegrator
 // (the reference has NO accel-fused attitude estimator: it integrates
-// the gyroscope alone and takes the gyro bias as a CONSTANT offset).
-// We adopt that model and measure the constant ourselves: the first
-// ~1 s of qualified (still, ~1 g) samples gives the bias, subtracted
-// from every sample afterwards. On top of it sits a weak, MOTION-GATED
-// roll/pitch correction from the accelerometer gravity reference
-// (Mahony et al., "Nonlinear complementary filters on the special
-// orthogonal group", IEEE TAC 2008 — proportional term only).
+// the gyroscope alone and takes the gyro bias as a CONSTANT offset,
+// measured offline by its imu-bias-estimation utility — a static
+// capture averaged over ~1 s). We keep that constant-offset model but
+// refine the constant online, ONLY while the chip is provably still:
+// near 1 g, below 10 deg/s, AND with the attitude already agreeing
+// with gravity (tilt error small). Under those conditions gyro − bias
+// is pure bias, so the estimate converges in seconds and keeps
+// tracking temperature drift over long sessions; any real motion
+// freezes it, so it cannot absorb the specific-force error that
+// corrupts online bias trackers (hardware-proven failure mode on the
+// DAVIS346: a Mahony integral driven from the accel error produced a
+// large closed-path residual).
 //
-// The Mahony INTEGRAL (online bias tracking) is deliberately absent:
-// during motion the accelerometer measures specific force, not gravity,
-// so a bias tracker fed from the accel error is corrupted exactly when
-// the camera moves — observed on the real DAVIS346 as a large
-// closed-path residual. A constant offset cannot be corrupted; its
-// cost is slow yaw wander from the residual (0.01–0.05 deg/s), and
-// yaw has no absolute reference anyway (no magnetometer).
+// On top sits a weak roll/pitch correction from the accelerometer gravity
+// reference (Mahony et al., IEEE TAC 2008 — proportional term only),
+// applied ONLY at rest (near 1 g AND below 10 deg/s — the same rest gate
+// as the bias leak). Between rest points the attitude is PURE
+// bias-subtracted gyro integration: during motion the accelerometer
+// measures specific force, not gravity, and letting it touch the attitude
+// feeds path error into the integrator and breaks loop closure (observed
+// on the DAVIS346; the reference RotationIntegrator is "perfect" at
+// closed paths for exactly the reason that it never lets the accel near
+// the attitude). At rest the gravity reference re-anchors roll/pitch, so
+// the display stays meaningful over long sessions while every motion
+// segment stays gyro-pure. Yaw has no absolute reference (no
+// magnetometer): alignment sets yaw = 0 and it then wanders at the
+// residual-bias rate — disclosed physics, same in the reference.
+//
+// Initialization is instant: the first near-1 g sample aligns the
+// attitude (bias starts at 0 and refines in the background; the accel
+// correction already holds roll/pitch to ~bias/(2kp) ≈ 0.4 deg in the
+// meantime).
 //
 // Chip-agnostic: consumes gyro (deg/s) and accel (g) samples, so it
 // works unchanged for DAVIS346 and DVXplorer (the wire decoders
@@ -39,14 +56,10 @@ public:
     ///        cross-product error; higher = faster convergence, more noise)
     explicit ImuPose(double kp = 2.0) : two_kp_(2.0 * kp) {}
 
-    /// Drops the attitude, the bias and the capture window.
+    /// Drops the attitude and the bias estimate.
     void reset() {
         w_ = 1; x_ = 0; y_ = 0; z_ = 0;
         bias_x_ = bias_y_ = bias_z_ = 0;
-        sum_ax_ = sum_ay_ = sum_az_ = 0;
-        sum_gx_ = sum_gy_ = sum_gz_ = 0;
-        capture_n_ = 0;
-        capture_t0_ = -1;
         aligned_ = false;
         last_t_ = -1;
     }
@@ -56,40 +69,14 @@ public:
         const double ax = s.accel_x, ay = s.accel_y, az = s.accel_z;
         const double amag = std::sqrt(ax * ax + ay * ay + az * az);
         const bool gravity_ok = amag > 0.7 && amag < 1.3;
-        const double gm =
-            std::sqrt(s.gyro_x * s.gyro_x + s.gyro_y * s.gyro_y +
-                      s.gyro_z * s.gyro_z);
 
-        // Phase 1 — bias capture (dv's constant gyroscopeOffset, measured
-        // instead of passed in): accumulate a ~1 s still window. Any sample
-        // that is not near-1 g or not still restarts the window.
+        // Initial alignment: orient the sensor frame so the estimated
+        // body-frame up (= R^T · (0,0,1), what the correction compares
+        // against the accel) equals the measured gravity direction. That
+        // is the rotation taking the measurement TO world up: axis = m × z.
         if (!aligned_) {
-            if (!gravity_ok || gm >= kStillGyroDps) {
-                capture_n_ = 0;
-                sum_ax_ = sum_ay_ = sum_az_ = 0;
-                sum_gx_ = sum_gy_ = sum_gz_ = 0;
-                capture_t0_ = -1;
-                return;
-            }
-            if (capture_n_ == 0) capture_t0_ = s.t;
-            sum_ax_ += ax; sum_ay_ += ay; sum_az_ += az;
-            sum_gx_ += s.gyro_x; sum_gy_ += s.gyro_y; sum_gz_ += s.gyro_z;
-            ++capture_n_;
-            const bool span_ok = s.t - capture_t0_ >= kBiasWindowUs &&
-                                 capture_n_ >= kBiasWindowMinSamples;
-            if (!span_ok) return;
-            const double n = static_cast<double>(capture_n_);
-            bias_x_ = sum_gx_ / n;
-            bias_y_ = sum_gy_ / n;
-            bias_z_ = sum_gz_ / n;
-            // Initial alignment: orient the sensor frame so the estimated
-            // body-frame up (= R^T · (0,0,1), what the correction compares
-            // against the accel) equals the mean measured gravity direction.
-            // That is the rotation taking the measurement TO world up:
-            // axis = m × z.
-            const double mx = sum_ax_ / n, my = sum_ay_ / n, mz = sum_az_ / n;
-            const double mn = std::sqrt(mx * mx + my * my + mz * mz);
-            const double nx = mx / mn, ny = my / mn, nz = mz / mn;
+            if (!gravity_ok) return;
+            const double nx = ax / amag, ny = ay / amag, nz = az / amag;
             const double angle = std::acos(std::clamp(nz, -1.0, 1.0));
             double axis_x = ny, axis_y = -nx;
             const double axis_norm = std::sqrt(axis_x * axis_x + axis_y * axis_y);
@@ -109,35 +96,46 @@ public:
             return;
         }
 
-        // Phase 2 — tracking.
         const double dt = static_cast<double>(s.t - last_t_) / 1e6;
         last_t_ = s.t;
         if (dt <= 0 || dt > 0.2) return;
 
-        // Gyro with the constant offset removed (rad/s).
+        const double gm =
+            std::sqrt(s.gyro_x * s.gyro_x + s.gyro_y * s.gyro_y +
+                      s.gyro_z * s.gyro_z);
+
+        // Convert gyro to rad/s with the current offset removed.
         double wx = (s.gyro_x - bias_x_) * kDeg2Rad;
         double wy = (s.gyro_y - bias_y_) * kDeg2Rad;
         double wz = (s.gyro_z - bias_z_) * kDeg2Rad;
 
-        // Weak gravity correction for roll/pitch, trusted only when the
-        // accelerometer actually measures gravity (near 1 g) AND the chip
-        // is not rotating fast (above the gate the accel reads specific
-        // force and its direction is meaningless). No integral — see the
-        // header comment.
-        if (gravity_ok && gm < kGyroGateDps) {
-            const double am = amag;
-            // Estimated direction of gravity in the body frame.
-            const double vx = 2.0 * (x_ * z_ - w_ * y_);
-            const double vy = 2.0 * (w_ * x_ + y_ * z_);
-            const double vz = w_ * w_ - x_ * x_ - y_ * y_ + z_ * z_;
-            // Error = cross(measured_accel_normalised, estimated_gravity).
-            const double mx = ax / am, my = ay / am, mz = az / am;
-            const double ex = my * vz - mz * vy;
-            const double ey = mz * vx - mx * vz;
-            const double ez = mx * vy - my * vx;
+        // Estimated direction of gravity in the body frame.
+        const double vx = 2.0 * (x_ * z_ - w_ * y_);
+        const double vy = 2.0 * (w_ * x_ + y_ * z_);
+        const double vz = w_ * w_ - x_ * x_ - y_ * y_ + z_ * z_;
+        // Error = cross(measured_accel_normalised, estimated_gravity).
+        double ex = 0, ey = 0, ez = 0;
+        const bool at_rest = gravity_ok && gm < kRestGyroDps;
+        if (at_rest) {
+            const double mx = ax / amag, my = ay / amag, mz = az / amag;
+            ex = my * vz - mz * vy;
+            ey = mz * vx - mx * vz;
+            ez = mx * vy - my * vx;
             wx += two_kp_ * ex;
             wy += two_kp_ * ey;
             wz += two_kp_ * ez;
+        }
+
+        // Still-gated bias refinement: only when the chip is not rotating
+        // AND the attitude already agrees with gravity is gyro − bias pure
+        // bias. A slow first-order leak (tau 2 s) converges in seconds and
+        // follows temperature drift; motion of any kind freezes it.
+        if (at_rest &&
+            std::sqrt(ex * ex + ey * ey + ez * ez) < kBiasTiltErrorGate) {
+            const double a = dt / kBiasTauS;
+            bias_x_ += (s.gyro_x - bias_x_) * a;
+            bias_y_ += (s.gyro_y - bias_y_) * a;
+            bias_z_ += (s.gyro_z - bias_z_) * a;
         }
 
         // Quaternion integration: q' = q + 0.5 * q (x) omega * dt.
@@ -157,8 +155,8 @@ public:
     [[nodiscard]] double x() const { return x_; }
     [[nodiscard]] double y() const { return y_; }
     [[nodiscard]] double z() const { return z_; }
-    /// The captured constant gyro offset (deg/s) — diagnostics; zero until
-    /// the still-window capture completes.
+    /// The current gyro-bias estimate (deg/s) — diagnostics; converges from
+    /// 0 while the chip is still.
     [[nodiscard]] double bias_x_dps() const { return bias_x_; }
     [[nodiscard]] double bias_y_dps() const { return bias_y_; }
     [[nodiscard]] double bias_z_dps() const { return bias_z_; }
@@ -168,15 +166,21 @@ private:
         double w, x, y, z;
     };
     static constexpr double kDeg2Rad = M_PI / 180.0;
-    /// Capture-phase gates: near-1 g accel and < 10 deg/s gyro (rest +
-    /// handheld tremor pass; any real motion restarts the window).
-    static constexpr double kStillGyroDps = 10.0;
-    /// Correction gate: above this rotation rate the accel correction is
-    /// suppressed (the gyro rules; specific force is meaningless).
-    static constexpr double kGyroGateDps = 60.0;
-    /// Bias window: ≥ 1 s span AND ≥ 200 samples (rate-independent floor).
-    static constexpr std::int64_t kBiasWindowUs = 1000000;
-    static constexpr std::size_t kBiasWindowMinSamples = 200;
+    /// Rest gate shared by the tilt correction and the bias leak: below
+    /// this rotation rate the chip counts as stationary (handheld tremor
+    /// passes, any deliberate turn does not). BOTH accel paths are confined
+    /// to rest — during motion the attitude is PURE bias-subtracted gyro
+    /// integration, which is what makes closed paths return (the reference
+    /// RotationIntegrator behaves this way; every accel touch during
+    /// motion feeds specific force into the path and breaks the loop
+    /// closure — observed on the DAVIS346).
+    static constexpr double kRestGyroDps = 10.0;
+    /// Bias leak additionally requires the attitude to already agree with
+    /// gravity (cross-product error; ~2.9 deg), so a slow real rotation —
+    /// which drags the tilt error up — cannot be absorbed as bias either.
+    static constexpr double kBiasTiltErrorGate = 0.05;
+    /// Bias leak time constant (s).
+    static constexpr double kBiasTauS = 2.0;
 
     static Q4 qmul(const Q4& a, const Q4& b) {
         return {a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
@@ -187,10 +191,6 @@ private:
 
     double w_{1}, x_{0}, y_{0}, z_{0};
     double bias_x_{0}, bias_y_{0}, bias_z_{0};
-    double sum_ax_{0}, sum_ay_{0}, sum_az_{0};
-    double sum_gx_{0}, sum_gy_{0}, sum_gz_{0};
-    std::size_t capture_n_{0};
-    std::int64_t capture_t0_{-1};
     double two_kp_{4.0};
     bool aligned_{false};
     std::int64_t last_t_{-1};

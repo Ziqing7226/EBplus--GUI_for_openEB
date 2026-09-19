@@ -1147,20 +1147,12 @@ double up_angle_deg(const gui::davis::ImuPose& p, double rx, double ry, double r
 
 } // namespace
 
-// Feeds a qualifying still window (1.2 s at 1 kHz, constant accel, gyro =
-// the given rates) so the pose completes its bias capture and aligns.
-static void feed_capture_window(gui::davis::ImuPose& pose, float gx, float gy,
-                                float gz) {
-    for (int i = 0; i < 1200; ++i) {
-        pose.update(make_imu(1000LL * i, -0.93F, 0.20F, -0.09F, gx, gy, gz));
-    }
-}
-
 TEST(ImuPoseFilter, AlignsToMeasuredGravity) {
     // Real DAVIS346 at rest reads ~(-0.93, 0.20, -0.09) g: the pose must
-    // align so that this measured "up" lands on the world up axis.
+    // align on the FIRST qualified sample (no capture wait), so that this
+    // measured "up" lands on the world up axis.
     gui::davis::ImuPose pose;
-    feed_capture_window(pose, 0, 0, 0);
+    pose.update(make_imu(0, -0.93F, 0.20F, -0.09F, 0, 0, 0));
     ASSERT_TRUE(pose.aligned());
     // World up rotated into the body frame must match the measurement.
     const double mx = -0.93 / std::sqrt(0.93 * 0.93 + 0.20 * 0.20 + 0.09 * 0.09);
@@ -1181,20 +1173,20 @@ TEST(ImuPoseFilter, AlignsToMeasuredGravity) {
 
 TEST(ImuPoseFilter, StaticBiasDoesNotDriftThePose) {
     // The real sensor has ~1.4 deg/s gyro bias; uncorrected integration
-    // would drift ~28 deg in 20 s. The still-window capture must measure
-    // the bias and subtract it, holding the attitude for the whole session.
+    // would drift ~28 deg in 20 s. The still-gated refinement must converge
+    // to the bias while the chip rests and hold the attitude.
     gui::davis::ImuPose pose;
     const float bx = 0.5F, by = 1.383F, bz = 0.418F;
-    feed_capture_window(pose, bx, by, bz);
-    ASSERT_TRUE(pose.aligned());
-    EXPECT_NEAR(pose.bias_x_dps(), bx, 0.05);
-    EXPECT_NEAR(pose.bias_y_dps(), by, 0.05);
-    EXPECT_NEAR(pose.bias_z_dps(), bz, 0.05);
-    gui::davis::ImuPose reference;
-    feed_capture_window(reference, 0, 0, 0);  // same rest accel, no bias
-    for (int i = 1200; i < 21200; ++i) {      // 20 s more at rest
+    for (int i = 0; i < 20000; ++i) {  // 20 s at 1 kHz, sensor at rest
         pose.update(make_imu(1000LL * i, -0.93F, 0.20F, -0.09F, bx, by, bz));
     }
+    // Bias converged (tau = 2 s → fully settled within 20 s).
+    EXPECT_NEAR(pose.bias_x_dps(), bx, 0.02);
+    EXPECT_NEAR(pose.bias_y_dps(), by, 0.02);
+    EXPECT_NEAR(pose.bias_z_dps(), bz, 0.02);
+    // Attitude held vs the initial alignment (fresh pose, same rest accel).
+    gui::davis::ImuPose reference;
+    reference.update(make_imu(0, -0.93F, 0.20F, -0.09F, 0, 0, 0));
     const double err = up_angle_deg(pose, reference.x(), reference.y(),
                                     reference.z(), reference.w());
     EXPECT_LT(err, 1.0) << "attitude drifted " << err << " deg";
@@ -1270,8 +1262,7 @@ TEST(ImuPoseFilter, ClosedMotionReturnsToStart) {
         }
     };
 
-    run(1500, 0.0);       // still window: bias capture + alignment
-    ASSERT_TRUE(pose.aligned());
+    run(8000, 0.0);       // still: alignment is instant, bias converges
     run(1000, 30.0);      // +30 deg/s for 1 s
     run(1000, -30.0);     // and back to the start attitude
     run(1000, 0.0);       // settle
@@ -1284,13 +1275,22 @@ TEST(ImuPoseFilter, MotionDoesNotCorruptTheBias) {
     // The hardware failure mode this design removes: an ONLINE bias tracker
     // fed from the accel error absorbs specific force while the camera
     // moves, and the corrupted bias drives the pose away after the motion.
-    // The constant-offset design must (a) keep the captured bias unchanged
-    // through any motion and (b) return to the true attitude after a
-    // closed path even when the accel direction was garbage throughout.
+    // The still-gated refinement must keep the converged bias frozen
+    // through any motion (the rotation gate blocks it) and the pose must
+    // return after a closed path even when the accel direction was garbage
+    // throughout.
     gui::davis::ImuPose pose;
     const float bx = 0.5F, by = 1.383F, bz = 0.418F;
-    feed_capture_window(pose, bx, by, bz);
+    // 10 s at rest: alignment instant, bias leak fully converged (e^-5).
+    for (int i = 0; i < 10000; ++i) {
+        pose.update(make_imu(1000LL * i, -0.93F, 0.20F, -0.09F, bx, by, bz));
+    }
     ASSERT_TRUE(pose.aligned());
+    EXPECT_NEAR(pose.bias_x_dps(), bx, 0.02);
+    EXPECT_NEAR(pose.bias_y_dps(), by, 0.02);
+    EXPECT_NEAR(pose.bias_z_dps(), bz, 0.02);
+    const double conv_x = pose.bias_x_dps(), conv_y = pose.bias_y_dps(),
+                 conv_z = pose.bias_z_dps();
 
     struct Q { double w, x, y, z; };
     const auto qmul = [](Q a, Q b) {
@@ -1326,11 +1326,11 @@ TEST(ImuPoseFilter, MotionDoesNotCorruptTheBias) {
                    ay / an * std::sin(ang / 2), 0};
     }
 
-    std::int64_t t = 1200000;
-    // 2 s of fast closed motion (120 dps, above the correction gate) with a
-    // linear-acceleration contamination swinging the accel direction ±0.45 g
-    // at 3 Hz — amag mostly stays in the 0.7-1.3 trust band, so only the
-    // rotation gate protects the attitude from the wrong direction.
+    std::int64_t t = 10000000;
+    // 2 s of fast closed motion (120 dps, above both gates) with a
+    // linear-acceleration contamination swinging the accel direction
+    // ±0.45 g at 3 Hz — amag mostly stays in the 0.7-1.3 trust band, so
+    // the rotation gates are what protect attitude and bias.
     for (int seg = 0; seg < 4; ++seg) {
         const double wy_body = (seg % 2 == 0) ? 120.0 : -120.0;
         for (int i = 0; i < 500; ++i, t += 1000) {
@@ -1348,11 +1348,11 @@ TEST(ImuPoseFilter, MotionDoesNotCorruptTheBias) {
                                  bx, static_cast<float>(wy_body + by), bz));
         }
     }
-    // The captured bias must be untouched by all of that.
-    EXPECT_NEAR(pose.bias_x_dps(), bx, 1e-9);
-    EXPECT_NEAR(pose.bias_y_dps(), by, 1e-9);
-    EXPECT_NEAR(pose.bias_z_dps(), bz, 1e-9);
-    // 1 s still: the correction re-engages and the closed path must have
+    // The converged bias must be untouched by all of that.
+    EXPECT_DOUBLE_EQ(pose.bias_x_dps(), conv_x);
+    EXPECT_DOUBLE_EQ(pose.bias_y_dps(), conv_y);
+    EXPECT_DOUBLE_EQ(pose.bias_z_dps(), conv_z);
+    // 1.5 s still: the correction re-engages and the closed path must have
     // returned to the start attitude (bias-subtracted integration is exact
     // in this synthetic world).
     for (int i = 0; i < 1500; ++i, t += 1000) {
@@ -1365,19 +1365,99 @@ TEST(ImuPoseFilter, MotionDoesNotCorruptTheBias) {
     EXPECT_LT(err, 2.0) << "post-motion residual " << err << " deg";
 }
 
+TEST(ImuPoseFilter, MidRangeMotionStaysGyroPure) {
+    // Loop-closure purity: during ANY real motion (not just fast motion)
+    // the attitude must be pure bias-subtracted gyro integration. A mid-
+    // range 40 deg/s closed path with a contaminated accelerometer (the
+    // accel direction swings while its magnitude stays in the trust band)
+    // must be tracked by the gyro alone — an accel correction active in
+    // this range would drag the attitude off the true rotation and break
+    // the loop closure (the hardware failure mode this gate pins out).
+    gui::davis::ImuPose pose;
+    const float bx = 0.5F, by = 1.383F, bz = 0.418F;
+    for (int i = 0; i < 10000; ++i) {  // 10 s rest: bias converged
+        pose.update(make_imu(1000LL * i, -0.93F, 0.20F, -0.09F, bx, by, bz));
+    }
+    ASSERT_TRUE(pose.aligned());
+
+    struct Q { double w, x, y, z; };
+    const auto qmul = [](Q a, Q b) {
+        return Q{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+                 a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                 a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                 a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+    };
+    const auto qnorm = [](Q q) {
+        const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+        return Q{q.w / n, q.x / n, q.y / n, q.z / n};
+    };
+    const auto inv_rot = [&](Q q, double vx, double vy, double vz,
+                             double* ox, double* oy, double* oz) {
+        const Q i{q.w, -q.x, -q.y, -q.z};
+        const double tx = 2.0 * (i.y * vz - i.z * vy);
+        const double ty = 2.0 * (i.z * vx - i.x * vz);
+        const double tz = 2.0 * (i.x * vy - i.y * vx);
+        *ox = vx + i.w * tx + (i.y * tz - i.z * ty);
+        *oy = vy + i.w * ty + (i.z * tx - i.x * tz);
+        *oz = vz + i.w * tz + (i.x * ty - i.y * tx);
+    };
+    Q q_true{1, 0, 0, 0};
+    {
+        const double n = std::sqrt(0.93 * 0.93 + 0.20 * 0.20 + 0.09 * 0.09);
+        const double ux = -0.93 / n, uy = 0.20 / n, uz = -0.09 / n;
+        const double ax = uy, ay = -ux;
+        const double an = std::sqrt(ax * ax + ay * ay);
+        const double ang = std::acos(std::clamp(uz, -1.0, 1.0));
+        q_true = Q{std::cos(ang / 2), ax / an * std::sin(ang / 2),
+                   ay / an * std::sin(ang / 2), 0};
+    }
+
+    std::int64_t t = 10000000;
+    for (int seg = 0; seg < 4; ++seg) {
+        const double wy_body = (seg % 2 == 0) ? 40.0 : -40.0;
+        for (int i = 0; i < 500; ++i, t += 1000) {
+            const double half = 1e-3 * (40.0 * M_PI / 180.0) / 2.0;
+            const Q dq{std::cos(half), 0,
+                       (wy_body > 0 ? 1.0 : -1.0) * std::sin(half), 0};
+            q_true = qnorm(qmul(q_true, dq));
+            double ux, uy, uz;
+            inv_rot(q_true, 0, 0, 1, &ux, &uy, &uz);
+            const double shake = 0.45 * std::sin(2.0 * M_PI * 3.0 * t / 1e6);
+            const double n = std::sqrt((ux + shake) * (ux + shake) + uy * uy + uz * uz);
+            pose.update(make_imu(t, static_cast<float>((ux + shake) / n),
+                                 static_cast<float>(uy / n),
+                                 static_cast<float>(uz / n),
+                                 bx, static_cast<float>(wy_body + by), bz));
+        }
+    }
+    // Back at the start orientation after the closed path: the pure gyro
+    // path must have followed the rotation exactly (bias converged), so
+    // the attitude matches BEFORE any rest re-anchoring.
+    const double during = up_angle_deg(pose, q_true.x, q_true.y, q_true.z,
+                                       q_true.w);
+    EXPECT_LT(during, 2.0) << "mid-range motion dragged the attitude: "
+                           << during << " deg";
+    for (int i = 0; i < 1500; ++i, t += 1000) {
+        double ux, uy, uz;
+        inv_rot(q_true, 0, 0, 1, &ux, &uy, &uz);
+        pose.update(make_imu(t, static_cast<float>(ux), static_cast<float>(uy),
+                             static_cast<float>(uz), bx, by, bz));
+    }
+    const double err = up_angle_deg(pose, q_true.x, q_true.y, q_true.z, q_true.w);
+    EXPECT_LT(err, 2.0) << "post-motion residual " << err << " deg";
+}
+
 TEST(ImuPoseFilter, ResetClearsState) {
     gui::davis::ImuPose pose;
-    // A single sample cannot complete the still-window capture.
+    // A single qualified sample aligns — no capture phase.
     pose.update(make_imu(0, -0.93F, 0.20F, -0.09F, 0, 0, 0));
-    EXPECT_FALSE(pose.aligned());
-    feed_capture_window(pose, 0.5F, 1.383F, 0.418F);
     ASSERT_TRUE(pose.aligned());
     pose.reset();
     EXPECT_FALSE(pose.aligned());
     EXPECT_DOUBLE_EQ(pose.w(), 1.0);
     EXPECT_DOUBLE_EQ(pose.bias_x_dps(), 0.0);
-    // A fresh window re-captures and re-aligns.
-    feed_capture_window(pose, 0, 0, 0);
+    // A fresh sample re-aligns.
+    pose.update(make_imu(0, -0.93F, 0.20F, -0.09F, 0, 0, 0));
     EXPECT_TRUE(pose.aligned());
 }
 
