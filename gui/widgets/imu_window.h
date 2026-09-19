@@ -12,9 +12,12 @@
 #define GUI_WIDGETS_IMU_WINDOW_H
 
 #include <QElapsedTimer>
+
+#include <limits>
 #include <QLabel>
 #include <QWidget>
 
+#include "davis/imu_pose.h"
 #include "davis/imu_types.h"
 
 class QTimer;
@@ -39,9 +42,6 @@ protected:
 
 private:
     void refresh();
-    /// Integrates one gyro sample into the pose quaternion (body-rate
-    /// kinematics). A timestamp jump (stream restart) resets the pose.
-    void integrate_imu(const davis::ImuSample& s);
     /// Draws the camera cuboid + body axes in the current pose.
     void draw_pose(QPainter& p, const QRectF& r);
 
@@ -49,17 +49,13 @@ private:
     QTimer* timer_;
     QLabel* status_label_;
 
-    /// Camera pose as a unit quaternion (world <- body rotation), integrated
-    /// from the gyro rates; identity = axes aligned with the world frame.
-    double qw_{1}, qx_{0}, qy_{0}, qz_{0};
-    std::int64_t prev_t_{-1};
-    /// Gyro bias estimated over the first ~250 samples after every (re)start
-    /// (pure gyro integration drifts otherwise); pose holds while estimating.
-    bool bias_done_{false};
-    double bias_gx_{0}, bias_gy_{0}, bias_gz_{0};
-    int bias_n_{0};
+    /// Camera attitude: gravity-aligned initialisation + gyro integration
+    /// with gravity correction and a stationary-gated gyro-bias estimate
+    /// (see davis/imu_pose.h — unit-tested against synthetic motion).
+    davis::ImuPose pose_;
 
-    std::int64_t imu_cursor_{0};
+    std::int64_t imu_cursor_{std::numeric_limits<std::int64_t>::min()};
+    std::int64_t last_t_seen_{-1};
     long last_count_{0};
     long rate_accum_events_{0};
     double rate_accum_time_{0};

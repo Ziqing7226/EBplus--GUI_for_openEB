@@ -20,28 +20,13 @@
 namespace gui {
 namespace {
 
-constexpr double kDeg2Rad = M_PI / 180.0;
-/// Perspective focal distance (world units).
-constexpr double kFocal = 3.5;
+constexpr double kPerspectiveFocal = 3.5;
 /// Camera-body half extents (a cuboid, not a cube — camera-shaped).
 constexpr double kHalfX = 0.8, kHalfY = 1.2, kHalfZ = 0.5;
 
 struct Q4 {
     double w, x, y, z;
 };
-
-Q4 qnormalized(const Q4& q) {
-    const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
-    if (n < 1e-12) return {1, 0, 0, 0};
-    return {q.w / n, q.x / n, q.y / n, q.z / n};
-}
-
-Q4 qmul(const Q4& a, const Q4& b) {
-    return {a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-            a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-            a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-            a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
-}
 
 /// Rotates (x, y, z) by q: v' = q * v * q*.
 void qrotate(const Q4& q, double& x, double& y, double& z) {
@@ -80,63 +65,21 @@ ImuWindow::ImuWindow(CameraController* controller, QWidget* parent)
     refresh();
 }
 
-void ImuWindow::integrate_imu(const davis::ImuSample& s) {
-    if (prev_t_ < 0) {  // first sample establishes the time base
-        prev_t_ = s.t;
-        return;
-    }
-    const double dt = static_cast<double>(s.t - prev_t_) / 1e6;
-    prev_t_ = s.t;
-    if (dt <= 0 || dt > 0.2) return;  // restart/gap: hold the pose
-
-    const double wx = s.gyro_x * kDeg2Rad;
-    const double wy = s.gyro_y * kDeg2Rad;
-    const double wz = s.gyro_z * kDeg2Rad;
-    const double norm = std::sqrt(wx * wx + wy * wy + wz * wz);
-    if (norm < 1e-9) return;
-    const double half = dt * norm / 2.0;
-    const Q4 dq{std::cos(half), wx / norm * std::sin(half),
-                wy / norm * std::sin(half), wz / norm * std::sin(half)};
-
-    const Q4 q = qnormalized(qmul(qnormalized({qw_, qx_, qy_, qz_}), dq));
-    qw_ = q.w;
-    qx_ = q.x;
-    qy_ = q.y;
-    qz_ = q.z;
-}
-
 void ImuWindow::refresh() {
     const auto fresh = controller_->drain_imu(imu_cursor_);
+    const long count = controller_->imu_sample_count();
+    // Session restart (the controller resets its counter when the stream is
+    // re-enabled): start the attitude from scratch rather than integrating
+    // across the discontinuity.
+    if (count < last_count_) pose_.reset();
     for (const auto& s : fresh) {
-        // Stream restart (timestamps jumped back): reset pose + bias.
-        if (prev_t_ > 0 && s.t + 2000000 < prev_t_) {
-            qw_ = 1; qx_ = qy_ = qz_ = 0;
-            bias_done_ = false;
-            bias_n_ = 0;
-            bias_gx_ = bias_gy_ = bias_gz_ = 0;
+        if (pose_.aligned() && last_t_seen_ > 0 && s.t + 2000000 < last_t_seen_) {
+            pose_.reset();  // device timestamp reset
         }
-        if (!bias_done_) {
-            // Estimate the gyro bias while the camera is assumed still.
-            bias_gx_ += s.gyro_x;
-            bias_gy_ += s.gyro_y;
-            bias_gz_ += s.gyro_z;
-            if (++bias_n_ >= 250) {
-                bias_gx_ /= bias_n_;
-                bias_gy_ /= bias_n_;
-                bias_gz_ /= bias_n_;
-                bias_done_ = true;
-            }
-            prev_t_ = s.t;
-            continue;
-        }
-        davis::ImuSample corrected = s;
-        corrected.gyro_x -= static_cast<float>(bias_gx_);
-        corrected.gyro_y -= static_cast<float>(bias_gy_);
-        corrected.gyro_z -= static_cast<float>(bias_gz_);
-        integrate_imu(corrected);
+        last_t_seen_ = s.t;
+        pose_.update(s);
     }
 
-    const long count = controller_->imu_sample_count();
     const double elapsed_s = rate_clock_.restart() / 1000.0;
     rate_accum_time_ += elapsed_s;
     rate_accum_events_ += count - last_count_;
@@ -153,6 +96,8 @@ void ImuWindow::refresh() {
     if (count == 0) {
         status_label_->setText(
             tr("Waiting for samples…\n(Stream runs only while the camera streams)"));
+    } else if (!pose_.aligned()) {
+        status_label_->setText(tr("IMU: aligning (hold still)…"));
     } else {
         status_label_->setText(tr("Samples: %1   Rate: %2 Hz")
                                    .arg(count)
@@ -166,7 +111,7 @@ void ImuWindow::draw_pose(QPainter& p, const QRectF& r) {
     p.setPen(QColor(70, 70, 78));
     p.drawRect(r);
 
-    const Q4 q{qw_, qx_, qy_, qz_};
+    const Q4 q{pose_.w(), pose_.x(), pose_.y(), pose_.z()};
 
     // Cuboid corners (body frame), rotated into the world frame.
     double corners[8][3];
@@ -195,11 +140,11 @@ void ImuWindow::draw_pose(QPainter& p, const QRectF& r) {
         {{0, 2, 6, 4}, -1, 0, 0},  // -X
     };
 
-    // Perspective projection: viewer at y = -kFocal looking toward +y.
+    // Perspective projection: viewer at y = -kPerspectiveFocal looking toward +y.
     const qreal base = std::min(r.width(), r.height()) / 2.2;
     const qreal cx = r.center().x(), cy = r.center().y();
     auto project = [&](const double c[3], qreal* sx, qreal* sy) {
-        const double persp = kFocal / (kFocal + c[1] + kHalfY);
+        const double persp = kPerspectiveFocal / (kPerspectiveFocal + c[1] + kHalfY);
         *sx = cx + c[0] * base * persp;
         *sy = cy - c[2] * base * persp;
     };
@@ -249,7 +194,7 @@ void ImuWindow::draw_pose(QPainter& p, const QRectF& r) {
     for (int a = 0; a < 3; ++a) {
         double x = axes[a][0], y = axes[a][1], z = axes[a][2];
         qrotate(q, x, y, z);
-        const qreal persp = kFocal / (kFocal + y + kHalfY);
+        const qreal persp = kPerspectiveFocal / (kPerspectiveFocal + y + kHalfY);
         p.setPen(QPen(axis_colors[a], 2));
         p.drawLine(QPointF(cx, cy),
                    QPointF(cx + x * base * persp, cy - z * base * persp));
@@ -258,10 +203,10 @@ void ImuWindow::draw_pose(QPainter& p, const QRectF& r) {
                    QString(axis_labels[a]));
     }
 
-    if (controller_->imu_sample_count() > 0 && !bias_done_) {
+    if (controller_->imu_sample_count() > 0 && !pose_.aligned()) {
         p.setPen(QColor(255, 200, 80));
         p.drawText(r.adjusted(8, r.height() / 2 - 10, -8, 0), Qt::AlignCenter,
-                   tr("Calibrating gyro (hold still)…"));
+                   tr("Aligning to gravity (hold still)…"));
     }
 
     // Numeric readout (latest sample).

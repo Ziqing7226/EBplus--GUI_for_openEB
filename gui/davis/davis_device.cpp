@@ -8,6 +8,8 @@
 
 #include "davis_device.h"
 
+#include "auto_exposure.h"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -590,65 +592,16 @@ void Device::usb_control_out_noblock(std::uint8_t request, std::uint16_t value,
 }
 
 void Device::apply_auto_exposure(const davis::ApsFrame& frame) {
-    // Ported from the reference computeAutomaticExposure: a 256-bin pixel
-    // histogram detects under/over exposure (>= 33% of pixels below the
-    // 10% / above the 90% brightness boundary); otherwise the 5-bin mean
-    // sample value steers the exposure toward mid-gray.
-    double hist[256] = {0};
-    for (int row = 0; row < frame.image.rows; ++row) {
-        const auto* line = frame.image.ptr<std::uint8_t>(row);
-        for (int col = 0; col < frame.image.cols; ++col) ++hist[line[col]];
-    }
-    const double pixels = static_cast<double>(frame.image.cols) * frame.image.rows;
-
-    double frac_low = 0, frac_high = 0;
-    for (int i = 0; i < 26; ++i) frac_low += hist[i];      // < 0.10 boundary
-    for (int i = 230; i < 256; ++i) frac_high += hist[i];  // > 0.90 boundary
-    frac_low /= pixels;
-    frac_high /= pixels;
-
-    double new_exposure = aec_exposure_us_;
-    const double err_low = frac_low - 0.33;
-    const double err_high = frac_high - 0.33;
-    const bool low = frac_low >= 0.33;
-    const bool high = frac_high >= 0.33;
-
-    if (low && !high) {
-        new_exposure += std::llround(14000.0 * std::pow(err_low, 1.65));
-        if (new_exposure == aec_exposure_us_) ++new_exposure;  // ensure progress
-    } else if (high && !low) {
-        new_exposure -= std::llround(14000.0 * std::pow(err_high, 1.65));
-        if (new_exposure == aec_exposure_us_) --new_exposure;
-    } else {
-        // Mean sample value over 5 bins steers the fine adjustment.
-        double msv_num = 0, msv_den = 0;
-        for (int i = 0; i < 256; ++i) {
-            const int bin = std::min(i / 52, 4);  // 5 bins over 0..255
-            msv_num += (bin + 1.0) * hist[i];
-            msv_den += hist[i];
-        }
-        const double msv = msv_den >= 1.0 ? msv_num / msv_den : 2.5;
-        const double msv_err = 2.5 - msv;
-        double divisor = 1.0;
-        if (std::fabs(err_low) < 0.1 || std::fabs(err_high) < 0.1) divisor = 5;
-        if (std::fabs(err_low) < 0.05 || std::fabs(err_high) < 0.05) divisor = 10;
-        if (msv_err > 0.1) {
-            new_exposure += std::llround(100.0 * msv_err * msv_err / divisor);
-            if (new_exposure == aec_exposure_us_) ++new_exposure;
-        } else if (msv_err < -0.1) {
-            new_exposure -= std::llround(100.0 * msv_err * msv_err / divisor);
-            if (new_exposure == aec_exposure_us_) --new_exposure;
-        }
-    }
-    new_exposure = std::clamp(new_exposure, 1.0, 4194303.0);  // EXPOSURE_MAX (us)
-
-    aec_exposure_us_ = new_exposure;
-    const auto ticks = static_cast<std::uint32_t>(
-        std::clamp(new_exposure * static_cast<double>(adc_clock_), 1.0, 16777215.0));
+    // The decision law lives in the unit-tested pure helper (ported from the
+    // reference computeAutomaticExposure); this method only programs it.
+    aec_exposure_us_ = auto_exposure_step(frame.image, aec_exposure_us_);
+    const auto ticks = exposure_ticks(aec_exposure_us_, adc_clock_);
     const std::uint8_t be[4] = {static_cast<std::uint8_t>(ticks >> 24),
                                 static_cast<std::uint8_t>(ticks >> 16),
                                 static_cast<std::uint8_t>(ticks >> 8),
                                 static_cast<std::uint8_t>(ticks)};
+    // Async: this runs on the USB event thread, where a synchronous control
+    // wait would deadlock (its completion is delivered by that same thread).
     usb_control_out_noblock(VENDOR_REQUEST_SPI_CONFIG, MODULE_APS, APS_EXPOSURE, be, 4);
 }
 
@@ -822,6 +775,9 @@ void Device::configure_idle() {
     // 20 ms exposure + free-run interval, in ADC-clock ticks.
     spi_config_send(MODULE_APS, APS_EXPOSURE,
         static_cast<std::uint32_t>(std::llround(20000.0F * logic_clock_)));
+    // Seed the AEC state with the exposure just programmed (20000 us) —
+    // starting from 0 would clamp every correction to the µs floor.
+    aec_exposure_us_ = 20000.0;
     spi_config_send(MODULE_APS, APS_FRAME_INTERVAL, 0);
 
     // Chip configuration.

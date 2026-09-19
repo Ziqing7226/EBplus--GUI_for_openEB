@@ -12,9 +12,11 @@
 #include <vector>
 
 #include "davis/aps_decoder.h"
+#include "davis/auto_exposure.h"
 #include "davis/davis_biases.h"
 #include "davis/davis_parser.h"
 #include "davis/dvxplorer_parser.h"
+#include "davis/imu_pose.h"
 #include "davis/imu_types.h"
 
 namespace {
@@ -1102,4 +1104,341 @@ TEST(DavisAps, IncompleteColumnCountDiscardsFrame) {
     words.push_back(special_word(10));
     feed(parser, words, dropped);
     EXPECT_FALSE(called);
+}
+
+
+// ---------------------------------------------------------------------------
+// IMU pose filter (gravity-aligned init + complementary filter + gyro bias).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+gui::davis::ImuSample make_imu(std::int64_t t_us, float ax, float ay, float az,
+                               float gx, float gy, float gz) {
+    gui::davis::ImuSample s;
+    s.t = t_us;
+    s.accel_x = ax; s.accel_y = ay; s.accel_z = az;
+    s.gyro_x = gx; s.gyro_y = gy; s.gyro_z = gz;
+    s.valid = true;
+    return s;
+}
+
+/// Angle (degrees) between the pose's rotation and a reference rotation,
+/// both applied to the world up vector — a cheap attitude error metric.
+double up_angle_deg(const gui::davis::ImuPose& p, double rx, double ry, double rz,
+                    double rw) {
+    // World-up expressed in each body frame (R^T · (0,0,1)) — the quantity
+    // the accel feedback actually drives. Deliberately NOT the boresight
+    // (R · z): with a 6-axis IMU there is no magnetometer, yaw is
+    // unobservable and wanders with the residual gyro bias even after a
+    // perfect still-window capture — asserting on it would test physics,
+    // not the filter.
+    const auto body_up = [](double w, double x, double y, double z) {
+        return std::array<double, 3>{2.0 * (x * z - w * y),
+                                     2.0 * (w * x + y * z),
+                                     w * w - x * x - y * y + z * z};
+    };
+    const auto v = body_up(p.w(), p.x(), p.y(), p.z());
+    const auto rv = body_up(rw, rx, ry, rz);
+    const double dot = std::clamp(v[0] * rv[0] + v[1] * rv[1] + v[2] * rv[2],
+                                  -1.0, 1.0);
+    return std::acos(dot) * 180.0 / M_PI;
+}
+
+} // namespace
+
+// Feeds a qualifying still window (1.2 s at 1 kHz, constant accel, gyro =
+// the given rates) so the pose completes its bias capture and aligns.
+static void feed_capture_window(gui::davis::ImuPose& pose, float gx, float gy,
+                                float gz) {
+    for (int i = 0; i < 1200; ++i) {
+        pose.update(make_imu(1000LL * i, -0.93F, 0.20F, -0.09F, gx, gy, gz));
+    }
+}
+
+TEST(ImuPoseFilter, AlignsToMeasuredGravity) {
+    // Real DAVIS346 at rest reads ~(-0.93, 0.20, -0.09) g: the pose must
+    // align so that this measured "up" lands on the world up axis.
+    gui::davis::ImuPose pose;
+    feed_capture_window(pose, 0, 0, 0);
+    ASSERT_TRUE(pose.aligned());
+    // World up rotated into the body frame must match the measurement.
+    const double mx = -0.93 / std::sqrt(0.93 * 0.93 + 0.20 * 0.20 + 0.09 * 0.09);
+    const double my = 0.20 / std::sqrt(0.93 * 0.93 + 0.20 * 0.20 + 0.09 * 0.09);
+    const double mz = -0.09 / std::sqrt(0.93 * 0.93 + 0.20 * 0.20 + 0.09 * 0.09);
+    // body_up = q^-1 * (0,0,1)
+    const double x = -pose.x(), y = -pose.y(), z = -pose.z(), w = pose.w();
+    const double tx = 2.0 * (y * 1.0 - z * 0.0);
+    const double ty = 2.0 * (z * 0.0 - x * 1.0);
+    const double tz = 2.0 * (x * 0.0 - y * 0.0);
+    const double ux = 0.0 + w * tx + (y * tz - z * ty);
+    const double uy = 0.0 + w * ty + (z * tx - x * tz);
+    const double uz = 1.0 + w * tz + (x * ty - y * tx);
+    EXPECT_NEAR(ux, mx, 1e-6);
+    EXPECT_NEAR(uy, my, 1e-6);
+    EXPECT_NEAR(uz, mz, 1e-6);
+}
+
+TEST(ImuPoseFilter, StaticBiasDoesNotDriftThePose) {
+    // The real sensor has ~1.4 deg/s gyro bias; uncorrected integration
+    // would drift ~28 deg in 20 s. The still-window capture must measure
+    // the bias and subtract it, holding the attitude for the whole session.
+    gui::davis::ImuPose pose;
+    const float bx = 0.5F, by = 1.383F, bz = 0.418F;
+    feed_capture_window(pose, bx, by, bz);
+    ASSERT_TRUE(pose.aligned());
+    EXPECT_NEAR(pose.bias_x_dps(), bx, 0.05);
+    EXPECT_NEAR(pose.bias_y_dps(), by, 0.05);
+    EXPECT_NEAR(pose.bias_z_dps(), bz, 0.05);
+    gui::davis::ImuPose reference;
+    feed_capture_window(reference, 0, 0, 0);  // same rest accel, no bias
+    for (int i = 1200; i < 21200; ++i) {      // 20 s more at rest
+        pose.update(make_imu(1000LL * i, -0.93F, 0.20F, -0.09F, bx, by, bz));
+    }
+    const double err = up_angle_deg(pose, reference.x(), reference.y(),
+                                    reference.z(), reference.w());
+    EXPECT_LT(err, 1.0) << "attitude drifted " << err << " deg";
+}
+
+TEST(ImuPoseFilter, ClosedMotionReturnsToStart) {
+    // Physically consistent simulation: a TRUE attitude is integrated from
+    // the applied body rates, and the synthetic accelerometer reports the
+    // gravity direction as seen in that (moving) body frame — a fixed
+    // accelerometer reading while the gyro turns would be contradictory and
+    // the test would be meaningless.
+    struct Q { double w, x, y, z; };
+    const auto qmul = [](Q a, Q b) {
+        return Q{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+                 a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                 a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                 a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+    };
+    const auto qnorm = [](Q q) {
+        const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+        return Q{q.w / n, q.x / n, q.y / n, q.z / n};
+    };
+    // Rotates v by the INVERSE of q (world -> body).
+    const auto inv_rot = [&](Q q, double vx, double vy, double vz,
+                             double* ox, double* oy, double* oz) {
+        const Q i{q.w, -q.x, -q.y, -q.z};
+        const double tx = 2.0 * (i.y * vz - i.z * vy);
+        const double ty = 2.0 * (i.z * vx - i.x * vz);
+        const double tz = 2.0 * (i.x * vy - i.y * vx);
+        *ox = vx + i.w * tx + (i.y * tz - i.z * ty);
+        *oy = vy + i.w * ty + (i.z * tx - i.x * tz);
+        *oz = vz + i.w * tz + (i.x * ty - i.y * tx);
+    };
+
+    gui::davis::ImuPose pose;
+    // Start physically: camera at rest with gravity mostly along -X (the
+    // real DAVIS346 resting orientation).
+    const double gx0 = -0.93, gy0 = 0.20, gz0 = -0.09;  // body-frame "up"
+    Q q_true{1, 0, 0, 0};
+    {
+        // Align q_true so that its body-frame up matches the rest reading.
+        const double n = std::sqrt(gx0 * gx0 + gy0 * gy0 + gz0 * gz0);
+        const double ux = gx0 / n, uy = gy0 / n, uz = gz0 / n;
+        const double ax = uy, ay = -ux;      // u x z
+        const double an = std::sqrt(ax * ax + ay * ay);
+        const double ang = std::acos(std::clamp(uz, -1.0, 1.0));
+        q_true = Q{std::cos(ang / 2), ax / an * std::sin(ang / 2),
+                   ay / an * std::sin(ang / 2), 0};
+    }
+
+    const double bias[3] = {0.5, 1.383, 0.418};  // measured on hardware
+    std::int64_t t = 0;
+    auto run = [&](std::int64_t n, double wy_body) {
+        for (std::int64_t i = 0; i < n; ++i, t += 1000) {
+            // Integrate the TRUE attitude by the applied body rate
+            // (deg/s → rad/s; feeding dps straight in would spin the
+            // reference thousands of degrees and the comparison would be
+            // meaningless).
+            const double norm = std::abs(wy_body) * M_PI / 180.0;
+            if (norm > 1e-9) {
+                const double half = 1e-3 * norm / 2.0;
+                const Q dq{std::cos(half), 0, (wy_body > 0 ? 1.0 : -1.0) * std::sin(half), 0};
+                q_true = qnorm(qmul(q_true, dq));
+            }
+            // Synthetic sensor: gravity as seen in the moving body frame.
+            double ux, uy, uz;
+            inv_rot(q_true, 0, 0, 1, &ux, &uy, &uz);
+            pose.update(make_imu(t, static_cast<float>(ux), static_cast<float>(uy),
+                                 static_cast<float>(uz),
+                                 static_cast<float>(bias[0]),
+                                 static_cast<float>(wy_body + bias[1]),
+                                 static_cast<float>(bias[2])));
+        }
+    };
+
+    run(1500, 0.0);       // still window: bias capture + alignment
+    ASSERT_TRUE(pose.aligned());
+    run(1000, 30.0);      // +30 deg/s for 1 s
+    run(1000, -30.0);     // and back to the start attitude
+    run(1000, 0.0);       // settle
+
+    const double err = up_angle_deg(pose, q_true.x, q_true.y, q_true.z, q_true.w);
+    EXPECT_LT(err, 3.0) << "closed motion residual " << err << " deg";
+}
+
+TEST(ImuPoseFilter, MotionDoesNotCorruptTheBias) {
+    // The hardware failure mode this design removes: an ONLINE bias tracker
+    // fed from the accel error absorbs specific force while the camera
+    // moves, and the corrupted bias drives the pose away after the motion.
+    // The constant-offset design must (a) keep the captured bias unchanged
+    // through any motion and (b) return to the true attitude after a
+    // closed path even when the accel direction was garbage throughout.
+    gui::davis::ImuPose pose;
+    const float bx = 0.5F, by = 1.383F, bz = 0.418F;
+    feed_capture_window(pose, bx, by, bz);
+    ASSERT_TRUE(pose.aligned());
+
+    struct Q { double w, x, y, z; };
+    const auto qmul = [](Q a, Q b) {
+        return Q{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+                 a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                 a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                 a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+    };
+    const auto qnorm = [](Q q) {
+        const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+        return Q{q.w / n, q.x / n, q.y / n, q.z / n};
+    };
+    const auto inv_rot = [&](Q q, double vx, double vy, double vz,
+                             double* ox, double* oy, double* oz) {
+        const Q i{q.w, -q.x, -q.y, -q.z};
+        const double tx = 2.0 * (i.y * vz - i.z * vy);
+        const double ty = 2.0 * (i.z * vx - i.x * vz);
+        const double tz = 2.0 * (i.x * vy - i.y * vx);
+        *ox = vx + i.w * tx + (i.y * tz - i.z * ty);
+        *oy = vy + i.w * ty + (i.z * tx - i.x * tz);
+        *oz = vz + i.w * tz + (i.x * ty - i.y * tx);
+    };
+    // Same starting attitude as AlignsToMeasuredGravity (identical
+    // axis-angle construction from the rest reading).
+    Q q_true{1, 0, 0, 0};
+    {
+        const double n = std::sqrt(0.93 * 0.93 + 0.20 * 0.20 + 0.09 * 0.09);
+        const double ux = -0.93 / n, uy = 0.20 / n, uz = -0.09 / n;
+        const double ax = uy, ay = -ux;      // u x z
+        const double an = std::sqrt(ax * ax + ay * ay);
+        const double ang = std::acos(std::clamp(uz, -1.0, 1.0));
+        q_true = Q{std::cos(ang / 2), ax / an * std::sin(ang / 2),
+                   ay / an * std::sin(ang / 2), 0};
+    }
+
+    std::int64_t t = 1200000;
+    // 2 s of fast closed motion (120 dps, above the correction gate) with a
+    // linear-acceleration contamination swinging the accel direction ±0.45 g
+    // at 3 Hz — amag mostly stays in the 0.7-1.3 trust band, so only the
+    // rotation gate protects the attitude from the wrong direction.
+    for (int seg = 0; seg < 4; ++seg) {
+        const double wy_body = (seg % 2 == 0) ? 120.0 : -120.0;
+        for (int i = 0; i < 500; ++i, t += 1000) {
+            const double half = 1e-3 * (120.0 * M_PI / 180.0) / 2.0;
+            const Q dq{std::cos(half), 0,
+                       (wy_body > 0 ? 1.0 : -1.0) * std::sin(half), 0};
+            q_true = qnorm(qmul(q_true, dq));
+            double ux, uy, uz;
+            inv_rot(q_true, 0, 0, 1, &ux, &uy, &uz);
+            const double shake = 0.45 * std::sin(2.0 * M_PI * 3.0 * t / 1e6);
+            const double n = std::sqrt((ux + shake) * (ux + shake) + uy * uy + uz * uz);
+            pose.update(make_imu(t, static_cast<float>((ux + shake) / n),
+                                 static_cast<float>(uy / n),
+                                 static_cast<float>(uz / n),
+                                 bx, static_cast<float>(wy_body + by), bz));
+        }
+    }
+    // The captured bias must be untouched by all of that.
+    EXPECT_NEAR(pose.bias_x_dps(), bx, 1e-9);
+    EXPECT_NEAR(pose.bias_y_dps(), by, 1e-9);
+    EXPECT_NEAR(pose.bias_z_dps(), bz, 1e-9);
+    // 1 s still: the correction re-engages and the closed path must have
+    // returned to the start attitude (bias-subtracted integration is exact
+    // in this synthetic world).
+    for (int i = 0; i < 1500; ++i, t += 1000) {
+        double ux, uy, uz;
+        inv_rot(q_true, 0, 0, 1, &ux, &uy, &uz);
+        pose.update(make_imu(t, static_cast<float>(ux), static_cast<float>(uy),
+                             static_cast<float>(uz), bx, by, bz));
+    }
+    const double err = up_angle_deg(pose, q_true.x, q_true.y, q_true.z, q_true.w);
+    EXPECT_LT(err, 2.0) << "post-motion residual " << err << " deg";
+}
+
+TEST(ImuPoseFilter, ResetClearsState) {
+    gui::davis::ImuPose pose;
+    // A single sample cannot complete the still-window capture.
+    pose.update(make_imu(0, -0.93F, 0.20F, -0.09F, 0, 0, 0));
+    EXPECT_FALSE(pose.aligned());
+    feed_capture_window(pose, 0.5F, 1.383F, 0.418F);
+    ASSERT_TRUE(pose.aligned());
+    pose.reset();
+    EXPECT_FALSE(pose.aligned());
+    EXPECT_DOUBLE_EQ(pose.w(), 1.0);
+    EXPECT_DOUBLE_EQ(pose.bias_x_dps(), 0.0);
+    // A fresh window re-captures and re-aligns.
+    feed_capture_window(pose, 0, 0, 0);
+    EXPECT_TRUE(pose.aligned());
+}
+
+
+// ---------------------------------------------------------------------------
+// Auto-exposure law (reference-ported, pure function).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+cv::Mat uniform_frame(int value) {
+    return cv::Mat(60, 80, CV_8UC1, cv::Scalar(value));
+}
+
+} // namespace
+
+TEST(AutoExposure, DarkFrameOpensExposure) {
+    const double next = gui::davis::auto_exposure_step(uniform_frame(5), 20000.0);
+    EXPECT_GT(next, 20000.0) << "a dark frame must increase the exposure";
+}
+
+TEST(AutoExposure, BrightFrameClosesExposure) {
+    const double next = gui::davis::auto_exposure_step(uniform_frame(250), 20000.0);
+    EXPECT_LT(next, 20000.0) << "a bright frame must decrease the exposure";
+}
+
+TEST(AutoExposure, MidGrayNeedsAlmostNoChange) {
+    // A frame with no under/over population only gets the small MSV trim.
+    // (The MSV target is bin 2.5 of 5, i.e. a bin1/bin2 MIXTURE — a uniform
+    // 128 frame sits at bin 2 → value 3.0, so the law trims slightly down;
+    // that is the reference behavior, not a bug.)
+    const double next = gui::davis::auto_exposure_step(uniform_frame(128), 20000.0);
+    EXPECT_NEAR(next, 20000.0, 40.0);
+    EXPECT_LT(next, 20000.0);
+}
+
+TEST(AutoExposure, RegulatesTowardMidGrayAndHonorsBounds) {
+    // Closed loop on a virtual sensor whose brightness is proportional to
+    // the exposure: the law must converge to a mid-gray output and stay
+    // inside the register bounds.
+    double exposure = 20000.0;
+    for (int iter = 0; iter < 300; ++iter) {
+        const int brightness = static_cast<int>(
+            std::clamp(exposure / 40000.0 * 255.0, 0.0, 255.0));
+        exposure = gui::davis::auto_exposure_step(uniform_frame(brightness), exposure);
+        ASSERT_GE(exposure, gui::davis::kExposureMinUs);
+        ASSERT_LE(exposure, gui::davis::kExposureMaxUs);
+    }
+    const int brightness = static_cast<int>(std::clamp(exposure / 40000.0 * 255.0, 0.0, 255.0));
+    // Equilibrium of the reference law: the mean sample value sits at the
+    // bin 2.5 target, i.e. just below the bin1/bin2 boundary (value ~104).
+    EXPECT_GT(brightness, 90) << "underexposed after regulation";
+    EXPECT_LT(brightness, 160) << "overexposed after regulation";
+    EXPECT_NEAR(exposure, 40000.0 * 104.0 / 255.0, 3000.0) << "did not settle at the MSV target";
+}
+
+TEST(AutoExposure, TicksEncodingUsesAdcClockAndClamps) {
+    // 20000 us at a 104 MHz ADC clock = 2.08e9 ticks region; overflow must
+    // clamp, never wrap.
+    const auto ticks = gui::davis::exposure_ticks(20000.0, 104.0);
+    EXPECT_EQ(ticks, static_cast<std::uint32_t>(20000.0 * 104.0));
+    const auto huge = gui::davis::exposure_ticks(1e12, 104.0);
+    EXPECT_EQ(huge, static_cast<std::uint32_t>(gui::davis::kExposureMaxUs * 104.0));
 }

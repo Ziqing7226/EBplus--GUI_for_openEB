@@ -200,9 +200,10 @@ public:
     [[nodiscard]] long aps_frame_count() const;
     /// @brief IMU plotting (Phase 2 visualization): drains the retained
     /// sample ring after @p cursor (sequence numbers from
-    /// imu_sample_count(); 0 = take whatever is retained). Returns the new
-    /// samples in stream order and advances @p cursor. Without libusb
-    /// returns an empty vector.
+    /// imu_sample_count(); pass INT64_MIN to start from the LATEST sample
+    /// — a fresh viewer must skip the up-to-10 s backlog or the pose
+    /// integration replays it at once). Returns the new samples in stream
+    /// order and advances @p cursor. Without libusb returns an empty vector.
     std::vector<davis::ImuSample> drain_imu(std::int64_t& cursor);
 
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.

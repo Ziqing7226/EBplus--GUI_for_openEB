@@ -727,7 +727,14 @@ bool CameraController::set_imu_enabled(bool on) {
     if (dvx_device_) dvx_device_->set_imu_enabled(on);
     if (on) {
         std::lock_guard<std::mutex> lock(imu_mutex_);
-        imu_count_ = 0;  // fresh session for the rate display
+        // Fresh session: reset the sequence counter AND drop the retained
+        // ring. Leaving the old samples behind reuses sequence numbers, so
+        // drain_imu() handed a new consumer the whole stale backlog as if it
+        // were current data (the reopened IMU window integrated it at once —
+        // the pose whipped around).
+        imu_count_ = 0;
+        imu_ring_.clear();
+        imu_latest_ = davis::ImuSample{};
     }
     return true;
 #else
@@ -777,6 +784,11 @@ void CameraController::on_imu_sample(const davis::ImuSample& sample) {
 std::vector<davis::ImuSample> CameraController::drain_imu(std::int64_t& cursor) {
 #if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(imu_mutex_);
+    if (cursor == std::numeric_limits<std::int64_t>::min()) {
+        // Fresh consumer: skip the retained backlog, start at the newest.
+        cursor = imu_count_;
+        return {};
+    }
     if (cursor >= imu_count_) {
         cursor = imu_count_;
         return {};
