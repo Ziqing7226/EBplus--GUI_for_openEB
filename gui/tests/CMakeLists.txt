@@ -62,6 +62,21 @@ gtest_discover_tests(test_panel_visibility
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
+# --- test_esp_panel_duty: the Anti-Flicker duty-cycle widget stays in the
+# facility's percentage domain — the HAL min getter reports the 1/16 register
+# granularity as a fraction while get/set values are percentages. ---
+add_executable(test_esp_panel_duty
+    test_esp_panel_duty.cpp
+)
+target_link_libraries(test_esp_panel_duty PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_esp_panel_duty PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_esp_panel_duty
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 # --- test_aedat4_writer: Phase 4 — writer output read back event-exact by
 # our AEDAT4 file source (the reader is the byte-level format reference). ---
 add_executable(test_aedat4_writer
