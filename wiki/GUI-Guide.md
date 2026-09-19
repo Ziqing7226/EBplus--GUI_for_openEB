@@ -43,16 +43,16 @@ The left sidebar is a 48 px icon column (`ActivityBar`) that switches between 5 
 - **Statistics** — live event rate, peak rate, ON/OFF ratio, FPS, timestamp, and (in online camera mode) per-algorithm event drop rate.
 
 ### Hardware group
-- **Biases** — dynamically enumerates all HAL LL-biases; slider + spinbox + reset per bias; save/load `.bias` files.
+- **Biases** — dynamically enumerates all HAL LL-biases; slider + spinbox + reset per bias; save/load `.bias` files. On inivation devices an **Auto Bias** group appears: it keeps the event rate inside a user band, rebalances ON/OFF when one polarity dominates, and homes the biases to defaults when both constraints hold (DVXplorer drives the contrast thresholds with inverted signs).
 - **ROI** — multi-rectangle ROI / RONI via `I_ROI`; drag-to-select on the display; apply/clear.
 - **ESP** — Anti-Flicker (mode / band / presets / duty cycle / threshold), Trail Filter (type / threshold), ERC (target event rate).
 - **Trigger** — Trigger In (per-channel enable) + Trigger Out (enable / period / duty cycle).
 - **Preprocessing** — 8-stage filter chain (see [Preprocessing](#preprocessing-filter-chain)).
 
-All hardware panels auto-disable during file playback (no HAL facility available) and degrade gracefully when a device lacks a facility.
+All hardware panels degrade gracefully when a device lacks a facility; on AEDAT4 replay the IMU/APS side streams are handled by the Devices-panel checkboxes instead (see Recording & Playback).
 
 ### Algorithms group
-- **File Tools** — RAW recording, file cutter, format conversion (RAW ↔ HDF5 ↔ CSV), AVI export.
+- **File Tools** — recording (RAW for Prophesee; AEDAT4 for inivation), file cutter, format conversion (RAW ↔ HDF5 ↔ CSV), AVI export.
 - **Algorithms** — algorithm selection + shared preprocessing (ROI, noise filter, 1/4 downsample, undistort) + per-algorithm parameters. See [Algorithms](Algorithms.md).
 
 ## Display
@@ -90,7 +90,7 @@ The **Tools** dropdown menu (in the custom title bar) hosts two calibration-adja
 
 ### Intrinsic Wizard
 
-A dialog that calibrates the camera intrinsics using only events (no APS frames). The pattern is embedded in the dialog: a **blinking chessboard** (9×6 inner corners = 10×7 squares — asymmetric so the checkerboard has a unique orientation) that alternates with a blank frame every 10 ms (a 20 ms full cycle), rendered as two cached pixmaps toggled by a timer for a stutter-free preview. The square size is a user-supplied millimeter value (measure one edge of a square with a ruler and type it in — screen DPI is deliberately not used, it is unreliable on X11).
+A dialog that calibrates the camera intrinsics using only events (no APS frames). The pattern is embedded in the dialog: a **blinking chessboard** (9×6 inner corners = 10×7 squares — asymmetric so the checkerboard has a unique orientation) that alternates with a blank frame every 10 ms (a 20 ms full cycle), rendered as two cached pixmaps toggled by a timer for a stutter-free preview. The square size defaults to **0 = "not measured"** — captures are pixel observations and stay valid while the value is 0; measure one edge of a square with a ruler and type it in (screen DPI is deliberately not used, it is unreliable on X11). Entering the value runs the calibration automatically, the value can be corrected at any time without losing the captures, and Export reminds you while the size is still 0.
 
 While the wizard is open, **Auto Bias** is enabled automatically with the rate band forced to 19–20 Mev/s, so the capture window sees a dense-but-bounded event stream no matter how strong the LCD backlight-PWM noise floor is. Closing the wizard disables Auto Bias again; the pre-wizard bias values and rate band are restored.
 
@@ -100,7 +100,7 @@ Workflow:
 2. **Capture (Space)** — the wizard takes the last capture-window (default 100000 µs, tunable 200–200000 µs) of CD events, accumulates per-pixel ON/OFF event counts, thresholds them adaptively (0.30 × the 99th percentile of the per-pixel distribution, clamped 12–64) into a binary blink frame, and runs `cv::findChessboardCorners` (`CALIB_CB_FILTER_QUADS` only — no cornerSubPix on binary frames) with a radial straightness gate and a corner-bridge fallback. A successful detection is committed directly through the coverage (≥ 4% of the frame area) and duplicate-pose gates — there is no review dialog; a failure is reported on the status line.
 3. **Run Calibration + Export** — when the target frame count (default 20) is reached, run the two-pass Zhang calibration (pass 1 fixes aspect ratio + K3 and drops views whose per-view RMS exceeds mean + 2·std, pass 2 refits the kept views with K3 free) and export to YAML. The default path is `~/Documents/EBplus/calibration/intrinsic.yml` (identical to the undistort preprocessor's default path) and writes `image_width`, `image_height`, `camera_matrix`, `distortion_coefficients`, `rms`, plus per-view RMS and kept/removed frame counts.
 
-Controls: capture window, square size (mm), target frames, progress bar, live preview of the last accepted frame, and a **Delete this capture** button (removes the last accepted frame from the calibration).
+Controls: capture window, square size (mm, 0 = not measured), target frames, progress bar, live preview of the last accepted frame, and a **Delete this capture** button (removes the last accepted frame from the calibration).
 
 ### Sharpness
 
@@ -114,12 +114,14 @@ Not a menu item, but related: in the **Algorithms** panel's Preprocessing group,
 
 ## Recording & Playback
 
-- **RAW recording** — record live camera streams to `.raw` with real-time buffer flushing.
-- **Playback** — open `.raw` files; speed control, seek, pause/resume, position tracking. Playback window displays integer microseconds (no scientific notation); playback rate shows 6 decimal places.
+- **Prophesee / CenturyArks** — record to `.raw` (SDK RAW format).
+- **inivation DAVIS / DVXplorer** — record to **AEDAT4** (DV-native): the file carries the event stream plus the IMU samples and (DAVIS) APS frames.
+- **Playback** — open `.raw`, `.aedat4` and `.alpdata` files; speed control, seek, pause/resume, position tracking. Playback window displays integer microseconds (no scientific notation); playback rate shows 6 decimal places.
+- **AEDAT4 replay visualization** — a recording that contains IMU samples and/or APS frames shows the same **IMU stream** / **APS frames** checkboxes (Devices panel) as a live camera; the IMU and APS windows work against the replayed data exactly as against hardware.
 - **Loop playback** — cyclic playback; algorithm temporal state resets on each loop to avoid frozen output.
 - **File cutter** — extract a time range from an event file.
 
-The playback dock can be toggled with `Ctrl+Shift+P`.
+The playback dock can be toggled with `Ctrl+Shift+P`. Recording a replay is refused (recordings capture live cameras only).
 
 ## Export & Conversion
 
@@ -141,6 +143,8 @@ Available from the File Tools panel:
 ## Multi-Window
 
 - **XYT 3D point cloud** — GPU-accelerated 3D event visualization (`SpaceTimeDisplay`, VBO + GLSL).
+- **IMU window** (inivation cameras and AEDAT4 replays with an IMU stream) — accel/gyro/temperature readouts plus a 3D attitude view: a camera-shaped cuboid drawn in the estimated orientation. The attitude comes from a gyro-dominant estimator (dv-processing-style constant gyro offset + a weak gravity anchor at rest): the first near-1 g sample aligns instantly, the bias converges by itself over the first seconds while the camera rests, motion is tracked purely by the gyro (closed paths return), and yaw drifts slowly by physics — a 6-axis IMU has no compass.
+- **APS window** (DAVIS cameras and AEDAT4 replays with frames) — grayscale frame preview with **automatic exposure** (reference-style under/over-exposure correction; the applied exposure is written back to the sensor).
 - **Algorithm display windows** — `AlgoWindow` dockable windows showing algorithm title + output only (no parameters — those live in the sidebar).
 - **Layout persistence** — save/restore dock geometry and window positions to JSON (View → Save/Load Layout).
 

@@ -29,6 +29,8 @@
 ```bash
 sudo apt update
 sudo apt -y install apt-utils build-essential software-properties-common wget unzip curl git cmake
+# libusb-1.0-0-dev 为可选项：未安装时 inivation（DAVIS/DVXplorer）设备层自动编译剔除，
+# 其余功能不受影响（v3.0 起）。
 sudo apt -y install libopencv-dev libboost-all-dev libusb-1.0-0-dev libprotobuf-dev protobuf-compiler
 sudo apt -y install libhdf5-dev hdf5-tools libglew-dev libglfw3-dev libcanberra-gtk3-module ffmpeg
 sudo apt -y install libgl-dev libglx-dev libopengl-dev

@@ -1,6 +1,6 @@
 # Architecture
 
-EB plus is split into two top-level layers: the **GUI application** (`gui/`) and the **self-developed algorithm library** (`algo/`). The openEB SDK (`openeb/`, Apache 2.0) is included as a subtree and provides the camera HAL, event decoding, and 30 wrapped algorithms.
+EB plus is split into two top-level layers: the **GUI application** (`gui/`) and the **self-developed algorithm library** (`algo/`). The openEB SDK (`openeb/`, Apache 2.0) is included as a subtree and provides the Prophesee/CenturyArks camera HAL and event decoding. Inivation DAVIS/DVXplorer cameras connect through a self-contained libusb device layer (`gui/davis/`, ported from the dv-processing reference).
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -34,6 +34,7 @@ GUI-for-openEB/
 │   ├── main.cpp              # entry point; env-var defaults, OpenGL format, font
 │   ├── main_window.*         # main window: title-bar menus, docks, signal wiring
 │   ├── widgets/              # CustomTitleBar, ActivityBar, AlgoWindow, pixel probe,
+│   │                         #   imu_window (3D attitude), aps_window (frames + AEC),
 │   │                         #   target labeler, mouse adaptor
 │   ├── panels/               # 11 sidebar panels (AbstractPanel base)
 │   │   ├── abstract_panel.*      # base class: camera lifecycle decoupling
@@ -55,9 +56,14 @@ GUI-for-openEB/
 │   │   ├── frame_annotator.*      # bbox/ID/trajectory/arrow overlays
 │   │   └── space_time_display.*   # XYT 3D point cloud (VBO + GLSL)
 │   ├── app/                  # controllers
-│   │   ├── camera_controller.*    # camera lifecycle, HAL facility access
+│   │   ├── camera_controller.*    # camera lifecycle (live + file), conditioning
+│   │   ├── stream_conditioner.*   # ONE conditioning pass per source (ROI →
+│   │   │                          #   filters → noise → thin → undistort → flips)
 │   │   ├── frame_pipeline.*       # CD events → QImage rendering
-│   │   ├── file_frame_generator.* # file-source frame generation + loop/flip
+│   │   ├── file_frame_generator.* # file-source frame generation + loop/flip/seek
+│   │   ├── external_file_source.* # AEDAT4/ALPDATA playback source interface
+│   │   ├── aedat4_file_source.*   # DV-native AEDAT4 reader (events/IMU/APS)
+│   │   ├── lz4_frame_decoder.*    # built-in LZ4 frame decoder
 │   │   ├── statistics_controller.*# event-rate computation
 │   │   ├── file_converter.*       # background RAW/HDF5/CSV conversion
 │   │   ├── icon_provider.*        # SVG icon cache (theme-adaptive)
@@ -80,10 +86,19 @@ GUI-for-openEB/
 │   │       ├── openeb_frame_backends.cpp     # openEB frame-mode wrappers
 │   │       ├── openeb_preproc_backends.cpp  # openEB preprocessor wrappers
 │   │       └── openeb_util_backends.cpp      # openEB utility wrappers
-│   ├── recorder/             # RAW recording & playback
+│   ├── recorder/             # RAW/AEDAT4 recording & playback
 │   │   ├── recorder_controller.*
+│   │   ├── aedat4_writer.*         # DV-native AEDAT4 writer (events+IMU+APS)
 │   │   ├── playback_controller.*
 │   │   └── playback_controls.*
+│   ├── davis/                # inivation device layer (libusb, no SDK)
+│   │   ├── davis_device.* / dvxplorer_device.*   # USB transport + chip init
+│   │   ├── davis_parser.* / dvxplorer_parser.*   # wire decoders
+│   │   ├── davis_biases.* (+ LL adapters)        # per-model bias maps
+│   │   ├── batch_worker.h                        # USB→worker batch handoff
+│   │   ├── imu_decoder.h / imu_pose.h            # IMU6 decode + attitude
+│   │   ├── aps_decoder.h / auto_exposure.h       # APS frames + AEC
+│   │   └── 66-inivation.rules                    # udev rules
 │   ├── exporter/             # HDF5/CSV/AVI export
 │   ├── calibration/          # intrinsic wizard
 │   ├── config/               # JSON config + layout persistence
@@ -95,19 +110,20 @@ GUI-for-openEB/
 │   │   ├── theme.qrc
 │   │   └── icons.qrc
 │   └── tests/                # GUI unit tests (GTest + CTest)
-├── algo/                  # self-developed algorithm library (29 registered)
+├── algo/                  # self-developed algorithm library (21 of these are registered)
 │   ├── common/               # event packets, frame generator, filters, Kalman, LIF, ...
-│   ├── cv/                   # 21 CV algorithms + noise_filter (8 modes)
-│   ├── analytics/            # 7 analytics algorithms + e2vid/ ONNX inference
-│   ├── calibration/          # intrinsic calibration
-│   └── tests/                # algorithm tests (288 TEST() macros)
+│   ├── cv/                   # 22 CV algorithm headers + noise_filter (8 modes)
+│   ├── analytics/            # auto-bias controller, E2VID, frequency analytics,
+│   │                         #   sensor self-test + e2vid/ ONNX inference
+│   ├── calibration/          # intrinsic calibration (blink detect + two-pass solver)
+│   └── tests/                # algorithm tests
 ├── openeb/                # openEB SDK (Apache 2.0, v5.2.0)
 ├── models/                # E2VID PyTorch → ONNX conversion (convert_to_onnx.py)
 ├── third_party/           # ONNX Runtime (user-installed, git-ignored)
 ├── wiki/                  # this wiki
 ├── pic/                   # screenshots
 ├── run.sh                 # launcher (env vars)
-├── CMakeLists.txt         # v2.7.1
+├── CMakeLists.txt         # v3.0.0
 ├── LICENSE                # MIT (original code)
 ├── README.md              # English
 └── README_CN.md           # Chinese
@@ -117,7 +133,7 @@ GUI-for-openEB/
 
 ### AlgoBridge
 
-The central algorithm registry (`gui/algo_bridge/algo_bridge.cpp`). Holds a `std::unordered_map<std::string, AlgoInfo>` of all 59 algorithms. Each entry has:
+The central algorithm registry (`gui/algo_bridge/algo_bridge.cpp`). Holds a `std::unordered_map<std::string, AlgoInfo>` of all 25 registered algorithms (21 self-developed + 4 OpenEB filter stages). Each entry has:
 
 - `name` — registry key (e.g. `"object_tracker"`)
 - `display_name` — UI label (e.g. `"Object Tracker"`)
@@ -146,33 +162,53 @@ Base class for all sidebar panels (`panels/abstract_panel.*`). Decouples panels 
 
 ## Data Flow
 
-### Online camera mode
+### Prophesee / CenturyArks camera mode
 
 ```
-Camera (HAL) → I_EventsStream callback → FramePipeline
-    → FilterChain (display path) → EventDisplayWidget (OpenGL)
-    → AlgoBridge.process(events) → AlgoResult → IDisplayStrategy → display/AlgoWindow
+Camera (HAL) → I_EventsStream callback → StreamConditioner
+    → FramePipeline / display / AlgoBridge → IDisplayStrategy → display/AlgoWindow
 ```
 
-- Playback rate is locked to 1.
-- Slow algorithms (e.g. E2VID without ROI/downsample) run on an async worker thread; old pending event batches are discarded so the display shows recent frames.
-- Event drop rate (`total_dropped / total_pushed`) is computed per algorithm instance and shown in the Information/Statistics panel.
+### inivation DAVIS / DVXplorer mode
+
+```
+USB bulk transfers → davis/dvxplorer Parser (USB decode thread)
+    → raw_consumer (AEDAT4 recording tap — pre-queue, never dropped)
+    → BatchWorker queue (bounded, drop-oldest) → worker thread
+    → StreamConditioner → FramePipeline / display / AlgoBridge
+IMU words + APS pixels decode INLINE on the USB thread and feed the
+controller ring / APS slots directly (latency-critical, never queued).
+```
+
+- One conditioning pass per source: unified ROI → polarity stages → noise
+  filter → thinning → undistort → flips; every consumer shares the output.
+- The DAVIS hardware ROI filter and the DVS ROI register writes mirror the
+  unified ROI set from the GUI.
+- The Auto Bias controller measures the RAW stream (biases act before any
+  conditioning) and applies bias deltas on the GUI thread.
 
 ### File playback mode
 
 ```
-RAW file → FileFrameGenerator → FramePipeline
-    → FilterChain (applied to window_events) → display + AlgoBridge
+RAW (SDK)           → SDK offline stream → FramePipeline
+AEDAT4 / ALPDATA    → external source reader thread → FramePipeline buffer
+                    → FileFrameGenerator (loop / seek / rate) → display + AlgoBridge
 ```
 
-- Playback rate is auto-calculated; seek/pause/resume supported.
+- All events buffer on open (real_time_playback=false); playback rate,
+  seek, pause/resume and loop run from the buffer. AEDAT4 replays surface
+  their IMU/APS side streams through the same controller slots as live
+  devices (the IMU ring decodes once, in file order — seek acts on the
+  event/frame buffer).
 - Loop playback re-signals algorithm `reset()` to clear temporal state each iteration.
-- FilterChain is applied to both display and algorithm event windows so flip/rotate/ROI stay consistent.
 
 ## Threading Model
 
 - **GUI thread** — all panel interaction, display rendering, most algorithm processing.
 - **SDK data thread** — openEB event-stream callback (FramePipeline). FilterChain is mutex-protected.
+- **USB decode thread** (inivation devices) — libusb event handling + wire decoding; IMU/APS sinks and the recording tap run here.
+- **Batch worker thread** (inivation devices) — runs the per-batch pipeline (conditioning, statistics, display push) off the USB thread; the queue is bounded and drops the oldest batch under a flood.
+- **External file reader thread** — decodes AEDAT4/ALPDATA files into the playback buffer.
 - **Async worker thread** — used by `AlgoInstance` for slow online-camera algorithms; discards stale batches.
 - **File converter thread** — background RAW/HDF5/CSV conversion (`file_converter.cpp`).
 
@@ -185,7 +221,7 @@ RAW file → FileFrameGenerator → FramePipeline
 
 ## Build System
 
-- `CMakeLists.txt` (root) — project version 2.7.1, C++17, GCC 15 `<cstdint>` fix.
+- `CMakeLists.txt` (root) — project version 3.0.0, C++17, GCC 15 `<cstdint>` fix.
 - `find_package` for Qt6, MetavisionSDK 5.2.0, OpenCV.
 - ONNX Runtime auto-detected from `third_party/onnxruntime/` (with RPATH configured).
 - `enable_testing()` before `add_subdirectory` so GUI/algo tests register with CTest.

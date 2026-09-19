@@ -108,10 +108,10 @@ Then **unplug and replug the camera** (so the session permission tag applies), a
 | Auto Bias controller | ✅ (`diff_on`/`diff_off`, homes to 1535/1025) | ✅ (same axes; homes to 1535/1024 on 240) | ✅ (`contrast_on`/`contrast_off`, homes to the 9/9 defaults; coarse 18-step control; hardware-verified 2026-09-19) |
 | Algorithms (all), unified software ROI, statistics | ✅ | ✅ | ✅ |
 | Hardware ROI filter | ✅ keep-inside (falls back to software) | ✅ | ❌ (software only) |
-| RAW recording | ✅ AEDAT4 (DV-native; processed-stream recording too) | ✅ AEDAT4 | ✅ AEDAT4 |
+| Recording | ✅ AEDAT4 (DV-native: events + IMU + APS frames) | ✅ AEDAT4 (same streams) | ✅ AEDAT4 (events + IMU) |
 | Trigger / ESP panels | auto-hidden (no facilities) | auto-hidden | auto-hidden |
-| IMU stream (checkbox + readout window) | ✅ | ✅ | ✅ |
-| APS frames (checkbox + preview window) | ✅ (grayscale) | ✅ (grayscale; 240 gain quirk handled) | ❌ (no APS hardware) |
+| IMU stream (checkbox + readout window) | ✅ live + AEDAT4 replay | ✅ live + AEDAT4 replay | ✅ live + AEDAT4 replay |
+| APS frames (checkbox + preview window, auto exposure) | ✅ (grayscale) live + AEDAT4 replay | ✅ (grayscale; 240 gain quirk handled) | ❌ (no APS hardware) |
 | Firmware / logic at connect | FX3 fw 6 · FX2 fw 4 · logic 18 patch ≥ 1 | same as 346/640 | FX3 fw 9 · logic 18 patch ≥ 4 |
 
 ¹ DAVIS240A/B/C and CDAVIS follow the reference implementation (own register map, defaults and quirks) but have **not been tested on hardware** — expect a connect-time error for genuinely unsupported combinations.

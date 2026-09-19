@@ -1,8 +1,8 @@
 # Algorithms
 
-EB plus ships **59 algorithms** registered in a single `AlgoBridge` registry (`gui/algo_bridge/algo_bridge.cpp`):
+The GUI ships a single `AlgoBridge` algorithm registry (`gui/algo_bridge/algo_bridge.cpp`):
 
-- **24 registered** algorithms (20 self-developed + 4 OpenEB filter stages). The sidebar shows all self-developed algorithms under a single **Analytics** group (the former Computer Vision group was merged in 2026-08-22). `intrinsic_calibration` was removed from the registry — it is now a **Tools → Intrinsic Wizard** dialog. Undistortion is available as a stackable preprocessing checkbox in the Algorithms panel (`preproc_undistort_enabled` / `preproc_undistort_path`).
+- **25 registered** algorithms (21 self-developed + 4 OpenEB filter stages). The sidebar shows all self-developed algorithms under a single **Analytics** group (the former Computer Vision group was merged in 2026-08-22). `intrinsic_calibration` was removed from the registry — it is now a **Tools → Intrinsic Wizard** dialog. Undistortion is available as a stackable preprocessing checkbox in the Algorithms panel (`preproc_undistort_enabled` / `preproc_undistort_path`).
 - **30 OpenEB-wrapped** capabilities (10 filters + 7 frame modes + 7 preprocessors + 6 utilities)
 
 Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a global ROI (default: center 128×128) and a shared preprocessing stage. All parameters are adjusted exclusively in the sidebar's **Algorithms** panel; algorithm display windows show only the title and output.
@@ -49,7 +49,7 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 
 ## Self-Developed Algorithms
 
-### Self-Developed (20) — sidebar group "Analytics"
+### Self-Developed (21) — sidebar group "Analytics"
 
 | Algorithm | Display | Notes |
 |-----------|---------|-------|
