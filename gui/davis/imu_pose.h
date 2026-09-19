@@ -60,6 +60,8 @@ public:
     void reset() {
         w_ = 1; x_ = 0; y_ = 0; z_ = 0;
         bias_x_ = bias_y_ = bias_z_ = 0;
+        still_run_us_ = 0;
+        aligned_t_us_ = -1;
         aligned_ = false;
         last_t_ = -1;
     }
@@ -92,6 +94,7 @@ public:
                 z_ = 0;
             }
             aligned_ = true;
+            aligned_t_us_ = s.t;
             last_t_ = s.t;
             return;
         }
@@ -126,11 +129,23 @@ public:
             wz += two_kp_ * ez;
         }
 
-        // Still-gated bias refinement: only when the chip is not rotating
-        // AND the attitude already agrees with gravity is gyro − bias pure
-        // bias. A slow first-order leak (tau 2 s) converges in seconds and
-        // follows temperature drift; motion of any kind freezes it.
-        if (at_rest &&
+        // Bias refinement, frozen like the reference's constant offset.
+        // The leak runs ONLY while (a) the chip is quasi-still by every
+        // gate AND (b) one of: the initial warm-up since alignment (so the
+        // zero-init estimate converges), or an unbroken >= 3 s park at
+        // < 3 deg/s (a deliberate "put it down", which re-opens the leak
+        // for temperature re-calibration). Mid-motion pauses and slow
+        // rotations never sustain 3 s below 3 deg/s, so between parks the
+        // bias is FROZEN — closed paths then close with pure
+        // bias-subtracted integration, exactly like the reference.
+        const bool park_sample = gravity_ok && gm < kParkGyroDps;
+        if (park_sample) {
+            still_run_us_ += static_cast<std::int64_t>(dt * 1e6);
+        } else {
+            still_run_us_ = 0;
+        }
+        const bool warmup = aligned_t_us_ >= 0 && s.t - aligned_t_us_ < kWarmupUs;
+        if (at_rest && (warmup || still_run_us_ >= kParkHoldUs) &&
             std::sqrt(ex * ex + ey * ey + ez * ez) < kBiasTiltErrorGate) {
             const double a = dt / kBiasTauS;
             bias_x_ += (s.gyro_x - bias_x_) * a;
@@ -181,6 +196,17 @@ private:
     static constexpr double kBiasTiltErrorGate = 0.05;
     /// Bias leak time constant (s).
     static constexpr double kBiasTauS = 2.0;
+    /// Park discrimination for re-opening the bias leak after the initial
+    /// warm-up: the run counts only below this rotation rate (true park;
+    /// handheld rest reads |bias| + tremor ~ 1.5-2 deg/s, deliberate slow
+    /// rotations read more).
+    static constexpr double kParkGyroDps = 3.0;
+    /// The leak re-opens only after this much unbroken park (us). Mid-
+    /// motion direction-reversal pauses are ~ 0.5-2 s and never reach it.
+    static constexpr std::int64_t kParkHoldUs = 3000000;
+    /// Initial warm-up after alignment during which the leak runs
+    /// unconditionally (the zero-init estimate converges here).
+    static constexpr std::int64_t kWarmupUs = 10000000;
 
     static Q4 qmul(const Q4& a, const Q4& b) {
         return {a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
@@ -194,6 +220,8 @@ private:
     double two_kp_{4.0};
     bool aligned_{false};
     std::int64_t last_t_{-1};
+    std::int64_t aligned_t_us_{-1};
+    std::int64_t still_run_us_{0};
 };
 
 } // namespace gui::davis

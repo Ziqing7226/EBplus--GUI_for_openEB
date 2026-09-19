@@ -1356,7 +1356,8 @@ TEST(ImuPoseFilter, ClosedMotionReturnsToStart) {
         }
     };
 
-    run(8000, 0.0);       // still: alignment is instant, bias converges
+    run(12000, 0.0);      // still: alignment instant, bias converges and the
+                         // 10 s warm-up ends before the motion starts
     run(1000, 30.0);      // +30 deg/s for 1 s
     run(1000, -30.0);     // and back to the start attitude
     run(1000, 0.0);       // settle
@@ -1539,6 +1540,79 @@ TEST(ImuPoseFilter, MidRangeMotionStaysGyroPure) {
     }
     const double err = up_angle_deg(pose, q_true.x, q_true.y, q_true.z, q_true.w);
     EXPECT_LT(err, 2.0) << "post-motion residual " << err << " deg";
+}
+
+TEST(ImuPoseFilter, SlowPanDoesNotCorruptTheBias) {
+    // The v6 freeze: after the initial warm-up the bias leak re-opens ONLY
+    // on an unbroken >= 3 s park below 3 deg/s. A sustained slow pan at
+    // 5 deg/s (below the 10 deg/s rest gate of the tilt correction, above
+    // the park gate) must NOT be absorbed — the pre-v6 leak absorbed the
+    // full rate (measured: 10 s @ 5 deg/s -> bias exactly +5.0), which
+    // broke closed-path returns on the real camera.
+    gui::davis::ImuPose pose;
+    const float bx = 0.5F, by = 1.383F, bz = 0.418F;
+    for (int i = 0; i < 12000; ++i) {  // 12 s rest: converged + warm-up over
+        pose.update(make_imu(1000LL * i, -0.93F, 0.20F, -0.09F, bx, by, bz));
+    }
+    ASSERT_TRUE(pose.aligned());
+    const double frozen_x = pose.bias_x_dps(), frozen_y = pose.bias_y_dps(),
+                 frozen_z = pose.bias_z_dps();
+
+    struct Q { double w, x, y, z; };
+    const auto qmul = [](Q a, Q b) {
+        return Q{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+                 a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                 a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                 a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+    };
+    const auto qnorm = [](Q q) {
+        const double n = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+        return Q{q.w / n, q.x / n, q.y / n, q.z / n};
+    };
+    const auto inv_rot = [&](Q q, double vx, double vy, double vz,
+                             double* ox, double* oy, double* oz) {
+        const Q i{q.w, -q.x, -q.y, -q.z};
+        const double tx = 2.0 * (i.y * vz - i.z * vy);
+        const double ty = 2.0 * (i.z * vx - i.x * vz);
+        const double tz = 2.0 * (i.x * vy - i.y * vx);
+        *ox = vx + i.w * tx + (i.y * tz - i.z * ty);
+        *oy = vy + i.w * ty + (i.z * tx - i.x * tz);
+        *oz = vz + i.w * tz + (i.x * ty - i.y * tx);
+    };
+    Q q_true{1, 0, 0, 0};
+    {
+        const double n = std::sqrt(0.93 * 0.93 + 0.20 * 0.20 + 0.09 * 0.09);
+        const double ux = -0.93 / n, uy = 0.20 / n, uz = -0.09 / n;
+        const double ax = uy, ay = -ux;
+        const double an = std::sqrt(ax * ax + ay * ay);
+        const double ang = std::acos(std::clamp(uz, -1.0, 1.0));
+        q_true = Q{std::cos(ang / 2), ax / an * std::sin(ang / 2),
+                   ay / an * std::sin(ang / 2), 0};
+    }
+    // 10 s of slow pan at 5 deg/s (50 deg total), physically consistent
+    // accel, then 2 s of rest — well short of the 3 s park re-open.
+    std::int64_t t = 12000000;
+    const double rate = 5.0;
+    for (int i = 0; i < 12000; ++i, t += 1000) {
+        const double apply = (i < 10000) ? rate : 0.0;
+        const double norm = std::abs(apply) * M_PI / 180.0;
+        if (norm > 1e-9) {
+            const double half = 1e-3 * norm / 2.0;
+            q_true = qnorm(qmul(q_true, Q{std::cos(half), 0, std::sin(half), 0}));
+        }
+        double ux, uy, uz;
+        inv_rot(q_true, 0, 0, 1, &ux, &uy, &uz);
+        pose.update(make_imu(t, static_cast<float>(ux), static_cast<float>(uy),
+                             static_cast<float>(uz), bx,
+                             static_cast<float>(apply + by), bz));
+    }
+    EXPECT_DOUBLE_EQ(pose.bias_x_dps(), frozen_x);
+    EXPECT_DOUBLE_EQ(pose.bias_y_dps(), frozen_y);
+    EXPECT_DOUBLE_EQ(pose.bias_z_dps(), frozen_z);
+    // Tilt stays tracked throughout (the 5 deg/s pan is below the tilt
+    // correction's 10 deg/s rest gate, so gravity re-anchors roll/pitch).
+    const double err = up_angle_deg(pose, q_true.x, q_true.y, q_true.z, q_true.w);
+    EXPECT_LT(err, 3.0) << "slow-pan tilt residual " << err << " deg";
 }
 
 TEST(ImuPoseFilter, ResetClearsState) {
