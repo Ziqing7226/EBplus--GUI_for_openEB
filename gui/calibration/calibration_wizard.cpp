@@ -79,7 +79,9 @@ constexpr int kDefaultCaptureWindowUs = 100000;
 // window still collects a dense blink frame, low enough that the USB link
 // (which saturates around ~104 Mev/s under the LCD backlight-PWM noise floor)
 // is never the bottleneck. 19.0/20.0 render cleanly in the Biases panel's
-// 1-decimal spinboxes.
+// 1-decimal spinboxes. The values are tuned for the 1280×720 reference
+// sensor — apply_auto_bias_override scales them with the connected
+// camera's pixel count.
 constexpr float kCalibrationRateMinMev = 19.0F;
 constexpr float kCalibrationRateMaxMev = 20.0F;
 
@@ -368,8 +370,8 @@ void CalibrationWizard::showEvent(QShowEvent* event) {
 void CalibrationWizard::apply_auto_bias_override() {
     // Auto Bias for the wizard session (2026-08-23, replaces the diff-bias
     // max-out override): while the wizard is open the camera-level Auto Bias
-    // controller keeps the total event rate inside [19, 20] Mev/s by adjusting
-    // bias_diff_on/off on-sensor. The blink-capture window then sees a
+    // controller keeps the total event rate inside the scaled [19, 20] Mev/s
+    // band by adjusting bias_diff_on/off on-sensor. The blink-capture window then sees a
     // dense-but-bounded stream no matter how strong the LCD backlight-PWM
     // noise floor is (the old fixed "both biases to max" was a blunt hammer
     // and left the rate wherever the sensor settled). The controller's
@@ -382,8 +384,17 @@ void CalibrationWizard::apply_auto_bias_override() {
     }
     float lo = 0.F, hi = 0.F;
     camera_->auto_bias_rate_bounds(lo, hi);
-    if (!camera_->set_auto_bias_rate_bounds(kCalibrationRateMinMev,
-                                            kCalibrationRateMaxMev)) {
+    // The band was tuned for the 1280×720 reference sensor; scale it with
+    // the connected camera's pixel count so every resolution sees the same
+    // per-pixel event density (a 640×480 camera gets a third of the rate).
+    const auto& info = camera_->sensor_info();
+    const float pixels = (info.width > 0 && info.height > 0)
+                             ? static_cast<float>(info.width) *
+                               static_cast<float>(info.height)
+                             : 1280.0F * 720.0F;
+    const float scale = pixels / (1280.0F * 720.0F);
+    if (!camera_->set_auto_bias_rate_bounds(kCalibrationRateMinMev * scale,
+                                            kCalibrationRateMaxMev * scale)) {
         return;
     }
     if (!camera_->set_auto_bias_enabled(true)) {
