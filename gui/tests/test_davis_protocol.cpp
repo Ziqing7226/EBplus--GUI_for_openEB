@@ -818,7 +818,8 @@ TEST(DavisImu, DecodesFullSampleWithStraightTagsAndDavistemp) {
     std::vector<Metavision::EventCD> dropped;
     feed(parser, {special_word(1), ts_word(500)}, dropped);
 
-    const std::uint16_t scale = imu_scale_word(7, 3, 0);  // ±16 g, ±2000 °/s
+    const std::uint16_t scale =
+        static_cast<std::uint16_t>(0x5000 | (3 << 8) | (7 << 5) | (3 << 2) | 0);  // DAVIS layout  // ±16 g, ±2000 °/s
     std::array<std::uint8_t, 14> bytes = {
         0x04, 0x00,  // tag1 = accelX raw +1024 → 1024/2048 g
         0x00, 0x01,  // tag3 = accelY raw +1
@@ -1007,6 +1008,40 @@ TEST(DavisAps, Davis240GainShift) {
     // Both passes shift: reset 800 → clamp(1600) = 1023 → 255; signal
     // 400 → clamp(800) = 800 → 200; CDS = 255 − 200 = 55.
     EXPECT_FLOAT_EQ(frame.image.at<std::uint8_t>(0, 0), 55);
+}
+
+TEST(DavisImu, ScaleConfigUsesDavisBitLayout) {
+    // The DAVIS Scale Config word packs the accel range at bits [3:2]
+    // (DVXplorer packs it at [4:3]) — the reference reads `data >> 2` here.
+    // type = accel|gyro|temp (7), accel code 1 = +-4 g (8192 LSB/g),
+    // gyro code 0 = +-2000 deg/s (16.4 LSB/deg/s).
+    gui::davis::Parser parser(346, 260, false);
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1), ts_word(100)}, dropped);
+
+    const std::uint16_t scale =
+        static_cast<std::uint16_t>(0x5000 | (3 << 8) | (4 << 5) | (1 << 2) | 0);  // accel only
+    gui::davis::ImuSample got;
+    parser.set_imu_sink([&got](const gui::davis::ImuSample& s) { got = s; });
+
+    // accel_x raw 8192 (0x2000) → 8192 / 8192 = 1.00 g with the CORRECT
+    // (misread as 16384 → 0.5 g with the DVXplorer layout).
+    std::vector<std::uint16_t> words{special_word(5), scale};
+    const std::uint16_t accel_raw = 8192;
+    words.push_back(imu_data_word(static_cast<std::uint8_t>(accel_raw >> 8)));
+    words.push_back(imu_data_word(static_cast<std::uint8_t>(accel_raw & 0xFF)));
+    words.push_back(imu_data_word(0));  // accel_y hi
+    words.push_back(imu_data_word(0));  // accel_y lo
+    words.push_back(imu_data_word(0));  // accel_z hi
+    words.push_back(imu_data_word(0));  // accel_z lo
+    words.push_back(ts_word(300));
+    words.push_back(special_word(7));  // IMU end → emit
+    feed(parser, words, dropped);
+
+    // Type = 4 (accel only): after accel_z the count jumps +8 → complete.
+    ASSERT_TRUE(got.valid);
+    EXPECT_FLOAT_EQ(got.accel_x, 1.0F);
+    EXPECT_FLOAT_EQ(got.accel_y, 0.0F);
 }
 
 TEST(DavisAps, FlipBitMirrorsColumnPlacement) {

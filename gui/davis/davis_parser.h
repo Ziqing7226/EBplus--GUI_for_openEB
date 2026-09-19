@@ -90,8 +90,9 @@ private:
     std::int64_t current_{0};
     std::int16_t last_y_{0};
 
-    // DAVIS: X/Y tags carry X first; temperature formula by chip model.
-    ImuDecoder imu_{false, false};
+    // DAVIS: X/Y tags carry X first; temperature formula by chip model;
+    // accel range code at Scale Config bits [3:2].
+    ImuDecoder imu_{false, false, 2, 0x03};
 
     // APS frame stream (DAVIS-only hardware).
     ApsDecoder aps_;

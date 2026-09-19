@@ -26,8 +26,11 @@ public:
     ///        @param bmi160_temp true for the DVXplorer formula
     ///        (raw/512 + 23); false for the DAVIS family (InvenSense
     ///        6500/9250: raw/333.87 + 21, otherwise raw/340 + 35).
-    ImuDecoder(bool swap_xy, bool bmi160_temp)
-        : swap_xy_(swap_xy), bmi160_temp_(bmi160_temp) {}
+    ///        @param accel_shift 3 for DVXplorer (accel range code at
+    ///        Scale Config bits [4:3]) and 2 for DAVIS (bits [3:2]).
+    ImuDecoder(bool swap_xy, bool bmi160_temp, int accel_shift, int gyro_mask)
+        : swap_xy_(swap_xy), bmi160_temp_(bmi160_temp), accel_shift_(accel_shift),
+          gyro_mask_(gyro_mask) {}
 
     void set_model(ImuModel model) { model_ = model; }
     void set_sink(const ImuSink& sink) { sink_ = sink; }
@@ -44,10 +47,11 @@ public:
     /// [5:3] accel range (0=±2 g … 3=±16 g), [2:0] gyro range (0=±2000 …
     /// 4=±125 °/s, descending).
     void scale_config(std::uint16_t data) {
-        accel_scale_ = 65536.0F / static_cast<float>(4 * (1 << ((data >> 3) & 0x03)));
+        accel_scale_ = 65536.0F / static_cast<float>(4 * (1 << ((data >> accel_shift_) & 0x03)));
         // Range codes are 0..4 (descending); clamp corrupted words to 4 —
         // a negative shift would be undefined behavior.
-        const auto gyro_range = static_cast<int>(data & 0x07) > 4 ? 4 : (data & 0x07);
+        const auto gyro_range =
+            static_cast<int>(data & gyro_mask_) > 4 ? 4 : static_cast<int>(data & gyro_mask_);
         gyro_scale_ = 65536.0F / static_cast<float>(250 * (1 << (4 - gyro_range)));
         type_ = static_cast<std::uint8_t>(data >> 5) & 0x07;
         if (type_ & 0x04) {
@@ -126,6 +130,8 @@ private:
 
     bool swap_xy_{false};
     bool bmi160_temp_{false};
+    int accel_shift_{3};
+    int gyro_mask_{0x07};
     ImuModel model_{ImuModel::BoschBMI160};
     ImuSink sink_;
 
