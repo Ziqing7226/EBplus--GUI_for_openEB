@@ -53,6 +53,11 @@ private:
     /// from the gyro rates; identity = axes aligned with the world frame.
     double qw_{1}, qx_{0}, qy_{0}, qz_{0};
     std::int64_t prev_t_{-1};
+    /// Gyro bias estimated over the first ~250 samples after every (re)start
+    /// (pure gyro integration drifts otherwise); pose holds while estimating.
+    bool bias_done_{false};
+    double bias_gx_{0}, bias_gy_{0}, bias_gz_{0};
+    int bias_n_{0};
 
     std::int64_t imu_cursor_{0};
     long last_count_{0};

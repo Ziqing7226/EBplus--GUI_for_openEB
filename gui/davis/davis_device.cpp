@@ -558,7 +558,98 @@ void Device::set_imu_enabled(bool on) {
 }
 
 void Device::set_aps_sink(const ApsFrameSink& sink) {
-    parser_.set_aps_sink(sink);
+    user_aps_sink_ = sink;
+    // Internal delivery wraps the user sink with the auto-exposure step
+    // (reference setAutoExposure(true) behavior).
+    parser_.set_aps_sink([this](const davis::ApsFrame& frame) {
+        if (auto_exposure_ && !frame.image.empty()) apply_auto_exposure(frame);
+        if (user_aps_sink_) user_aps_sink_(frame);
+    });
+}
+
+void Device::usb_control_out_noblock(std::uint8_t request, std::uint16_t value,
+                                     std::uint16_t index, const std::uint8_t* data,
+                                     std::size_t size) {
+    auto* transfer = libusb_alloc_transfer(0);
+    auto* buffer = static_cast<std::uint8_t*>(std::malloc(sizeof(libusb_control_setup) + size));
+    if (transfer == nullptr || buffer == nullptr) {
+        libusb_free_transfer(transfer);
+        std::free(buffer);
+        return;
+    }
+    libusb_fill_control_setup(buffer, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR |
+                                         LIBUSB_RECIPIENT_DEVICE,
+                              request, value, index, static_cast<std::uint16_t>(size));
+    if (size > 0 && data != nullptr) std::memcpy(buffer + sizeof(libusb_control_setup), data, size);
+    transfer->flags = LIBUSB_TRANSFER_FREE_TRANSFER | LIBUSB_TRANSFER_FREE_BUFFER;
+    transfer->dev_handle = handle_;
+    transfer->callback = [](libusb_transfer* t) {};  // self-freeing via flags
+    if (libusb_submit_transfer(transfer) != LIBUSB_SUCCESS) {
+        libusb_free_transfer(transfer);
+    }
+}
+
+void Device::apply_auto_exposure(const davis::ApsFrame& frame) {
+    // Ported from the reference computeAutomaticExposure: a 256-bin pixel
+    // histogram detects under/over exposure (>= 33% of pixels below the
+    // 10% / above the 90% brightness boundary); otherwise the 5-bin mean
+    // sample value steers the exposure toward mid-gray.
+    double hist[256] = {0};
+    for (int row = 0; row < frame.image.rows; ++row) {
+        const auto* line = frame.image.ptr<std::uint8_t>(row);
+        for (int col = 0; col < frame.image.cols; ++col) ++hist[line[col]];
+    }
+    const double pixels = static_cast<double>(frame.image.cols) * frame.image.rows;
+
+    double frac_low = 0, frac_high = 0;
+    for (int i = 0; i < 26; ++i) frac_low += hist[i];      // < 0.10 boundary
+    for (int i = 230; i < 256; ++i) frac_high += hist[i];  // > 0.90 boundary
+    frac_low /= pixels;
+    frac_high /= pixels;
+
+    double new_exposure = aec_exposure_us_;
+    const double err_low = frac_low - 0.33;
+    const double err_high = frac_high - 0.33;
+    const bool low = frac_low >= 0.33;
+    const bool high = frac_high >= 0.33;
+
+    if (low && !high) {
+        new_exposure += std::llround(14000.0 * std::pow(err_low, 1.65));
+        if (new_exposure == aec_exposure_us_) ++new_exposure;  // ensure progress
+    } else if (high && !low) {
+        new_exposure -= std::llround(14000.0 * std::pow(err_high, 1.65));
+        if (new_exposure == aec_exposure_us_) --new_exposure;
+    } else {
+        // Mean sample value over 5 bins steers the fine adjustment.
+        double msv_num = 0, msv_den = 0;
+        for (int i = 0; i < 256; ++i) {
+            const int bin = std::min(i / 52, 4);  // 5 bins over 0..255
+            msv_num += (bin + 1.0) * hist[i];
+            msv_den += hist[i];
+        }
+        const double msv = msv_den >= 1.0 ? msv_num / msv_den : 2.5;
+        const double msv_err = 2.5 - msv;
+        double divisor = 1.0;
+        if (std::fabs(err_low) < 0.1 || std::fabs(err_high) < 0.1) divisor = 5;
+        if (std::fabs(err_low) < 0.05 || std::fabs(err_high) < 0.05) divisor = 10;
+        if (msv_err > 0.1) {
+            new_exposure += std::llround(100.0 * msv_err * msv_err / divisor);
+            if (new_exposure == aec_exposure_us_) ++new_exposure;
+        } else if (msv_err < -0.1) {
+            new_exposure -= std::llround(100.0 * msv_err * msv_err / divisor);
+            if (new_exposure == aec_exposure_us_) --new_exposure;
+        }
+    }
+    new_exposure = std::clamp(new_exposure, 1.0, 4194303.0);  // EXPOSURE_MAX (us)
+
+    aec_exposure_us_ = new_exposure;
+    const auto ticks = static_cast<std::uint32_t>(
+        std::clamp(new_exposure * static_cast<double>(adc_clock_), 1.0, 16777215.0));
+    const std::uint8_t be[4] = {static_cast<std::uint8_t>(ticks >> 24),
+                                static_cast<std::uint8_t>(ticks >> 16),
+                                static_cast<std::uint8_t>(ticks >> 8),
+                                static_cast<std::uint8_t>(ticks)};
+    usb_control_out_noblock(VENDOR_REQUEST_SPI_CONFIG, MODULE_APS, APS_EXPOSURE, be, 4);
 }
 
 void Device::set_aps_enabled(bool on) {
@@ -645,8 +736,10 @@ void Device::configure_idle() {
     const auto logic_clock = static_cast<double>(spi_config_receive(MODULE_SYSINFO, SYSINFO_LOGIC_CLOCK));
     const auto usb_clock = static_cast<double>(spi_config_receive(MODULE_SYSINFO, SYSINFO_USB_CLOCK));
     const auto deviation = static_cast<double>(spi_config_receive(MODULE_SYSINFO, SYSINFO_CLOCK_DEVIATION));
+    const auto adc_clock = static_cast<float>(spi_config_receive(MODULE_SYSINFO, SYSINFO_ADC_CLOCK));
     logic_clock_ = static_cast<float>(logic_clock * (deviation / 1000.0));
     usb_clock_ = static_cast<float>(usb_clock * (deviation / 1000.0));
+    adc_clock_ = adc_clock * static_cast<float>(deviation / 1000.0);
 
     // Resolutions + orientation.
     const auto columns = static_cast<int>(spi_config_receive(MODULE_DVS, DVS_SIZE_COLUMNS));

@@ -87,6 +87,17 @@ public:
     bool set_hw_roi(int x, int y, int w, int h);
     /// Resets the filter to the full sensor (the disabled shape).
     bool clear_hw_roi();
+    /// @brief Per-frame auto-exposure (Phase 6 APS): ported from the
+    /// reference computeAutomaticExposure — histogram-based under/over
+    /// detection plus mean-sample-value refinement, adjusting the
+    /// APS_EXPOSURE register. Runs on the USB thread; the register write is
+    /// submitted asynchronously (a synchronous wait inside the data
+    /// callback would deadlock the event loop).
+    void apply_auto_exposure(const davis::ApsFrame& frame);
+    /// Fire-and-forget control OUT (self-freeing transfer).
+    void usb_control_out_noblock(std::uint8_t request, std::uint16_t value,
+                                 std::uint16_t index, const std::uint8_t* data,
+                                 std::size_t size);
 
     /// Starts event streaming (data transfers + run switches + timestamp
     /// reset handshake; blocks up to ~1 s waiting for the reset marker).
@@ -172,6 +183,10 @@ private:
     int chip_model_{5};
     int dvs_orientation_{0};
     int aps_orientation_{0};
+    float adc_clock_{0};
+    bool auto_exposure_{true};
+    double aec_exposure_us_{0};
+    ApsFrameSink user_aps_sink_;
 };
 
 } // namespace gui::davis

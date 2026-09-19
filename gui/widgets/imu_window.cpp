@@ -107,7 +107,34 @@ void ImuWindow::integrate_imu(const davis::ImuSample& s) {
 
 void ImuWindow::refresh() {
     const auto fresh = controller_->drain_imu(imu_cursor_);
-    for (const auto& s : fresh) integrate_imu(s);
+    for (const auto& s : fresh) {
+        // Stream restart (timestamps jumped back): reset pose + bias.
+        if (prev_t_ > 0 && s.t + 2000000 < prev_t_) {
+            qw_ = 1; qx_ = qy_ = qz_ = 0;
+            bias_done_ = false;
+            bias_n_ = 0;
+            bias_gx_ = bias_gy_ = bias_gz_ = 0;
+        }
+        if (!bias_done_) {
+            // Estimate the gyro bias while the camera is assumed still.
+            bias_gx_ += s.gyro_x;
+            bias_gy_ += s.gyro_y;
+            bias_gz_ += s.gyro_z;
+            if (++bias_n_ >= 250) {
+                bias_gx_ /= bias_n_;
+                bias_gy_ /= bias_n_;
+                bias_gz_ /= bias_n_;
+                bias_done_ = true;
+            }
+            prev_t_ = s.t;
+            continue;
+        }
+        davis::ImuSample corrected = s;
+        corrected.gyro_x -= static_cast<float>(bias_gx_);
+        corrected.gyro_y -= static_cast<float>(bias_gy_);
+        corrected.gyro_z -= static_cast<float>(bias_gz_);
+        integrate_imu(corrected);
+    }
 
     const long count = controller_->imu_sample_count();
     const double elapsed_s = rate_clock_.restart() / 1000.0;
@@ -229,6 +256,12 @@ void ImuWindow::draw_pose(QPainter& p, const QRectF& r) {
         p.setPen(axis_colors[a]);
         p.drawText(QPointF(cx + x * base * persp + 4, cy - z * base * persp - 4),
                    QString(axis_labels[a]));
+    }
+
+    if (controller_->imu_sample_count() > 0 && !bias_done_) {
+        p.setPen(QColor(255, 200, 80));
+        p.drawText(r.adjusted(8, r.height() / 2 - 10, -8, 0), Qt::AlignCenter,
+                   tr("Calibrating gyro (hold still)…"));
     }
 
     // Numeric readout (latest sample).
