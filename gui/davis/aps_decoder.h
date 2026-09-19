@@ -52,6 +52,8 @@ public:
         is_240_ = (model == 0 || model == 1 || model == 2);
         is_cdavis_ = (model == 7);
         invert_xy_ = (orientation & 0x04) != 0;
+        flip_x_ = (orientation & 0x02) != 0;
+        flip_y_ = (orientation & 0x01) != 0;
         size_w_ = device_width;
         size_h_ = device_height;
         if (invert_xy_) std::swap(size_w_, size_h_);
@@ -204,6 +206,10 @@ private:
         const int pass = current_reset_pass_ ? 0 : 1;
         int xPos = count_x_[pass];
         int yPos = count_y_[pass];
+        // Reference order: flips in count space first, then the inverted
+        // sensors' transpose swap.
+        if (flip_x_) xPos = expected_x_ - 1 - xPos;
+        if (flip_y_) yPos = expected_y_ - 1 - yPos;
         if (invert_xy_) std::swap(xPos, yPos);
 
         auto& cell = pixels_.at<std::uint8_t>(yPos, xPos);
@@ -225,6 +231,8 @@ private:
         const int pass = current_reset_pass_ ? 0 : 1;
         int xPos = count_x_[pass];
         int yPos = cdavis_y_;
+        if (flip_x_) xPos = expected_x_ - 1 - xPos;
+        if (flip_y_) yPos = expected_y_ - 1 - yPos;
         if (invert_xy_) std::swap(xPos, yPos);
 
         auto& cell = pixels_.at<std::uint8_t>(yPos, xPos);
@@ -265,6 +273,8 @@ private:
     bool is_240_{false};
     bool is_cdavis_{false};
     bool invert_xy_{false};
+    bool flip_x_{false};
+    bool flip_y_{false};
     int size_w_{0};
     int size_h_{0};
 

@@ -1009,6 +1009,42 @@ TEST(DavisAps, Davis240GainShift) {
     EXPECT_FLOAT_EQ(frame.image.at<std::uint8_t>(0, 0), 55);
 }
 
+TEST(DavisAps, FlipBitMirrorsColumnPlacement) {
+    // APS orientation flip bits (bit 0x02 = horizontal) flip the pixel
+    // placement in count space — the reference compensates the sensor
+    // mounting this way (reported as a left-right mirror on a real 346
+    // when the bits were ignored).
+    gui::davis::Parser parser(4, 3, false);
+    parser.set_aps_config(5, 4, 3, 0x02);  // flip horizontal
+    std::vector<Metavision::EventCD> dropped;
+    feed(parser, {special_word(1)}, dropped);
+
+    gui::davis::ApsFrame got;
+    parser.set_aps_sink([&got](const gui::davis::ApsFrame& f) { got = f; });
+
+    // Reset values 400/600/800/1000 → 100/150/200/250 (>>2, 10-bit ADC
+    // domain, above the 96 saturation cutoff); signal fixed 200 → 50.
+    // CDS at count_x k: reset[k]>>2 − 50.
+    std::vector<std::uint16_t> words{special_word(9), special_word(14)};
+    const std::uint16_t resets[4] = {400, 600, 800, 1000};
+    for (int col = 0; col < 4; ++col) {
+        words.push_back(special_word(11));
+        for (int row = 0; row < 3; ++row) words.push_back(aps_pixel_word(resets[col]));
+        words.push_back(special_word(13));
+        words.push_back(special_word(12));
+        for (int row = 0; row < 3; ++row) words.push_back(aps_pixel_word(200));
+        words.push_back(special_word(13));
+    }
+    words.push_back(special_word(10));
+    feed(parser, words, dropped);
+
+    ASSERT_TRUE(got.valid);
+    // count_x k holds reset[k]>>2 − 50 after CDS; flip_x places count_x k
+    // at image column (3 − k).
+    EXPECT_EQ(got.image.at<std::uint8_t>(0, 0), 200);  // count_x 3: 250−50
+    EXPECT_EQ(got.image.at<std::uint8_t>(0, 3), 50);   // count_x 0: 100−50
+}
+
 TEST(DavisAps, IncompleteColumnCountDiscardsFrame) {
     gui::davis::Parser parser(4, 3, false);
     parser.set_aps_config(5, 4, 3, 0);

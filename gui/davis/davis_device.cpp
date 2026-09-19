@@ -652,6 +652,7 @@ void Device::configure_idle() {
     const auto columns = static_cast<int>(spi_config_receive(MODULE_DVS, DVS_SIZE_COLUMNS));
     const auto rows = static_cast<int>(spi_config_receive(MODULE_DVS, DVS_SIZE_ROWS));
     const auto dvs_orientation = spi_config_receive(MODULE_DVS, DVS_ORIENTATION_INFO);
+    dvs_orientation_ = static_cast<int>(dvs_orientation);
     width_ = columns;
     height_ = rows;
     const bool invert_xy = (dvs_orientation & 0x04) != 0;
@@ -668,6 +669,7 @@ void Device::configure_idle() {
     const auto aps_columns = static_cast<int>(spi_config_receive(MODULE_APS, APS_SIZE_COLUMNS));
     const auto aps_rows = static_cast<int>(spi_config_receive(MODULE_APS, APS_SIZE_ROWS));
     const auto aps_orientation = spi_config_receive(MODULE_APS, APS_ORIENTATION_INFO);
+    aps_orientation_ = static_cast<int>(aps_orientation);
     parser_.set_aps_config(chip_id, aps_columns, aps_rows, static_cast<int>(aps_orientation));
 
     // Shut the device down into a known idle state before configuring.

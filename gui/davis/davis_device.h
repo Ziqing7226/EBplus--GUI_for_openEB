@@ -100,6 +100,10 @@ public:
     /// Sensor chip identifier (MODULE_SYSINFO / chip identifier) — selects
     /// the model-specific bias table and quirk handling.
     [[nodiscard]] int chip_model() const { return chip_model_; }
+    /// Raw orientation registers (bit 0x04 invert axes, 0x02 flip
+    /// horizontal, 0x01 flip vertical) — DVS and APS have their own.
+    [[nodiscard]] int dvs_orientation() const { return dvs_orientation_; }
+    [[nodiscard]] int aps_orientation() const { return aps_orientation_; }
     [[nodiscard]] const std::string& model_name() const { return model_name_; }
 
     /// Bias store (register state + device writes). Lives as long as the
@@ -166,6 +170,8 @@ private:
     bool aps_enabled_{false};
     bool has_roi_filter_{false};
     int chip_model_{5};
+    int dvs_orientation_{0};
+    int aps_orientation_{0};
 };
 
 } // namespace gui::davis
