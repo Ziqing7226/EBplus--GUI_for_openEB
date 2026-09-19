@@ -52,12 +52,21 @@ void ApsWindow::refresh() {
             image_label_->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
     }
 
+    // Accumulate over >= 0.5 s windows: the 33 ms tick interval is below
+    // any sane rate gate, and per-tick deltas of a ~20 fps stream would
+    // quantize to 0/1 events (the rate display read 0.0 Hz forever).
     const double elapsed_s = rate_clock_.restart() / 1000.0;
-    if (elapsed_s > 0.05) {
-        const double inst = static_cast<double>(count - last_count_) / elapsed_s;
-        smoothed_rate_ = smoothed_rate_ > 0 ? (0.7 * smoothed_rate_ + 0.3 * inst) : inst;
-    }
+    rate_accum_time_ += elapsed_s;
+    rate_accum_events_ += count - last_count_;
     last_count_ = count;
+    if (rate_accum_time_ >= 0.5) {
+        const double inst =
+            static_cast<double>(rate_accum_events_) / rate_accum_time_;
+        smoothed_rate_ =
+            smoothed_rate_ > 0 ? (0.7 * smoothed_rate_ + 0.3 * inst) : inst;
+        rate_accum_events_ = 0;
+        rate_accum_time_ = 0;
+    }
 
     if (count == 0) {
         status_label_->setText(tr("Waiting for frames…\n(Stream runs only while the camera streams)"));

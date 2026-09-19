@@ -37,6 +37,8 @@ private:
     QLabel* status_label_;
     QElapsedTimer rate_clock_;
     long last_count_{0};
+    long rate_accum_events_{0};
+    double rate_accum_time_{0};
     double smoothed_rate_{0};
 };
 
