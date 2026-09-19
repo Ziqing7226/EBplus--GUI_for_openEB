@@ -766,9 +766,35 @@ void CameraController::on_imu_sample(const davis::ImuSample& sample) {
 #if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(imu_mutex_);
     imu_latest_ = sample;
-    ++imu_count_;
+    const auto seq = ++imu_count_;
+    imu_ring_.emplace_back(seq, sample);
+    while (imu_ring_.size() > kImuRingMax) imu_ring_.pop_front();
 #else
     (void)sample;
+#endif
+}
+
+std::vector<davis::ImuSample> CameraController::drain_imu(std::int64_t& cursor) {
+#if GUI_HAVE_DAVIS
+    std::lock_guard<std::mutex> lock(imu_mutex_);
+    if (cursor >= imu_count_) {
+        cursor = imu_count_;
+        return {};
+    }
+    // The caller may be behind the ring (wrapped or fresh consumer) — give
+    // whatever is retained from the oldest surviving sample on.
+    const auto oldest = imu_count_ - static_cast<std::int64_t>(imu_ring_.size());
+    if (cursor < oldest) cursor = oldest;
+    std::vector<davis::ImuSample> out;
+    out.reserve(imu_ring_.size());
+    for (const auto& [seq, sample] : imu_ring_) {
+        if (seq > cursor) out.push_back(sample);
+    }
+    if (!imu_ring_.empty()) cursor = imu_ring_.back().first;
+    return out;
+#else
+    (void)cursor;
+    return {};
 #endif
 }
 
@@ -1219,6 +1245,10 @@ void CameraController::teardown() {
         std::lock_guard<std::mutex> lock(aps_mutex_);
         aps_latest_ = davis::ApsFrame{};
         aps_count_ = 0;
+    }
+    {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
+        imu_ring_.clear();
     }
 #endif
     raw_tap_ = nullptr;

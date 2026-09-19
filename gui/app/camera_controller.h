@@ -10,8 +10,10 @@
 #include <QObject>
 #include <QString>
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <mutex>
+#include <utility>
 #include <memory>
 #include <optional>
 #include <string>
@@ -196,6 +198,12 @@ public:
     /// Latest completed APS frame (cloned under the mutex).
     davis::ApsFrame latest_aps_frame() const;
     [[nodiscard]] long aps_frame_count() const;
+    /// @brief IMU plotting (Phase 2 visualization): drains the retained
+    /// sample ring after @p cursor (sequence numbers from
+    /// imu_sample_count(); 0 = take whatever is retained). Returns the new
+    /// samples in stream order and advances @p cursor. Without libusb
+    /// returns an empty vector.
+    std::vector<davis::ImuSample> drain_imu(std::int64_t& cursor);
 
     /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
     /// Live camera: applies the hardware ROI (I_ROI) so the sensor itself
@@ -365,6 +373,10 @@ private:
     mutable std::mutex imu_mutex_;
     davis::ImuSample imu_latest_{};
     long imu_count_{0};
+    /// Rolling ring backing drain_imu() — capped (kImuRingMax) and cleared
+    /// by teardown.
+    std::deque<std::pair<std::int64_t, davis::ImuSample>> imu_ring_;
+    static constexpr std::size_t kImuRingMax = 8192;  // ~10 s at 800 Hz
 
     /// APS frame stream state (DAVIS only; same session-scoped pattern).
     bool aps_enabled_{false};

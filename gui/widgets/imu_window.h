@@ -1,7 +1,12 @@
-// gui/widgets/imu_window.h — standalone live readout for the inivation IMU
-// stream (Phase 2). Algorithm-window style: an independent top-level window
-// fed from CameraController's IMU telemetry via a 30 Hz pull timer (no
-// per-sample signals across threads).
+// gui/widgets/imu_window.h — DV-style live IMU visualization (Phase 2
+// visualization pass): three stacked scrolling strip charts (accelerometer,
+// gyroscope, temperature) drawn with plain QPainter.
+//
+// IP note: this is a FRESH implementation of a generic scientific
+// time-series plot — no code or assets are taken from iniVation's DV GUI
+// (whose custom license we deliberately do not rely on). Only the generic
+// concept (rolling multi-axis curves) is shared, which is not protectable
+// expression.
 
 #ifndef GUI_WIDGETS_IMU_WINDOW_H
 #define GUI_WIDGETS_IMU_WINDOW_H
@@ -9,6 +14,10 @@
 #include <QElapsedTimer>
 #include <QLabel>
 #include <QWidget>
+
+#include <deque>
+
+#include "davis/imu_types.h"
 
 class QTimer;
 
@@ -28,19 +37,21 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void paintEvent(QPaintEvent* event) override;
 
 private:
     void refresh();
 
     CameraController* controller_;
     QTimer* timer_;
-    QLabel* accel_label_;
-    QLabel* gyro_label_;
-    QLabel* temp_label_;
     QLabel* status_label_;
-    QElapsedTimer rate_clock_;
+    /// Scrolling history for the strip charts (time-ordered, trimmed to the
+    /// plot window; cleared on a stream restart).
+    std::deque<davis::ImuSample> history_;
+    std::int64_t imu_cursor_{0};
     long last_count_{0};
     double smoothed_rate_{0};
+    QElapsedTimer rate_clock_;
 };
 
 } // namespace gui
