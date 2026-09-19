@@ -3,8 +3,10 @@
 //
 // Locks: the chessboard object-point formula, the detect_only/accept split
 // (detect does not accumulate), the duplicate-pose rejection used by the
-// wizard, and the two-pass calibration with per-view outlier rejection
-// (bad views dropped, per-view RMS reported). Full blink-frame detection is
+// wizard, the two-pass calibration with per-view outlier rejection
+// (bad views dropped, per-view RMS reported), and the square-size contract
+// (a size-only reconfiguration keeps observations; run() solves with the
+// CURRENT size; 0 mm fails cleanly). Full blink-frame detection is
 // covered by test_blinking_detect.cpp.
 
 #include <gtest/gtest.h>
@@ -210,6 +212,59 @@ TEST(IntrinsicCalibration, FewerThanThreeFramesFails) {
     const auto r = cal.run();
     EXPECT_FALSE(r.ok);
     EXPECT_FALSE(r.error.empty());
+}
+
+// A square-size-only set_pattern call must NOT clear the accepted captures:
+// the size is a pure world-scale factor and the observations are pixel data,
+// so the wizard can (re)enter the measured value at any point of a session.
+TEST(IntrinsicCalibration, SquareSizeRescaleKeepsObservations) {
+    SyntheticViews sv = make_views(5);
+    IntrinsicCalibration cal;
+    feed(cal, sv);
+    ASSERT_EQ(cal.frame_count(), 5u);
+
+    cal.set_pattern(CalibrationPattern::Chessboard, 9, 6, 5.0f);
+    EXPECT_EQ(cal.frame_count(), 5u);
+
+    const auto r = cal.run();
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(r.frames_used, 5u);
+    // K is world-scale invariant — the rescaled solve recovers the same K.
+    EXPECT_NEAR(r.K.at<double>(0, 0), 500.0, 30.0);
+    EXPECT_NEAR(r.K.at<double>(0, 2), 320.0, 30.0);
+}
+
+// run() must rebuild the object grids from the CURRENT square size: views
+// synthesized against a 20 mm grid but solved after re-configuring to 5 mm
+// recover translations shrunk by 5/20 (proving the final value is the one
+// used, not a per-capture frozen copy).
+TEST(IntrinsicCalibration, RunUsesCurrentSquareSize) {
+    SyntheticViews sv = make_views(4);
+    IntrinsicCalibration cal;
+    feed(cal, sv);
+    cal.set_pattern(CalibrationPattern::Chessboard, 9, 6, 5.0f);
+
+    const auto r = cal.run();
+    ASSERT_TRUE(r.ok) << r.error;
+    ASSERT_EQ(r.tvecs.size(), 4u);
+    // Ground-truth tvec z = 500 mm at 20 mm squares → 125 mm at 5 mm squares.
+    for (const auto& tv : r.tvecs) {
+        EXPECT_NEAR(tv.at<double>(2), 125.0, 10.0);
+    }
+}
+
+// The "not measured" default (0 mm) must fail cleanly with an actionable
+// message instead of feeding cv::calibrateCamera a degenerate all-origin
+// object grid.
+TEST(IntrinsicCalibration, RunFailsWhileSquareSizeNotSet) {
+    SyntheticViews sv = make_views(4);
+    IntrinsicCalibration cal;
+    feed(cal, sv);
+    cal.set_pattern(CalibrationPattern::Chessboard, 9, 6, 0.0f);
+
+    const auto r = cal.run();
+    EXPECT_FALSE(r.ok);
+    EXPECT_NE(r.error.find("Square size"), std::string::npos);
 }
 
 // Corner-bridge fallback: a real thresholded blink frame carries

@@ -161,6 +161,12 @@ private slots:
     void on_export_pressed();
     void on_export_done(bool ok, QString message);
     void on_config_changed();
+    /// @brief Square-size edits: pushes the new value to the worker and the
+    /// on-screen pattern WITHOUT resetting the session (captures are pixel
+    /// observations, valid at any scale), and re-runs the calibration when the
+    /// capture set is already complete and the value is non-zero (a 0
+    /// pass-through defers, exactly as at capture-complete time).
+    void on_square_size_changed();
 
 private:
     void build_ui();

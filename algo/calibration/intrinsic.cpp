@@ -81,15 +81,14 @@ void IntrinsicCalibration::set_pattern(CalibrationPattern pattern,
     // and BlinkingChessboardDisplay (which draws (cols+1)×(rows+1) squares).
     // For circle grids, the count is the number of circles per row/column.
     cv::Size new_bs = cv::Size(std::max(cols, 1), std::max(rows, 1));
-    // The wizard refreshes set_pattern on every capture/run so the user can
-    // change pattern/dims/square mid-session. Each frame's object_points_ is
-    // frozen at capture time via make_object_grid(), so mixing different
-    // board geometries would feed cv::calibrateCamera point sets of
-    // inconsistent size/coordinate-system and either throw or return a
-    // wrong result. Clear accumulated observations when the geometry changes.
-    if (pattern_ != pattern || board_size_ != new_bs || square_size_mm_ != square_size_mm) {
+    // Pattern type / corner-count changes invalidate accumulated observations
+    // (a different point count or correspondence order would feed
+    // cv::calibrateCamera inconsistent sets → throw or wrong result). The
+    // square size does NOT: it is a uniform world-scale factor, and run()
+    // rebuilds every view's object grid from the current value, so the wizard
+    // can re-scale mid-session without losing the already-accepted captures.
+    if (pattern_ != pattern || board_size_ != new_bs) {
         image_points_.clear();
-        object_points_.clear();
         image_size_ = cv::Size(0, 0);
     }
     pattern_ = pattern;
@@ -198,13 +197,11 @@ DetectionResult IntrinsicCalibration::detect_only(const cv::Mat& frame, bool ann
 
 void IntrinsicCalibration::accept(const std::vector<cv::Point2f>& points) {
     image_points_.push_back(points);
-    object_points_.push_back(make_object_grid());
 }
 
 void IntrinsicCalibration::remove_last_frame() {
     if (!image_points_.empty()) {
         image_points_.pop_back();
-        object_points_.pop_back();
     }
 }
 
@@ -244,16 +241,36 @@ IntrinsicResult IntrinsicCalibration::run() {
         result.error = "Image size not yet known";
         return result;
     }
+    if (square_size_mm_ <= 0.0f) {
+        // A zero square collapses every object point to the origin — the
+        // per-view homographies degenerate and calibrateCamera throws or
+        // returns nonsense. Fail with an actionable message instead (the
+        // wizard surfaces it on the status line / warning box).
+        result.error = "Square size is not set (0 mm) — measure one "
+                       "chessboard square edge and enter it before "
+                       "calibrating.";
+        return result;
+    }
 
     try {
         const std::size_t n_views = image_points_.size();
+
+        // All views share the board geometry (a pattern/corner-count change
+        // clears observations in set_pattern), so ONE object grid — built
+        // from the CURRENT square size — serves every view. Rebuilding here
+        // (instead of freezing grids at accept() time) is what lets the user
+        // re-scale the board mid-session and still get a calibration that
+        // uses the final value.
+        const std::vector<cv::Point3f> grid = make_object_grid();
+        const std::vector<std::vector<cv::Point3f>>
+            object_points(n_views, grid);
 
         // ---- Pass 1: coarse fit. K3 + aspect ratio fixed for a stable initial
         // estimate and reliable per-view poses (standard Zhang two-pass practice).
         cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
         cv::Mat dist = cv::Mat::zeros(1, 5, CV_64F);
         std::vector<cv::Mat> rvecs, tvecs;
-        cv::calibrateCamera(object_points_, image_points_, image_size_, K, dist,
+        cv::calibrateCamera(object_points, image_points_, image_size_, K, dist,
                             rvecs, tvecs,
                             cv::CALIB_FIX_ASPECT_RATIO | cv::CALIB_FIX_K3);
 
@@ -261,7 +278,7 @@ IntrinsicResult IntrinsicCalibration::run() {
         std::vector<double> per_view_rms(n_views, 0.0);
         for (std::size_t i = 0; i < n_views; ++i) {
             std::vector<cv::Point2f> proj;
-            cv::projectPoints(object_points_[i], rvecs[i], tvecs[i], K, dist, proj);
+            cv::projectPoints(object_points[i], rvecs[i], tvecs[i], K, dist, proj);
             double e2 = 0.0;
             const std::size_t n = image_points_[i].size();
             for (std::size_t k = 0; k < n; ++k) {
@@ -304,7 +321,7 @@ IntrinsicResult IntrinsicCalibration::run() {
             for (std::size_t i = 0; i < n_views; ++i) {
                 if (!selected[i]) continue;
                 kept_pts.push_back(image_points_[i]);
-                kept_obj.push_back(object_points_[i]);
+                kept_obj.push_back(grid);
             }
             std::vector<cv::Mat> kept_rvecs, kept_tvecs;
             cv::calibrateCamera(kept_obj, kept_pts, image_size_, K, dist,
@@ -351,7 +368,6 @@ IntrinsicResult IntrinsicCalibration::run() {
 
 void IntrinsicCalibration::reset() {
     image_points_.clear();
-    object_points_.clear();
     image_size_ = cv::Size(0, 0);
 }
 

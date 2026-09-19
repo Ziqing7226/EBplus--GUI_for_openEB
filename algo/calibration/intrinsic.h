@@ -63,8 +63,12 @@ public:
     ~IntrinsicCalibration();
 
     /// @brief Configures the board geometry. Must be called before add_frame().
-    /// Changing geometry clears accumulated observations (they would feed
-    /// cv::calibrateCamera inconsistent point sets otherwise).
+    /// Changing the pattern type or corner count clears accumulated
+    /// observations (they would feed cv::calibrateCamera inconsistent point
+    /// sets otherwise). The square size is a pure world-scale factor — pixel
+    /// observations stay valid when it changes, so it never clears anything;
+    /// run() rebuilds the object grid from the CURRENT value, which is what
+    /// the final calibration uses.
     void set_pattern(CalibrationPattern pattern,
                      int cols, int rows,
                      float square_size_mm);
@@ -120,7 +124,6 @@ private:
     cv::Size image_size_{0, 0};
 
     std::vector<std::vector<cv::Point2f>> image_points_;
-    std::vector<std::vector<cv::Point3f>> object_points_;
 
     std::vector<cv::Point3f> make_object_grid() const;
 };

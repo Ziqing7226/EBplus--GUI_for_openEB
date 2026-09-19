@@ -61,7 +61,11 @@ constexpr int kCameraPollMs = 33;
 // cols/rows spinbox and no square-grid rejection.
 constexpr int kGridCols = 9;
 constexpr int kGridRows = 6;
-constexpr double kDefaultSquareMm = 20.0;
+// 0 = "not measured yet". The user must measure one square edge and enter the
+// real value: captures are pixel observations and stay valid regardless, the
+// calibration only runs once a non-zero square size is entered, and Export
+// refuses the 0 default with a reminder popup.
+constexpr double kDefaultSquareMm = 0.0;
 constexpr int kDefaultTargetFrames = 20;
 
 // Space-capture event window (µs), user-tunable 200–200000 in 1 µs steps.
@@ -593,6 +597,16 @@ void CalibrationWizard::on_capture_complete(std::size_t accepted) {
     // (which clears the preview stack and can_delete_last_) to start over.
     can_delete_last_ = false;
     update_delete_enabled();
+    if (square_mm_->value() <= 0.0) {
+        // Square size still at its "not measured" default — calibrating with
+        // it would be degenerate (every object point collapses to the
+        // origin). Keep the captures: entering the measured value triggers
+        // the calibration via on_square_size_changed.
+        set_status(tr("Captured %1 frames. Measure one chessboard square "
+                      "edge, enter it as the Square size, and the calibration "
+                      "will run.").arg(accepted));
+        return;
+    }
     // Run the two-pass cv::calibrateCamera on the worker thread.
     set_status(tr("Captured %1 frames. Running calibration…").arg(accepted));
     emit run_calibration_requested();
@@ -600,6 +614,13 @@ void CalibrationWizard::on_capture_complete(std::size_t accepted) {
 
 void CalibrationWizard::on_calibration_done(bool ok, double rms, int frames_used,
                                             int removed_frames, QString error) {
+    // A result delivered after the session was torn down (Reset, or a
+    // capture_window/target edit — both reset the worker) is stale: runs are
+    // only launched while capture_done_ is true, so a delivery while it is
+    // false belongs to a session the user discarded. Re-enabling Export or
+    // popping its warning would offer a result that no longer exists (the
+    // worker's cached result survives reset()).
+    if (!capture_done_) return;
     if (ok) {
         set_status(tr("Calibration OK. RMS = %1 px (%2 kept, %3 removed). "
                       "Click Export to save.")
@@ -612,6 +633,17 @@ void CalibrationWizard::on_calibration_done(bool ok, double rms, int frames_used
 }
 
 void CalibrationWizard::on_export_pressed() {
+    // Guard the "not measured" default: a calibration exported without a real
+    // square size has no meaningful world scale. Remind on EVERY export click
+    // while the value is 0; the dialog's single OK button just closes it and
+    // the export is not attempted.
+    if (square_mm_->value() <= 0.0) {
+        QMessageBox::information(this, tr("Square size not set"),
+            tr("The square size is 0. Measure the length of one chessboard "
+               "square edge with a ruler, enter the value (mm) in the Square "
+               "size field, then export again."));
+        return;
+    }
     // Create the default parent directory BEFORE opening the dialog: it does
     // not exist until the first export (the worker auto-mkdirs on save), and
     // QFileDialog resolves a non-existent directory to the CURRENT WORKING
@@ -749,6 +781,33 @@ void CalibrationWizard::configure_worker() {
                              target_frames_->value());
 }
 
+void CalibrationWizard::on_square_size_changed() {
+    // Square size is a pure world-scale factor: the accepted captures are
+    // pixel observations and stay valid when it changes, so ONLY the value is
+    // propagated here — no reset, no clearing of previews/progress (unlike
+    // on_config_changed, which handles the geometry-affecting parameters).
+    // The worker's solver rebuilds its object grids from the current value at
+    // run() time, so the final calibration always uses the latest entry.
+    apply_pattern_to_display();
+    configure_worker();
+    // Frames are all captured but the calibration ran before this change (or
+    // was deferred because the value was still 0): re-run it so the result
+    // and the export reflect the new value. Queued after the configure above
+    // (same worker thread → in-order delivery). Passing through 0 (clearing
+    // the field, down-arrow while re-entering the measurement) must NOT hit
+    // the solver's 0-guard — that would pop a "Calibration failed" modal in
+    // the middle of an ordinary edit — so a 0 value defers exactly like
+    // on_capture_complete does, and a later non-zero entry re-runs.
+    if (capture_done_) {
+        if (square_mm_->value() > 0.0) {
+            emit run_calibration_requested();
+        } else {
+            set_status(tr("Measure one chessboard square edge, enter it as "
+                          "the Square size, and the calibration will run."));
+        }
+    }
+}
+
 QString CalibrationWizard::default_export_path() const {
     // Single source of truth shared with the Preprocessor undistort default
     // (see calib_defaults.h) — the user can rely on both defaults pointing at
@@ -802,13 +861,15 @@ void CalibrationWizard::build_ui() {
     form->addRow(tr("Capture window"), capture_window_);
 
     square_mm_ = new QDoubleSpinBox(params_widget);
-    square_mm_->setRange(0.1, 500.0);
+    square_mm_->setRange(0.0, 500.0);
     square_mm_->setDecimals(2);
     square_mm_->setValue(kDefaultSquareMm);
     square_mm_->setSuffix(tr(" mm"));
     square_mm_->setToolTip(tr("Physical length (mm) of one chessboard square "
-        "edge. Sets the real-world scale for calibration; does NOT change the "
-        "on-screen pattern size (screen DPI is deliberately not used)."));
+        "edge, measured with a ruler. Sets the real-world scale for "
+        "calibration; does NOT change the on-screen pattern size (screen DPI "
+        "is deliberately not used). 0 means not measured yet — the value is "
+        "required before exporting."));
     form->addRow(tr("Square size"), square_mm_);
 
     // Measurement instruction: one short sentence.
@@ -898,12 +959,14 @@ void CalibrationWizard::build_ui() {
     outer->addWidget(status_);
 
     // Config-change handlers. The grid is fixed at 9×6 (no cols/rows spinbox),
-    // so there is no square-grid rejection. capture_window/square_mm/target all
-    // trigger a re-configure + display refresh.
+    // so there is no square-grid rejection. capture_window/target are
+    // geometry-affecting (target also re-ranges the progress bar) and reset
+    // the session; square_mm is a pure re-scale and keeps every capture (see
+    // on_square_size_changed).
     connect(capture_window_, QOverload<int>::of(&QSpinBox::valueChanged), this,
         [this](int) { on_config_changed(); });
     connect(square_mm_, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-        [this](double) { on_config_changed(); });
+        &CalibrationWizard::on_square_size_changed);
     connect(target_frames_, QOverload<int>::of(&QSpinBox::valueChanged), this,
         [this](int v) { progress_->setRange(0, v); on_config_changed(); });
     connect(capture_btn_, &QPushButton::clicked, this, &CalibrationWizard::on_capture_pressed);
