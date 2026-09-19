@@ -62,6 +62,20 @@ gtest_discover_tests(test_panel_visibility
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
+# --- test_aedat4_playback: headless GUI-integration check for AEDAT4 replay
+# (real recordings via EBPLUS_TEST_AEDAT4; skipped when unset). ---
+add_executable(test_aedat4_playback
+    test_aedat4_playback.cpp
+)
+target_link_libraries(test_aedat4_playback PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_aedat4_playback PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_aedat4_playback
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 # --- test_esp_panel_duty: the Anti-Flicker duty-cycle widget stays in the
 # facility's percentage domain — the HAL min getter reports the 1/16 register
 # granularity as a fraction while get/set values are percentages. ---
