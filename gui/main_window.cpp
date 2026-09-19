@@ -877,6 +877,12 @@ void MainWindow::wire_signals() {
         // members are destroyed.
         remove_algo_callback();
         prev_frame_ts_ = 0;
+        // XYT post throttle holds the last POSTED stream timestamp; the next
+        // session's stream restarts near t=0 (TS reset), so a stale value
+        // would gate every post (cur_ts - last < 0) for the whole previous
+        // session's duration. Same session-scoped timestamp state class as
+        // prev_frame_ts_ above.
+        algo_last_xyt_post_us_.store(0);
         prev_frame_wall_ = {};
         perf_meter_.reset();
         last_rate_eps_ = 0.0;
