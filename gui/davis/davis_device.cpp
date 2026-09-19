@@ -478,6 +478,9 @@ void LIBUSB_CALL Device::usb_data_transfer_cb(libusb_transfer* transfer) {
             static_cast<std::size_t>(transfer->actual_length));
         auto slot = self->batches_.acquire();
         self->parser_.swap_batch(*slot);
+        if (self->raw_consumer_) {
+            self->raw_consumer_(slot->data(), slot->data() + slot->size());
+        }
         self->batches_.submit(std::move(slot));
     }
 

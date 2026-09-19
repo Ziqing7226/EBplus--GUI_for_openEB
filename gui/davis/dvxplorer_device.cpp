@@ -649,6 +649,9 @@ void DvxplorerDevice::parse_events(const std::uint8_t* data, std::size_t size) {
     parse_.decode(data, size);
     auto slot = batches_.acquire();
     parse_.swap_batch(*slot);
+    if (raw_consumer_) {
+        raw_consumer_(slot->data(), slot->data() + slot->size());
+    }
     batches_.submit(std::move(slot));
 }
 

@@ -62,6 +62,10 @@ public:
     DvxplorerDevice& operator=(const DvxplorerDevice&) = delete;
 
     void set_event_sink(EventSink sink);
+    /// Recording tap (see davis_device.h raw_consumer_).
+    void set_raw_consumer(std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)> cb) {
+        raw_consumer_ = std::move(cb);
+    }
     void set_gone_callback(GoneCallback callback);
     /// Completed IMU6 samples (accel/gyro/temp) — invoked from the USB
     /// thread when the IMU stream is enabled.
@@ -142,6 +146,9 @@ private:
     int contrast_on_{9};
     int contrast_off_{9};
     EventSink sink_;
+
+    /// Synchronous pre-queue consumer — see davis_device.h (recording tap).
+    std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)> raw_consumer_;
 
     // Decouples the per-batch event pipeline from the USB reaping thread
     // (IMU stays inline in the parser — latency-critical). Started with

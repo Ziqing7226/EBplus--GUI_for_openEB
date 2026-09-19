@@ -65,6 +65,12 @@ public:
     Device& operator=(const Device&) = delete;
 
     void set_event_sink(EventSink sink);
+    /// Recording tap (see raw_consumer_). Callable while streaming: the
+    /// write races the USB-thread reads the same benign way the controller's
+    /// raw_tap_ member always has (rare start/stop assignment).
+    void set_raw_consumer(std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)> cb) {
+        raw_consumer_ = std::move(cb);
+    }
     void set_gone_callback(GoneCallback callback);
     /// Completed IMU6 samples (accel/gyro/temp) — invoked from the USB
     /// thread when the IMU stream is enabled.
@@ -181,6 +187,12 @@ private:
     BatchWorker batches_;
     BiasStore biases_;
     EventSink sink_;
+
+    /// Synchronous consumer for the decoded event batch, invoked on the USB
+    /// decode thread BEFORE the batch is queued for the processing worker —
+    /// the AEDAT4 recorder records here so queue overflow (drop-oldest)
+    /// can never cost recording data.
+    std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)> raw_consumer_;
     GoneCallback gone_callback_;
     std::atomic<bool> streaming_{false};
     bool imu_enabled_{false};

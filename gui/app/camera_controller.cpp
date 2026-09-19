@@ -311,16 +311,20 @@ bool CameraController::connect_external_file(std::unique_ptr<ExternalFileSource>
     // only be replayed once, so a manually-enabled-later checkbox would
     // never see data. set_imu_enabled/set_aps_enabled stay meaningful for
     // the session state; the file stream itself cannot be switched.
+#if GUI_HAVE_DAVIS
     if (external_source_->has_imu()) {
         imu_enabled_ = true;
-        external_source_->set_imu_sink(
-            [this](const davis::ImuSample& s) { on_imu_sample(s); });
+        external_source_->set_imu_sink([this](const davis::ImuSample& s) {
+            if (imu_enabled_) on_imu_sample(s);
+        });
     }
     if (external_source_->has_aps()) {
         aps_enabled_ = true;
-        external_source_->set_aps_sink(
-            [this](const davis::ApsFrame& f) { on_aps_frame(f); });
+        external_source_->set_aps_sink([this](const davis::ApsFrame& f) {
+            if (aps_enabled_) on_aps_frame(f);
+        });
     }
+#endif
 
     sensor_info_ = SensorInfo{};
     sensor_info_.width = meta.width;
@@ -726,8 +730,10 @@ CameraController::SourceCapabilities CameraController::source_capabilities() {
     if (external_source_) {
         // AEDAT4 replay: the IMU/APS streams recorded in the file surface
         // exactly like the live device streams.
+#if GUI_HAVE_DAVIS
         caps.imu = external_source_->has_imu();
         caps.aps = external_source_->has_aps();
+#endif
         return caps;
     }
     if (!camera_) return caps;  // nothing connected.
@@ -744,6 +750,12 @@ CameraController::SourceCapabilities CameraController::source_capabilities() {
 // "not available".
 bool CameraController::set_imu_enabled(bool on) {
 #if GUI_HAVE_DAVIS
+    if (external_source_) {
+        // Replay: the stream is fixed inside the file — the flag only gates
+        // the consumption state (the reader-thread sink checks it).
+        imu_enabled_ = on;
+        return true;
+    }
     if (!davis_device_ && !dvx_device_) return false;
     imu_enabled_ = on;
     if (davis_device_) davis_device_->set_imu_enabled(on);
@@ -838,6 +850,11 @@ std::vector<davis::ImuSample> CameraController::drain_imu(std::int64_t& cursor) 
 
 bool CameraController::set_aps_enabled(bool on) {
 #if GUI_HAVE_DAVIS
+    if (external_source_) {
+        // Replay: same as the IMU stream — flag-only gating.
+        aps_enabled_ = on;
+        return true;
+    }
     if (!davis_device_) return false;  // APS frames are DAVIS-only.
     aps_enabled_ = on;
     davis_device_->set_aps_enabled(on);
@@ -891,6 +908,27 @@ void CameraController::on_aps_frame(const davis::ApsFrame& frame) {
 facility::CameraSync* CameraController::camera_sync_facility() {
     if (!camera_) return nullptr;
     return camera_->get_device().get_facility<facility::CameraSync>();
+}
+
+void CameraController::set_raw_tap(RawTap tap) {
+    raw_tap_ = std::move(tap);
+#if GUI_HAVE_DAVIS
+    // The recorder must see the batch on the USB decode thread, BEFORE the
+    // bounded worker queue (drop-oldest under a flood) — recording data
+    // never goes through the queue.
+    if (davis_device_) {
+        davis_device_->set_raw_consumer(
+            [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+                if (raw_tap_) raw_tap_(b, e);
+            });
+    }
+    if (dvx_device_) {
+        dvx_device_->set_raw_consumer(
+            [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+                if (raw_tap_) raw_tap_(b, e);
+            });
+    }
+#endif
 }
 
 void CameraController::set_conditioned_listener(ConditionedListener cb) {
@@ -1052,10 +1090,8 @@ void CameraController::auto_bias_tick(const Metavision::EventCD* b,
 
 void CameraController::on_live_events(const Metavision::EventCD* b, const Metavision::EventCD* e) {
     try {
-        // Phase 4: the recorder's raw-device tap runs FIRST — the AEDAT4
-        // file must contain the unconditioned device stream, matching the
-        // RAW-recording semantics of the SDK cameras.
-        if (raw_tap_) raw_tap_(b, e);
+        // (The recorder's raw tap runs on the USB decode thread — see
+        // set_raw_tap — so this pipeline only serves the live consumers.)
         statistics_.add_events(b, e);
         if (is_file_) {
             // File mode: buffer RAW events — conditioning happens per-frame

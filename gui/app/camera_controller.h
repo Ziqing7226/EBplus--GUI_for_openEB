@@ -133,7 +133,7 @@ public:
     /// span as delivered by the device, before conditioning) — used by the
     /// recorder to write AEDAT4 files. Invoked from the device thread.
     using RawTap = std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)>;
-    void set_raw_tap(RawTap tap) { raw_tap_ = std::move(tap); }
+    void set_raw_tap(RawTap tap);
     /// Recording taps for the inivation side streams (IMU samples / APS
     /// frames) — invoked on the device thread like RawTap.
     void set_imu_tap(std::function<void(const davis::ImuSample&)> tap) {
