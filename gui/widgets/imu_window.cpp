@@ -72,12 +72,14 @@ ImuWindow::ImuWindow(CameraController* controller, QWidget* parent)
     : QWidget(parent, Qt::Window), controller_(controller) {
     setWindowTitle(tr("IMU Stream"));
     setAttribute(Qt::WA_DeleteOnClose);
-    setMinimumSize(480, 560);
+    setMinimumSize(480, 640);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(8, 8, 8, 8);
     status_label_ = new QLabel(this);
     layout->addWidget(status_label_);
+    layout->addStretch(1);  // the label keeps its hint height — the strip
+                            // charts below are hand-painted, not layout-managed
 
     // 30 Hz pull: drain new samples from the controller ring (thread-safe)
     // and repaint the strip charts.
@@ -126,13 +128,19 @@ void ImuWindow::paintEvent(QPaintEvent* event) {
     QPainter p(this);
     p.fillRect(rect(), QColor(12, 12, 14));
 
+    // The status label occupies the top strip (layout-managed); everything
+    // below is hand-painted.
+    const qreal paint_top = status_label_->geometry().bottom() + 6.0;
+
     // jAER-style pseudo-3D vector panel on top.
     const qreal side = std::min(rect().width() - 16.0, 300.0);
-    const QRectF vec(rect().left() + 8, rect().top() + 8, side, side);
+    const QRectF vec(rect().left() + 8, paint_top, side, side);
     draw_vectors(p, vec);
 
-    const QRectF charts = rect().adjusted(8, vec.bottom() + 14, -8,
-                                          -(status_label_->height() + 10));
+    const qreal charts_top = vec.bottom() + 14.0;
+    const qreal charts_bottom = std::max(charts_top, rect().bottom() - 10.0);
+    const QRectF charts(rect().left() + 8, charts_top,
+                        rect().width() - 16, charts_bottom - charts_top);
     const qreal plot_h = charts.height() / 3.0;
 
     const qint64 t_max = history_.empty() ? 0 : history_.back().t;
