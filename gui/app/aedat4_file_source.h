@@ -27,6 +27,11 @@ public:
     void open() override;
     void run(EventSink sink, DoneFn done) override;
 
+    bool has_imu() const override { return has_imu_; }
+    bool has_aps() const override { return has_aps_; }
+    void set_imu_sink(ImuSink sink) override { imu_sink_ = std::move(sink); }
+    void set_aps_sink(ApsSink sink) override { aps_sink_ = std::move(sink); }
+
 private:
     struct PacketInfo {
         std::int64_t byte_offset{0}; // packet body (after the 8-byte header)
@@ -46,6 +51,15 @@ private:
     int compression_{0}; // IOHeader.compression (0 none, 1/2 lz4, 3/4 zstd)
     /// streamID → true when that stream carries EVTS packets.
     std::map<std::int32_t, bool> stream_is_events_;
+    std::map<std::int32_t, bool> stream_is_imu_;
+    std::map<std::int32_t, bool> stream_is_aps_;
+    bool has_imu_{false};
+    bool has_aps_{false};
+    ImuSink imu_sink_;
+    ApsSink aps_sink_;
+
+    void decode_imu_body(const std::uint8_t* pd, std::size_t pn);
+    void decode_frame_body(const std::uint8_t* pd, std::size_t pn);
 };
 
 } // namespace gui

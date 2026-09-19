@@ -134,6 +134,14 @@ public:
     /// recorder to write AEDAT4 files. Invoked from the device thread.
     using RawTap = std::function<void(const Metavision::EventCD*, const Metavision::EventCD*)>;
     void set_raw_tap(RawTap tap) { raw_tap_ = std::move(tap); }
+    /// Recording taps for the inivation side streams (IMU samples / APS
+    /// frames) — invoked on the device thread like RawTap.
+    void set_imu_tap(std::function<void(const davis::ImuSample&)> tap) {
+        imu_tap_ = std::move(tap);
+    }
+    void set_aps_tap(std::function<void(const davis::ApsFrame&)> tap) {
+        aps_tap_ = std::move(tap);
+    }
 
     /// @brief Duration reported by an external file source (0 when the
     /// current source is an SDK camera or unknown until fully streamed).
@@ -392,6 +400,8 @@ private:
     /// Unconditional — the AEDAT4 recorder installs it for inivation
     /// sources only, but the accessor itself has no inivation dependency.
     RawTap raw_tap_;
+    std::function<void(const davis::ImuSample&)> imu_tap_;
+    std::function<void(const davis::ApsFrame&)> aps_tap_;
     /// External (non-SDK) file source and its reader thread. Mutually
     /// exclusive with camera_: only one is ever set.
     std::unique_ptr<ExternalFileSource> external_source_;

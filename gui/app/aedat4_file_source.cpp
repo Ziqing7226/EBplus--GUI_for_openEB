@@ -17,6 +17,8 @@
 
 #include "lz4_frame_decoder.h"
 
+#include <opencv2/core.hpp>
+
 namespace gui {
 namespace {
 
@@ -57,6 +59,11 @@ struct Fb {
     std::int64_t i64(std::size_t off) const {
         std::int64_t v;
         std::memcpy(&v, d + off, 8);
+        return v;
+    }
+    float f32(std::size_t off) const {
+        float v;
+        std::memcpy(&v, d + off, 4);
         return v;
     }
     // Root table position; buffer = [u32 rootUoffset][ident@4..8]...
@@ -254,6 +261,10 @@ void Aedat4FileSource::open() {
     const auto streams = parse_out_info(xml_text);
     for (const auto& [id, info] : streams) {
         stream_is_events_[id] = (info.type == QStringLiteral("EVTS"));
+        stream_is_imu_[id] = (info.type.trimmed() == QStringLiteral("IMU"));
+        stream_is_aps_[id] = (info.type == QStringLiteral("FRME"));
+        has_imu_ = has_imu_ || stream_is_imu_[id];
+        has_aps_ = has_aps_ || stream_is_aps_[id];
         if (stream_is_events_[id]) {
             meta_.width = info.width > 0 ? info.width : meta_.width;
             meta_.height = info.height > 0 ? info.height : meta_.height;
@@ -328,6 +339,69 @@ void Aedat4FileSource::parse_data_table(std::ifstream& file, std::streamoff pos)
     }
 }
 
+void Aedat4FileSource::decode_imu_body(const std::uint8_t* pd, std::size_t pn) {
+    if (pn < 8 || !imu_sink_) return;
+    const std::uint32_t declared = [&] {
+        std::uint32_t v; std::memcpy(&v, pd, 4); return v; }();
+    if (declared < 8 || declared > pn) return;
+    const Fb fb{pd + 4, declared};
+    std::size_t table = 0;
+    if (!fb.root(table)) return;
+    const std::size_t vec = fb.vector(table, 4);
+    if (vec == 0 || !fb.valid(vec, 4)) return;
+    const std::uint32_t count = fb.u32(vec);
+    if (count == 0 || (pn - vec - 4) / 4 < count) return;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const std::size_t slot = vec + 4 + 4 * i;
+        const std::uint32_t rel = fb.u32(slot);
+        const std::size_t elem = slot + rel;
+        if (!fb.valid(elem, 52)) return;
+        davis::ImuSample s;
+        s.t = fb.i64(elem + 4);
+        s.temperature = fb.f32(elem + 12);
+        s.accel_x = fb.f32(elem + 16);
+        s.accel_y = fb.f32(elem + 20);
+        s.accel_z = fb.f32(elem + 24);
+        s.gyro_x = fb.f32(elem + 28);
+        s.gyro_y = fb.f32(elem + 32);
+        s.gyro_z = fb.f32(elem + 36);
+        s.valid = true;
+        imu_sink_(s);
+    }
+}
+
+void Aedat4FileSource::decode_frame_body(const std::uint8_t* pd, std::size_t pn) {
+    if (pn < 8 || !aps_sink_) return;
+    const std::uint32_t declared = [&] {
+        std::uint32_t v; std::memcpy(&v, pd, 4); return v; }();
+    if (declared < 8 || declared > pn) return;
+    const Fb fb{pd + 4, declared};
+    std::size_t table = 0;
+    if (!fb.root(table)) return;
+    // dv frame.fbs field order (VT = 4 + 2*fieldIndex): ts=VT4,
+    // tsSOF=VT6, tsEOF=VT8, soe=VT10, eoe=VT12, format=VT14,
+    // sizeX=VT16, sizeY=VT18, posX=VT20, posY=VT22, pixels=VT24,
+    // exposure=VT26, source=VT28.
+    const std::int64_t ts = fb.scalar<std::int64_t>(table, 4, 0);
+    const std::int16_t w = fb.scalar<std::int16_t>(table, 16, 0);
+    const std::int16_t h = fb.scalar<std::int16_t>(table, 18, 0);
+    const std::size_t vec = fb.vector(table, 24);
+    if (vec == 0 || w <= 0 || h <= 0 || !fb.valid(vec, 4)) return;
+    const std::uint32_t count = fb.u32(vec);
+    if (count != static_cast<std::uint32_t>(w) * static_cast<std::uint32_t>(h) ||
+        (pn - vec - 4) < count) {
+        return;
+    }
+    davis::ApsFrame frame;
+    frame.t = ts;
+    frame.width = w;
+    frame.height = h;
+    frame.image = cv::Mat(h, w, CV_8UC1);
+    std::memcpy(frame.image.data, pd + 4 + vec + 4, count);
+    frame.valid = true;
+    aps_sink_(frame);
+}
+
 void Aedat4FileSource::run(EventSink sink, DoneFn done) {
     std::string error;
     try {
@@ -359,9 +433,36 @@ void Aedat4FileSource::run(EventSink sink, DoneFn done) {
                                  (static_cast<std::uint32_t>(header[7]) << 24);
             if (size > kMaxPacketBytes) throw std::runtime_error("AEDAT4 packet too large");
             auto ev_it = stream_is_events_.find(sid);
+            const bool is_imu = stream_is_imu_[sid];
+            const bool is_aps = stream_is_aps_[sid];
             if (ev_it == stream_is_events_.end() || !ev_it->second) {
-                // Non-event data (frame/IMU/trigger) — skipped entirely.
-                file.seekg(static_cast<std::streamoff>(size), std::ios::cur);
+                if (!is_imu && !is_aps) {
+                    // Other non-event data (trigger) — skipped entirely.
+                    file.seekg(static_cast<std::streamoff>(size), std::ios::cur);
+                    continue;
+                }
+                // IMU / APS frame packets: decompress like events, decode,
+                // surface through the sinks. LZ4-framing is packet-wide.
+                body.resize(size);
+                if (size > 0 && !read_exact(file, body.data(), size)) {
+                    throw std::runtime_error("Truncated AEDAT4 packet");
+                }
+                const std::uint8_t* pd = body.data();
+                std::size_t pn = size;
+                if (compression_ != 0) {
+                    plain.clear();
+                    std::string lz4_err;
+                    if (!lz4_decompress_frame(pd, pn, plain, lz4_err)) {
+                        throw std::runtime_error("AEDAT4 LZ4 packet: " + lz4_err);
+                    }
+                    if (plain.size() < 8) {
+                        throw std::runtime_error("AEDAT4 LZ4 packet too short");
+                    }
+                    pd = plain.data();
+                    pn = plain.size();
+                }
+                if (is_imu) decode_imu_body(pd, pn);
+                else decode_frame_body(pd, pn);
                 continue;
             }
             body.resize(size);

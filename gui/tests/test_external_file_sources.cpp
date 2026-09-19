@@ -338,8 +338,19 @@ TEST(Aedat4Source, EndToEndMiniFile) {
     file.patch32(hdr_size_pos, static_cast<std::uint32_t>(io.size()));
     file.b.insert(file.b.end(), io.b.begin(), io.b.end());
 
-    // Packet 1: FRME on stream 1 (skipped entirely).
-    append_packet(file, 1, frme_packet_body());
+    // Packet 1: FRME on stream 1 — with compression=1 every packet body is
+    // an LZ4 frame (real dv files compress frames too); the source decodes
+    // the frame stream now, so the body must be well-formed LZ4.
+    {
+        const Buf frme = frme_packet_body();
+        const Buf lz4_frme = lz4_frame_stored(
+            std::string(frme.b.begin(), frme.b.end()));
+        // Same 2-u32 direct form as the EVTS packets below (the reader reads
+        // {sid}{size} + body, decompressing the body as one LZ4 frame).
+        file.u32(1);
+        file.u32(static_cast<std::uint32_t>(lz4_frme.size()));
+        file.b.insert(file.b.end(), lz4_frme.b.begin(), lz4_frme.b.end());
+    }
     // Packet 2: EVTS on stream 0, LZ4-framed body (compression=1 → every
     // packet body is an LZ4 frame around [u32 fbSize][fb]).
     Buf prefixed2;

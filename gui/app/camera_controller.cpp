@@ -306,6 +306,22 @@ bool CameraController::connect_external_file(std::unique_ptr<ExternalFileSource>
     external_started_ = false;
     const ExternalFileMeta& meta = external_source_->meta();
 
+    // Recorded IMU/APS streams surface like the live device streams: the
+    // checkboxes appear (capabilities) and default ON — a recording can
+    // only be replayed once, so a manually-enabled-later checkbox would
+    // never see data. set_imu_enabled/set_aps_enabled stay meaningful for
+    // the session state; the file stream itself cannot be switched.
+    if (external_source_->has_imu()) {
+        imu_enabled_ = true;
+        external_source_->set_imu_sink(
+            [this](const davis::ImuSample& s) { on_imu_sample(s); });
+    }
+    if (external_source_->has_aps()) {
+        aps_enabled_ = true;
+        external_source_->set_aps_sink(
+            [this](const davis::ApsFrame& f) { on_aps_frame(f); });
+    }
+
     sensor_info_ = SensorInfo{};
     sensor_info_.width = meta.width;
     sensor_info_.height = meta.height;
@@ -707,7 +723,14 @@ CameraController::SourceCapabilities CameraController::source_capabilities() {
         return caps;
     }
 #endif
-    if (!camera_) return caps;  // nothing connected, or a file source.
+    if (external_source_) {
+        // AEDAT4 replay: the IMU/APS streams recorded in the file surface
+        // exactly like the live device streams.
+        caps.imu = external_source_->has_imu();
+        caps.aps = external_source_->has_aps();
+        return caps;
+    }
+    if (!camera_) return caps;  // nothing connected.
     caps.trigger = trigger_in_facility() != nullptr ||
                    trigger_out_facility() != nullptr;
     caps.esp = anti_flicker_facility() != nullptr ||
@@ -770,6 +793,9 @@ long CameraController::imu_sample_count() const {
 }
 
 void CameraController::on_imu_sample(const davis::ImuSample& sample) {
+    // Recording tap FIRST (like the event raw_tap_): the AEDAT4 file gets
+    // the device stream regardless of the GUI consumption state.
+    if (imu_tap_) imu_tap_(sample);
 #if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(imu_mutex_);
     imu_latest_ = sample;
@@ -853,6 +879,7 @@ long CameraController::aps_frame_count() const {
 }
 
 void CameraController::on_aps_frame(const davis::ApsFrame& frame) {
+    if (aps_tap_) aps_tap_(frame);
 #if GUI_HAVE_DAVIS
     std::lock_guard<std::mutex> lock(aps_mutex_);
     aps_latest_ = frame;
@@ -1264,6 +1291,8 @@ void CameraController::teardown() {
     }
 #endif
     raw_tap_ = nullptr;
+    imu_tap_ = nullptr;
+    aps_tap_ = nullptr;
     // 0. Stop the external reader FIRST: it feeds statistics_ and
     //    frame_pipeline_ from its own thread, so it must be joined before
     //    the pipeline is stopped below.

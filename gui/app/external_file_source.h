@@ -5,9 +5,9 @@
 // CameraController — the same contract as the SDK's streaming thread feeding
 // FramePipeline in file mode.
 //
-// ONLY event data is extracted: frame/imu/trigger streams in AEDAT4 and APS
-// frames in ALPDATA are skipped, matching the GUI's single-camera pure event
-// stream scope.
+// Events are the primary stream; the AEDAT4 source additionally decodes its
+// IMU and APS (frame) streams when present (surfaced like the live-device
+// streams). ALPDATA APS frames stay event-only.
 
 #ifndef GUI_APP_EXTERNAL_FILE_SOURCE_H
 #define GUI_APP_EXTERNAL_FILE_SOURCE_H
@@ -22,6 +22,9 @@
 
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/base/utils/timestamp.h>
+
+#include "davis/aps_decoder.h"
+#include "davis/imu_types.h"
 
 namespace gui {
 
@@ -67,6 +70,16 @@ public:
 
     /// Cooperative cancellation (GUI thread); run() returns soon after.
     virtual void request_stop() { stop_.store(true, std::memory_order_relaxed); }
+
+    /// Side streams (AEDAT4 only). has_*() is known after open(); the sinks
+    /// are invoked on the reader thread while run() streams. Defaults: the
+    /// format carries no such stream.
+    using ImuSink = std::function<void(const davis::ImuSample&)>;
+    using ApsSink = std::function<void(const davis::ApsFrame&)>;
+    virtual bool has_imu() const { return false; }
+    virtual bool has_aps() const { return false; }
+    virtual void set_imu_sink(ImuSink) {}
+    virtual void set_aps_sink(ApsSink) {}
 
     const ExternalFileMeta& meta() const { return meta_; }
 

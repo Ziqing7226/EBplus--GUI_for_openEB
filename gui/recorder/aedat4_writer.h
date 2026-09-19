@@ -18,6 +18,9 @@
 
 #include <metavision/sdk/base/events/event_cd.h>
 
+#include "davis/aps_decoder.h"
+#include "davis/imu_types.h"
+
 namespace gui {
 
 class Aedat4Writer {
@@ -43,6 +46,13 @@ public:
     /// @brief Appends a batch (called from the USB thread). Accumulates and
     ///        flushes a packet once the threshold is reached.
     void write(const Metavision::EventCD* begin, const Metavision::EventCD* end);
+    /// @brief Appends one IMU6 sample (stream 1, DV "IMU " type — flatbuffer
+    ///        layout per dv's data/imu.fbs: IMUPacket { elements: [IMU] }).
+    ///        Accumulates and flushes a packet every kImuFlushSamples samples.
+    void write_imu(const davis::ImuSample& s);
+    /// @brief Appends one APS grayscale frame (stream 2, DV "FRME" type —
+    ///        dv's data/frame.fbs Frame, OPENCV_8U_C1). One packet per frame.
+    void write_aps(const davis::ApsFrame& f);
     /// @brief Flushes the pending packet and writes the data table. Safe to
     ///        call twice.
     void close();
@@ -58,10 +68,13 @@ public:
 
 private:
     void flush_locked();
+    void flush_imu_locked();
 
     std::FILE* file_{nullptr};
     mutable std::mutex mtx_;
     std::vector<Metavision::EventCD> pending_;
+    std::vector<davis::ImuSample> imu_pending_;
+    static constexpr std::size_t kImuFlushSamples = 64;
     std::vector<Entry> entries_;
     std::streamoff table_pos_field_{0};  ///< IOHeader dataTablePosition slot.
     std::uint64_t total_events_{0};

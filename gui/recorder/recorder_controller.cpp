@@ -66,6 +66,14 @@ bool RecorderController::start(CameraController* controller, const QString& path
             writer->write(b, e);
             written_events_ += static_cast<std::uint64_t>(e - b);
         });
+        // The recorded IMU/APS streams follow the device streams (written
+        // regardless of the GUI consumption checkboxes, like events).
+        controller->set_imu_tap([writer](const davis::ImuSample& s) {
+            writer->write_imu(s);
+        });
+        controller->set_aps_tap([writer](const davis::ApsFrame& f) {
+            writer->write_aps(f);
+        });
         controller_ = controller;
         path_ = path;
         recording_ = true;
@@ -194,7 +202,11 @@ void RecorderController::stop() {
         // Unhook the tap first (no NEW batches), then close — the shared_ptr
         // in an in-flight tap lambda keeps the writer alive until that batch
         // completes, and close() itself is mutex-serialized with write().
-        if (controller_) controller_->set_raw_tap(nullptr);
+        if (controller_) {
+            controller_->set_raw_tap(nullptr);
+            controller_->set_imu_tap(nullptr);
+            controller_->set_aps_tap(nullptr);
+        }
         if (aedat4_writer_) {
             aedat4_writer_->close();
             aedat4_writer_.reset();

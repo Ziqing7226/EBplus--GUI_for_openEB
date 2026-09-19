@@ -67,6 +67,119 @@ void build_event_packet(const std::vector<Metavision::EventCD>& evs,
     }
 }
 
+/// IMUPacket — dv data/imu.fbs: file_identifier "IMUS"; root table
+/// IMUPacket { elements: [IMU] (vector of TABLES, native_inline) }. Every
+/// sample table shares ONE vtable (identical field sets), placed BEFORE the
+/// tables (soffset negative). Table (52 B): [soffset][ts @4][temp @12]
+/// [ax @16][ay @20][az @24][gx @28][gy @32][gz @36][mx @40][my @44][mz @48]
+/// (magnetometer stays 0 — absent on our chips). Non-overlapping layout:
+/// root@0, ident@4, IMUPacket table@8 (8..60), vtable@60 (60..86),
+/// vector@88, sample tables after the element slots.
+void build_imu_packet(const std::vector<davis::ImuSample>& samples,
+                      std::vector<std::uint8_t>& out) {
+    const std::size_t n = samples.size();
+    const std::size_t vtable_pos = 60;
+    const std::size_t vector_pos = 88;
+    const std::size_t elems_pos = vector_pos + 4;
+    const std::size_t first_table = elems_pos + 4 * n;
+    out.assign(first_table + n * 52, 0);
+
+    put_u32(out, 0, 8);                    // root → table@8
+    std::memcpy(out.data() + 4, "IMUS", 4);
+    // soffset = table − vtable (NEGATIVE — the vtable sits after the table;
+    // the reader computes vtable = table − soffset).
+    put_i32_at(out, 8, static_cast<std::int32_t>(8 - vtable_pos));
+    put_u32(out, 12, static_cast<std::uint32_t>(vector_pos - 12));   // VT4 → vector
+    // vtable entries are SAMPLE-TABLE-relative (52 B): [VT4=4 ts]
+    // [VT5=12 temp][VT6=16 ax][VT7=20 ay][VT8=24 az][VT9=28 gx][VT10=32 gy]
+    // [VT11=36 gz][VT12=40 mx][VT13=44 my][VT14=48 mz]
+    put_u16(out, vtable_pos, 26);
+    put_u16(out, vtable_pos + 2, 52);
+    for (int f = 0; f < 11; ++f) {
+        put_u16(out, vtable_pos + 4 + 2 * f,
+                static_cast<std::uint16_t>(f == 0 ? 4 : 12 + 4 * (f - 1)));
+    }
+    put_u32(out, vector_pos, static_cast<std::uint32_t>(n));
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t slot = elems_pos + 4 * i;
+        const std::size_t table = first_table + i * 52;
+        put_u32(out, slot, static_cast<std::uint32_t>(table - slot));
+        put_i32_at(out, table, static_cast<std::int32_t>(static_cast<std::int64_t>(table) - vtable_pos));
+        std::memcpy(out.data() + table + 4, &samples[i].t, 8);
+        std::memcpy(out.data() + table + 12, &samples[i].temperature, 4);
+        std::memcpy(out.data() + table + 16, &samples[i].accel_x, 4);
+        std::memcpy(out.data() + table + 20, &samples[i].accel_y, 4);
+        std::memcpy(out.data() + table + 24, &samples[i].accel_z, 4);
+        std::memcpy(out.data() + table + 28, &samples[i].gyro_x, 4);
+        std::memcpy(out.data() + table + 32, &samples[i].gyro_y, 4);
+        std::memcpy(out.data() + table + 36, &samples[i].gyro_z, 4);
+    }
+}
+
+/// Frame — dv data/frame.fbs: file_identifier "FRME"; root table Frame.
+/// Written fields: VT4 timestamp, VT5 tsSOF, VT6 tsEOF, VT9 format (i8,
+/// OPENCV_8U_C1 = 0), VT10 sizeX, VT11 sizeY, VT14 pixels vector, VT16
+/// source (i8, SENSOR = 1); SOE/EOE/position/exposure keep defaults
+/// (omitted → vtable entry 0). Table (44 B): [soffset][ts @4][sof @12]
+/// [eof @20][pixdisp @28][format @32][sizeX @34][sizeY @36][posX @38]
+/// [posY @40][source @42]; vtable@52 (30 B); pixels vector@84.
+void build_frame_packet(const davis::ApsFrame& f, std::vector<std::uint8_t>& out) {
+    // dv data/frame.fbs: file_identifier "FRME"; root table Frame. Fields in
+    // declaration order (VT = 4 + 2*index): ts VT4, tsSOF VT6, tsEOF VT8,
+    // soe VT10, eoe VT12, format VT14, sizeX VT16, sizeY VT18, posX VT20,
+    // posY VT22, pixels VT24, exposure VT26, source VT28.
+    //
+    // Builder convention (matching our Fb reader): a vtable entry at byte
+    // (4 + 2*index) holds the TABLE-RELATIVE offset of the field slot; a
+    // scalar slot holds the value, an indirect slot holds the u32
+    // displacement from the slot to the target.
+    //
+    // Layout: root@0, ident@4, table@8 (48 B), vtable@56 (30 B),
+    // pixels vector@88. Table slots: ts rel8, sof rel16, eof rel24,
+    // pixels-disp rel32, format rel36, sizeX rel38, sizeY rel40,
+    // posX rel42, posY rel44, source rel46. soffset = 8 - 56 = -48.
+    const std::size_t vtable_pos = 56;
+    const std::size_t vector_pos = 88;
+    const std::uint8_t* pix = f.image.data;
+    const std::size_t npix = static_cast<std::size_t>(f.image.rows) *
+                             static_cast<std::size_t>(f.image.cols);
+    out.assign(vector_pos + 4 + npix, 0);
+
+    put_u32(out, 0, 8);                    // root → table@8
+    std::memcpy(out.data() + 4, "FRME", 4);
+    put_i32_at(out, 8, static_cast<std::int32_t>(8 - vtable_pos));
+    std::memcpy(out.data() + 16, &f.t, 8);           // VT4 ts
+    std::memcpy(out.data() + 24, &f.t, 8);           // VT6 tsSOF
+    std::memcpy(out.data() + 32, &f.t, 8);           // VT8 tsEOF
+    put_u32(out, 40, static_cast<std::uint32_t>(vector_pos - 40));   // VT24 → pixels
+    out[44] = 0;                                     // VT14 format OPENCV_8U_C1
+    const std::int16_t w = static_cast<std::int16_t>(f.image.cols);
+    const std::int16_t h = static_cast<std::int16_t>(f.image.rows);
+    std::memcpy(out.data() + 46, &w, 2);             // VT16 sizeX
+    std::memcpy(out.data() + 48, &h, 2);             // VT18 sizeY
+    out[54] = 1;                                     // VT28 source SENSOR
+    // vtable@56: [vtsz=30][tsz=48][VT4→8][VT6→16][VT8→24][VT10→0][VT12→0]
+    // [VT14→36][VT16→38][VT18→40][VT20→42][VT22→44][VT24→32][VT26→0]
+    // [VT28→46]
+    put_u16(out, vtable_pos, 30);
+    put_u16(out, vtable_pos + 2, 48);
+    put_u16(out, vtable_pos + 4, 8);
+    put_u16(out, vtable_pos + 6, 16);
+    put_u16(out, vtable_pos + 8, 24);
+    put_u16(out, vtable_pos + 10, 0);
+    put_u16(out, vtable_pos + 12, 0);
+    put_u16(out, vtable_pos + 14, 36);
+    put_u16(out, vtable_pos + 16, 38);
+    put_u16(out, vtable_pos + 18, 40);
+    put_u16(out, vtable_pos + 20, 42);
+    put_u16(out, vtable_pos + 22, 44);
+    put_u16(out, vtable_pos + 24, 32);
+    put_u16(out, vtable_pos + 26, 0);
+    put_u16(out, vtable_pos + 28, 46);
+    put_u32(out, vector_pos, static_cast<std::uint32_t>(npix));
+    if (npix) std::memcpy(out.data() + vector_pos + 4, pix, npix);
+}
+
 /// IOHeader — [0] u32 root → table@12 (table+12 8-aligned); [4] "IOHE";
 /// table@12 {soffset −20 → vtable@32; VT4 i32 compression@16; VT8 u32@20 →
 /// string after the table; VT6 i64 dataTablePosition@24}; vtable@32; string
@@ -169,6 +282,31 @@ bool Aedat4Writer::open(const std::string& path, int width, int height,
     xml += "                <attr key=\"source\" type=\"string\">" + source + "</attr>\n";
     xml += "            </node>\n";
     xml += "        </node>\n";
+    // Stream 1 = IMU (samples are only written when the stream is enabled,
+    // but the declaration is unconditional — an empty stream is harmless).
+    xml += "        <node name=\"1\" path=\"/mainloop/Recorder/outInfo/1/\">\n";
+    xml += "            <attr key=\"compression\" type=\"string\">NONE</attr>\n";
+    xml += "            <attr key=\"originalModuleName\" type=\"string\">capture</attr>\n";
+    xml += "            <attr key=\"originalOutputName\" type=\"string\">imu</attr>\n";
+    xml += "            <attr key=\"typeDescription\" type=\"string\">IMU samples.</attr>\n";
+    xml += "            <attr key=\"typeIdentifier\" type=\"string\">IMU </attr>\n";
+    xml += "            <node name=\"info\" path=\"/mainloop/Recorder/outInfo/1/info/\">\n";
+    xml += "                <attr key=\"source\" type=\"string\">\"" + source + "\"</attr>\n";
+    xml += "            </node>\n";
+    xml += "        </node>\n";
+    // Stream 2 = APS frames (grayscale 8-bit).
+    xml += "        <node name=\"2\" path=\"/mainloop/Recorder/outInfo/2/\">\n";
+    xml += "            <attr key=\"compression\" type=\"string\">NONE</attr>\n";
+    xml += "            <attr key=\"originalModuleName\" type=\"string\">capture</attr>\n";
+    xml += "            <attr key=\"originalOutputName\" type=\"string\">frames</attr>\n";
+    xml += "            <attr key=\"typeDescription\" type=\"string\">APS frames.</attr>\n";
+    xml += "            <attr key=\"typeIdentifier\" type=\"string\">FRME</attr>\n";
+    xml += "            <node name=\"info\" path=\"/mainloop/Recorder/outInfo/2/info/\">\n";
+    xml += "                <attr key=\"sizeX\" type=\"int\">" + std::to_string(width) + "</attr>\n";
+    xml += "                <attr key=\"sizeY\" type=\"int\">" + std::to_string(height) + "</attr>\n";
+    xml += "                <attr key=\"source\" type=\"string\">\"" + source + "\"</attr>\n";
+    xml += "            </node>\n";
+    xml += "        </node>\n";
     xml += "    </node>\n";
     xml += "</dv>\n";
 
@@ -210,6 +348,48 @@ void Aedat4Writer::write(const Metavision::EventCD* begin,
     }
 }
 
+void Aedat4Writer::write_imu(const davis::ImuSample& s) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!file_) return;
+    imu_pending_.push_back(s);
+    if (imu_pending_.size() >= kImuFlushSamples) flush_imu_locked();
+}
+
+void Aedat4Writer::write_aps(const davis::ApsFrame& f) {
+    if (f.image.empty() || f.image.type() != CV_8UC1) return;
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!file_) return;
+
+    std::vector<std::uint8_t> packet;
+    build_frame_packet(f, packet);
+    const auto fb_size = static_cast<std::int32_t>(packet.size());
+    const auto body_size = static_cast<std::int32_t>(packet.size() + 4);
+    const std::int32_t header[3] = {2, body_size, fb_size};
+    if (std::fwrite(header, 4, 3, file_) != 3 ||
+        std::fwrite(packet.data(), 1, packet.size(), file_) != packet.size()) {
+        return;
+    }
+    entries_.push_back({body_size, 1, f.t, f.t});
+}
+
+void Aedat4Writer::flush_imu_locked() {
+    if (imu_pending_.empty() || !file_) return;
+    std::vector<std::uint8_t> packet;
+    build_imu_packet(imu_pending_, packet);
+    const auto fb_size = static_cast<std::int32_t>(packet.size());
+    const auto body_size = static_cast<std::int32_t>(packet.size() + 4);
+    const std::int32_t header[3] = {1, body_size, fb_size};
+    const std::int64_t ts0 = imu_pending_.front().t;
+    const std::int64_t ts1 = imu_pending_.back().t;
+    const auto n = static_cast<std::int64_t>(imu_pending_.size());
+    imu_pending_.clear();
+    if (std::fwrite(header, 4, 3, file_) != 3 ||
+        std::fwrite(packet.data(), 1, packet.size(), file_) != packet.size()) {
+        return;
+    }
+    entries_.push_back({body_size, n, std::min(ts0, ts1), std::max(ts0, ts1)});
+}
+
 void Aedat4Writer::flush_locked() {
     if (pending_.empty() || !file_) return;
 
@@ -236,6 +416,7 @@ void Aedat4Writer::close() {
     std::lock_guard<std::mutex> lock(mtx_);
     if (!file_) return;
     flush_locked();
+    flush_imu_locked();
 
     const std::streamoff region_start = std::ftell(file_);
     std::vector<std::uint8_t> table;
@@ -250,6 +431,7 @@ void Aedat4Writer::close() {
     std::fclose(file_);
     file_ = nullptr;
     pending_.clear();
+    imu_pending_.clear();
     entries_.clear();
 }
 
