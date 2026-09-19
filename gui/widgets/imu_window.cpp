@@ -21,6 +21,12 @@ namespace gui {
 namespace {
 
 constexpr int kPlotWindowMs = 5000;    // Rolling window shown in the charts.
+// jAER-style overlay scaling: vector lengths are value / full-scale, the
+// gyro is additionally ×5, and the accel-Z disk radius uses twice the
+// vector scale (out-of-plane emphasis).
+constexpr qreal kFullScaleAccelG = 4.0;
+constexpr qreal kFullScaleGyroDps = 1000.0;
+constexpr qreal kGyroVectorScale = 5.0;
 constexpr qreal kAccelHeadroom = 0.3;  // Accel range headroom (g).
 constexpr qreal kGyroHeadroom = 25.0;  // Gyro minimum range headroom (deg/s).
 
@@ -116,11 +122,17 @@ void ImuWindow::refresh() {
     update();  // repaint the strip charts
 }
 
-void ImuWindow::paintEvent(QPaintEvent*) {
+void ImuWindow::paintEvent(QPaintEvent* event) {
     QPainter p(this);
     p.fillRect(rect(), QColor(12, 12, 14));
 
-    const QRectF charts = rect().adjusted(8, 8, -8, -(status_label_->height() + 10));
+    // jAER-style pseudo-3D vector panel on top.
+    const qreal side = std::min(rect().width() - 16.0, 300.0);
+    const QRectF vec(rect().left() + 8, rect().top() + 8, side, side);
+    draw_vectors(p, vec);
+
+    const QRectF charts = rect().adjusted(8, vec.bottom() + 14, -8,
+                                          -(status_label_->height() + 10));
     const qreal plot_h = charts.height() / 3.0;
 
     const qint64 t_max = history_.empty() ? 0 : history_.back().t;
@@ -210,6 +222,55 @@ void ImuWindow::paintEvent(QPaintEvent*) {
         p.setPen(kTextColor);
         p.drawText(rect(), Qt::AlignCenter, tr("Waiting for samples…"));
     }
+}
+
+void ImuWindow::draw_vectors(QPainter& p, const QRectF& r) {
+    p.fillRect(r, kPanelColor);
+    p.setPen(kFrameColor);
+    p.drawRect(r);
+
+    const davis::ImuSample s =
+        history_.empty() ? davis::ImuSample{} : history_.back();
+    const QPointF origin = r.center();
+    const qreal half = r.width() / 2.0;
+
+    // Accel X/Y vector (green), scaled by the +-4 g full scale.
+    const QPointF accel_tip(origin.x() + (s.accel_x * half / kFullScaleAccelG),
+                            origin.y() - (s.accel_y * half / kFullScaleAccelG));
+    p.setPen(QPen(kAxisColors[1], 3));
+    p.drawLine(origin, accel_tip);
+
+    // Accel Z disk (out-of-plane): radius twice the vector scale.
+    const qreal az = std::abs(s.accel_z) * r.width() / kFullScaleAccelG;
+    p.setPen(QPen(kAxisColors[2], 1));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(origin, az, az);
+
+    // Gyro yaw/tilt vector (magenta), ×5 emphasis.
+    const QPointF gyro_tip(origin.x() + (kGyroVectorScale * s.gyro_y * half /
+                                         kFullScaleGyroDps),
+                           origin.y() - (kGyroVectorScale * s.gyro_x * half /
+                                         kFullScaleGyroDps));
+    p.setPen(QPen(QColor(255, 0, 255), 3));
+    p.drawLine(origin, gyro_tip);
+
+    // Crosshair through the origin.
+    p.setPen(QPen(QColor(90, 90, 96), 1, Qt::DashLine));
+    p.drawLine(QPointF(r.left(), origin.y()), QPointF(r.right(), origin.y()));
+    p.drawLine(QPointF(origin.x(), r.top()), QPointF(origin.x(), r.bottom()));
+
+    // Value labels at the tips.
+    p.setPen(kTextColor);
+    p.drawText(accel_tip + QPointF(6, -6),
+               QStringLiteral("%1, %2 g")
+                   .arg(s.accel_x, 0, 'f', 2)
+                   .arg(s.accel_y, 0, 'f', 2));
+    p.drawText(QPointF(origin.x() + 6, origin.y() - az - 6),
+               QStringLiteral("%1 g").arg(s.accel_z, 0, 'f', 2));
+    p.drawText(gyro_tip + QPointF(6, 12),
+               QStringLiteral("%1, %2 dps")
+                   .arg(s.gyro_y, 0, 'f', 1)
+                   .arg(s.gyro_x, 0, 'f', 1));
 }
 
 void ImuWindow::closeEvent(QCloseEvent* event) {

@@ -41,6 +41,10 @@ protected:
 
 private:
     void refresh();
+    /// jAER-style pseudo-3D vector overlay: accel X/Y as a green vector
+    /// from the center, accel Z as a disk (out-of-plane), gyro yaw/tilt as
+    /// a magenta vector — with value labels at the tips.
+    void draw_vectors(QPainter& p, const QRectF& r);
 
     CameraController* controller_;
     QTimer* timer_;
