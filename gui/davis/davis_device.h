@@ -31,6 +31,7 @@
 #include <metavision/sdk/base/events/event_cd.h>
 
 #include "davis_biases.h"
+#include "batch_worker.h"
 #include "davis_parser.h"
 
 namespace gui::davis {
@@ -173,6 +174,11 @@ private:
     float logic_clock_{0};
     float usb_clock_{0};
     Parser parser_;
+
+    // Decouples the per-batch event pipeline from the USB reaping thread
+    // (IMU/APS stay inline in the parser — latency-critical). Started with
+    // the USB thread, stopped after it (producer-first shutdown).
+    BatchWorker batches_;
     BiasStore biases_;
     EventSink sink_;
     GoneCallback gone_callback_;

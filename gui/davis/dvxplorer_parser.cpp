@@ -127,4 +127,8 @@ void DvxParser::parse(const std::uint8_t* data, std::size_t size, const EventSin
     }
 }
 
+void DvxParser::decode(const std::uint8_t* data, std::size_t size) {
+    parse(data, size, nullptr);
+}
+
 } // namespace gui::davis

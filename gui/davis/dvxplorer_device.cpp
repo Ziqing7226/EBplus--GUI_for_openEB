@@ -234,11 +234,13 @@ DvxplorerDevice::DvxplorerDevice(const DeviceDescriptor& descriptor)
     }
 
     usb_thread_start();
+    batches_.start([this]() -> BatchWorker::Sink { return sink_; });
     usb_cleanup_buffers();
 
     try {
         configure_idle();
     } catch (...) {
+        batches_.stop();
         usb_thread_stop();
         libusb_release_interface(handle_, 0);
         teardown_usb();
@@ -252,6 +254,9 @@ DvxplorerDevice::~DvxplorerDevice() {
     } catch (...) {
     }
     if (usb_thread_run_.load()) usb_thread_stop();
+    // After the USB thread is gone no new batches can be submitted —
+    // drain and join the processing worker.
+    batches_.stop();
     if (handle_ != nullptr) libusb_release_interface(handle_, 0);
     teardown_usb();
 }
@@ -637,7 +642,14 @@ void DvxplorerDevice::set_contrast_off(int value) {
 }
 
 void DvxplorerDevice::parse_events(const std::uint8_t* data, std::size_t size) {
-    parse_.parse(data, size, sink_);
+    // Decode here (cheap; the IMU sink fires inline so it stays
+    // latency-critical), hand the event batch to the processing worker —
+    // the heavy pipeline must not run on the USB reaping thread (it
+    // saturates under an event flood and delays IMU by seconds).
+    parse_.decode(data, size);
+    auto slot = batches_.acquire();
+    parse_.swap_batch(*slot);
+    batches_.submit(std::move(slot));
 }
 
 void DvxplorerDevice::set_contrast_threshold(int on_value, int off_value) {

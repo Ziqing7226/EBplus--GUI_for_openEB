@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "davis/aps_decoder.h"
+#include "davis/batch_worker.h"
 #include "davis/auto_exposure.h"
 #include "davis/davis_biases.h"
 #include "davis/davis_parser.h"
@@ -54,6 +55,99 @@ void feed(gui::davis::Parser& parser, const std::vector<std::uint16_t>& words,
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// BatchWorker — FIFO handoff off the USB thread.
+// ---------------------------------------------------------------------------
+
+TEST(BatchWorker, DeliversBatchesInOrderAndDrainsOnStop) {
+    gui::davis::BatchWorker worker;
+    std::mutex m;
+    std::vector<int> seen;
+    std::vector<std::size_t> sizes;
+    worker.start([&]() -> gui::davis::BatchWorker::Sink {
+        return [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            std::lock_guard<std::mutex> lock(m);
+            sizes.push_back(static_cast<std::size_t>(e - b));
+            for (auto it = b; it != e; ++it) seen.push_back(static_cast<int>(it->x));
+        };
+    });
+    // Submit several batches with distinct x values; the sink must observe
+    // them in submission order with intact contents.
+    for (int i = 0; i < 8; ++i) {
+        auto slot = worker.acquire();
+        slot->reserve(4);
+        for (int k = 0; k < 4; ++k) slot->push_back(Metavision::EventCD{});
+        (*slot)[0].x = static_cast<std::uint16_t>(i * 4 + 0);
+        (*slot)[1].x = static_cast<std::uint16_t>(i * 4 + 1);
+        (*slot)[2].x = static_cast<std::uint16_t>(i * 4 + 2);
+        (*slot)[3].x = static_cast<std::uint16_t>(i * 4 + 3);
+        worker.submit(std::move(slot));
+    }
+    // Empty batches are recycled without reaching the sink (matches both
+    // parsers' emit guard).
+    worker.submit(std::make_unique<gui::davis::BatchWorker::Batch>());
+    worker.stop();
+    ASSERT_EQ(seen.size(), 32u);
+    for (int i = 0; i < 32; ++i) {
+        EXPECT_EQ(seen[static_cast<std::size_t>(i)], i) << "FIFO order broken at " << i;
+    }
+    ASSERT_EQ(sizes.size(), 8u);
+    for (std::size_t i = 0; i < 8; ++i) EXPECT_EQ(sizes[i], 4u);
+}
+
+TEST(BatchWorker, LateSinkInstallIsPickedUp) {
+    // The devices start the worker in their constructor but install the
+    // event sink afterwards — the provider is read per batch, so a sink
+    // installed after start() still receives everything submitted later.
+    gui::davis::BatchWorker worker;
+    std::atomic<int> count{0};
+    worker.start([&]() -> gui::davis::BatchWorker::Sink {
+        return [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+            count += static_cast<int>(e - b);
+        };
+    });
+    auto slot = worker.acquire();
+    slot->resize(5);
+    worker.submit(std::move(slot));
+    worker.stop();
+    EXPECT_EQ(count.load(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// Deferred decode API — equivalence with the sink-facing parse().
+// ---------------------------------------------------------------------------
+
+TEST(DavisParser, DeferredDecodeMatchesSinkingParse) {
+    const std::vector<std::uint16_t> words = {
+        ts_word(100), y_word(10), x_word(20, true), x_word(21, false),
+        ts_word(200), y_word(11), x_word(22, true),
+        wrap_word(1), ts_word(5), x_word(23, false), x_word(24, true),
+    };
+    std::vector<Metavision::EventCD> via_sink;
+    gui::davis::Parser sinking(346, 260, false);
+    feed(sinking, words, via_sink);
+
+    gui::davis::Parser deferred(346, 260, false);
+    std::vector<std::uint8_t> bytes;
+    for (const std::uint16_t w : words) {
+        bytes.push_back(static_cast<std::uint8_t>(w & 0xFF));
+        bytes.push_back(static_cast<std::uint8_t>(w >> 8));
+    }
+    deferred.decode(bytes.data(), bytes.size());
+    std::vector<Metavision::EventCD> swapped;
+    std::vector<Metavision::EventCD> slot;
+    deferred.swap_batch(slot);
+    swapped = slot;
+
+    ASSERT_EQ(via_sink.size(), swapped.size());
+    for (std::size_t i = 0; i < via_sink.size(); ++i) {
+        EXPECT_EQ(via_sink[i].x, swapped[i].x);
+        EXPECT_EQ(via_sink[i].y, swapped[i].y);
+        EXPECT_EQ(via_sink[i].p, swapped[i].p);
+        EXPECT_EQ(via_sink[i].t, swapped[i].t);
+    }
+}
 
 TEST(DavisParser, DecodesPolarityEventsRebasedToZero) {
     gui::davis::Parser parser(346, 260, false);

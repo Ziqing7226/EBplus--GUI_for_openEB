@@ -42,6 +42,18 @@ public:
     DvxParser(int width, int height);
 
     void parse(const std::uint8_t* data, std::size_t size, const EventSink& sink);
+
+    /// Deferred variant used by the device layer: decodes WITHOUT invoking
+    /// the event sink (the IMU sink still fires inline — cheap and
+    /// latency-critical), leaving the decoded events for swap_batch().
+    /// Keeps the USB reaping thread fast under an event flood: the heavy
+    /// per-batch pipeline runs on the BatchWorker thread instead.
+    void decode(const std::uint8_t* data, std::size_t size);
+
+    /// Swaps the decoded batch out into @p slot (and the slot's recycled
+    /// buffer in) so the caller can queue it elsewhere.
+    void swap_batch(std::vector<Metavision::EventCD>& slot) { batch_.swap(slot); }
+
     [[nodiscard]] bool time_initialized() const { return t0_set_; }
     void reset();
 

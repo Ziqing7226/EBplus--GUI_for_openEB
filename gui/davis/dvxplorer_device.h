@@ -38,6 +38,7 @@
 #include <metavision/sdk/base/events/event_cd.h>
 
 #include "davis_device.h"
+#include "batch_worker.h"
 #include "dvxplorer_parser.h"
 
 namespace gui::davis {
@@ -141,6 +142,11 @@ private:
     int contrast_on_{9};
     int contrast_off_{9};
     EventSink sink_;
+
+    // Decouples the per-batch event pipeline from the USB reaping thread
+    // (IMU stays inline in the parser — latency-critical). Started with
+    // the USB thread, stopped after it (producer-first shutdown).
+    BatchWorker batches_;
     GoneCallback gone_callback_;
     bool imu_enabled_{false};
     DvxParser parse_;

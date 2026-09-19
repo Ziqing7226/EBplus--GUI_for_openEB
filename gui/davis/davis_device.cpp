@@ -290,11 +290,13 @@ Device::Device(const DeviceDescriptor& descriptor)
     }
 
     usb_thread_start();
+    batches_.start([this]() -> BatchWorker::Sink { return sink_; });
     usb_cleanup_buffers();
 
     try {
         configure_idle();
     } catch (...) {
+        batches_.stop();
         usb_thread_stop();
         libusb_release_interface(handle_, 0);
         teardown_usb();
@@ -310,6 +312,9 @@ Device::~Device() {
     if (usb_thread_run_.load()) {
         usb_thread_stop();
     }
+    // After the USB thread is gone no new batches can be submitted —
+    // drain and join the processing worker.
+    batches_.stop();
     if (handle_ != nullptr) {
         libusb_release_interface(handle_, 0);
     }
@@ -464,8 +469,16 @@ void LIBUSB_CALL Device::usb_data_transfer_cb(libusb_transfer* transfer) {
     if ((transfer->status == LIBUSB_TRANSFER_COMPLETED ||
             transfer->status == LIBUSB_TRANSFER_CANCELLED) &&
         transfer->actual_length > 0) {
-        self->parser_.parse(transfer->buffer, static_cast<std::size_t>(transfer->actual_length),
-            self->sink_);
+        // Decode here (cheap word loop; the IMU/APS sinks fire inline so
+        // they stay latency-critical), but hand the event batch to the
+        // processing worker: the heavy per-batch pipeline used to run on
+        // this thread and saturate it under a motion-driven event flood,
+        // delaying every subsequent transfer — IMU included — by seconds.
+        self->parser_.decode(transfer->buffer,
+            static_cast<std::size_t>(transfer->actual_length));
+        auto slot = self->batches_.acquire();
+        self->parser_.swap_batch(*slot);
+        self->batches_.submit(std::move(slot));
     }
 
     if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {

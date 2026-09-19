@@ -53,6 +53,18 @@ public:
     /// emitted via @p sink (possibly empty — most specials produce none).
     void parse(const std::uint8_t* data, std::size_t size, const EventSink& sink);
 
+    /// Deferred variant used by the device layer: decodes the buffer
+    /// WITHOUT invoking the event sink (the IMU/APS sinks still fire
+    /// inline — they are cheap and latency-critical), leaving the decoded
+    /// events in the internal buffer for swap_batch(). This keeps the USB
+    /// reaping thread fast under an event flood: the heavy per-batch
+    /// pipeline runs on the BatchWorker thread instead.
+    void decode(const std::uint8_t* data, std::size_t size);
+
+    /// Swaps the decoded batch out into @p slot (and the slot's recycled
+    /// buffer in) so the caller can queue it elsewhere.
+    void swap_batch(std::vector<Metavision::EventCD>& slot) { batch_.swap(slot); }
+
     /// True once a timestamp reset was seen (timestamps are now 0-based).
     [[nodiscard]] bool time_initialized() const { return t0_set_; }
 
