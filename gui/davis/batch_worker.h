@@ -111,7 +111,11 @@ public:
 
     /// Hands a filled slot to the worker (FIFO). An empty batch is
     /// recycled directly without reaching the sink — matching both
-    /// parsers' existing `!batch_.empty()` emit guard.
+    /// parsers' existing `!batch_.empty()` emit guard. The queue is
+    /// BOUNDED: when the worker cannot keep up with a sustained flood,
+    /// the OLDEST queued batch is dropped — live consumers stay current
+    /// (freshness beats completeness; the AEDAT4 recorder taps the device
+    /// stream upstream of this queue, so recordings keep everything).
     void submit(std::unique_ptr<Batch> batch) {
         bool empty = batch->empty();
         {
@@ -120,9 +124,24 @@ public:
                 pool_.push_back(std::move(batch));
                 return;
             }
+            while (queue_.size() >= kMaxQueuedBatches) {
+                auto oldest = std::move(queue_.front());
+                queue_.pop_front();
+                oldest->clear();
+                pool_.push_back(std::move(oldest));
+                ++dropped_;
+            }
             queue_.push_back(std::move(batch));
         }
         if (!empty) cv_.notify_one();
+    }
+
+    /// Diagnostics: batches dropped for queue overflow since start().
+    [[nodiscard]] std::uint64_t dropped() const { return dropped_.load(); }
+    /// Diagnostics: batches currently queued.
+    [[nodiscard]] std::size_t queued() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_.size();
     }
 
 private:
@@ -133,6 +152,11 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::atomic<bool> run_{false};
+    std::atomic<std::uint64_t> dropped_{0};
+    /// ~64 USB-sized batches: 8 KB each ≈ 0.5 MB, well under a second of
+    /// any stream — enough slack to absorb scheduling jitter, small enough
+    /// to keep the added latency imperceptible.
+    static constexpr std::size_t kMaxQueuedBatches = 64;
 };
 
 } // namespace gui::davis
