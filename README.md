@@ -9,13 +9,20 @@ Real-time visualization · camera control · recording & playback · calibration
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
-![Version](https://img.shields.io/badge/version-2.9.3-blue)
+![Version](https://img.shields.io/badge/version-3.0.0-blue)
 
 ![Main Window](pic/1.9.0.png)
 
 </div>
 
 ---
+
+## What's new in 3.0.0
+
+- **Inivation live cameras**: DAVIS240A/B/C, DAVIS346, DAVIS640, CDAVIS and DVXplorer connect directly — events, full bias control (Auto Bias included), hardware ROI on DAVIS, IMU stream with DV-style strip charts and a jAER-style pseudo-3D vector overlay, and APS frame preview
+- **AEDAT4 recording** for inivation cameras (DV-native format), plus AEDAT4/ALPDATA playback and offline tools
+- **Calibration** now scales its Auto Bias band and event buffering with the camera resolution
+- Capability-aware UI: panels auto-hide when the connected camera lacks the hardware behind them
 
 ## What is this?
 
@@ -267,6 +274,14 @@ EB plus is under active development and may still contain bugs. If you encounter
 
 - **Original code**: [MIT](LICENSE)
 - **openEB SDK**: [Apache 2.0](openeb/licensing/LICENSE_OPEN) — copyright Prophesee
+- **Inivation live-camera support** (`gui/davis/`): protocol, register tables and
+  defaults ported from [dv-processing](https://gitlab.com/inivation/dv/dv-processing)
+  ([Apache 2.0](https://gitlab.com/inivation/dv/dv-processing/-/blob/master/LICENSE), © iniVation AG) — attribution headers in each file
+- **jAER-aligned algorithms**: reference behavior from
+  [jAER](https://github.com/jaer-project/jaer3) ([LGPL-2.1](ref/jaer/COPYING)) — re-implementations, no code vendored
+- **DV GUI**: not used. iniVation's dv-gui ships a custom (non-standard) license;
+  the IMU visualization is a fresh implementation sharing only the generic
+  rolling-curve concept
 
 ---
 
